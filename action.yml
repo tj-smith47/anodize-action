@@ -1,0 +1,179 @@
+name: 'Anodize Action'
+description: 'GitHub Action for Anodize — a Rust-native release automation tool'
+author: 'tj-smith47'
+branding:
+  color: 'orange'
+  icon: 'package'
+
+inputs:
+  version:
+    description: 'Anodize version to install from GitHub releases (e.g. "v0.1.1", "latest"). Ignored when from-artifact is set.'
+    default: 'latest'
+    required: false
+  from-artifact:
+    description: 'Download a pre-built anodize binary from a workflow artifact instead of GitHub releases. Set to the artifact name (e.g. "anodize-linux"). Useful for dogfooding or testing unreleased builds.'
+    required: false
+  args:
+    description: 'Arguments to pass to anodize (e.g. "release --snapshot")'
+    required: false
+  workdir:
+    description: 'Working directory (below repository root)'
+    default: '.'
+    required: false
+  install-only:
+    description: 'Only install anodize without running it'
+    default: 'false'
+    required: false
+
+outputs:
+  artifacts:
+    description: 'Build result artifacts JSON (contents of dist/artifacts.json)'
+    value: ${{ steps.outputs.outputs.artifacts }}
+  metadata:
+    description: 'Build result metadata JSON (contents of dist/metadata.json)'
+    value: ${{ steps.outputs.outputs.metadata }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Determine platform
+      id: platform
+      shell: bash
+      run: |
+        case "$RUNNER_OS" in
+          Linux)   os=linux ;;
+          macOS)   os=darwin ;;
+          Windows) os=windows ;;
+          *)       echo "::error::Unsupported OS: $RUNNER_OS"; exit 1 ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64)   arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *)     echo "::error::Unsupported arch: $RUNNER_ARCH"; exit 1 ;;
+        esac
+        echo "os=$os" >> "$GITHUB_OUTPUT"
+        echo "arch=$arch" >> "$GITHUB_OUTPUT"
+        if [ "$os" = "windows" ]; then
+          echo "bin=anodize.exe" >> "$GITHUB_OUTPUT"
+          echo "ext=zip" >> "$GITHUB_OUTPUT"
+        else
+          echo "bin=anodize" >> "$GITHUB_OUTPUT"
+          echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
+        fi
+
+    # --- Path A: Install from workflow artifact ---
+    - name: Download artifact
+      if: inputs.from-artifact != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.from-artifact }}
+        path: ${{ runner.tool_cache }}/anodize/artifact
+
+    - name: Install from artifact
+      if: inputs.from-artifact != ''
+      id: install-artifact
+      shell: bash
+      env:
+        BIN: ${{ steps.platform.outputs.bin }}
+      run: |
+        install_dir="${RUNNER_TOOL_CACHE}/anodize/artifact"
+        chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
+        echo "${install_dir}" >> "$GITHUB_PATH"
+        echo "::notice::anodize installed from artifact to ${install_dir}"
+
+    # --- Path B: Install from GitHub release ---
+    - name: Resolve version
+      if: inputs.from-artifact == ''
+      id: version
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$INPUT_VERSION" = "latest" ]; then
+          tag=$(gh api repos/tj-smith47/anodize/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+          if [ -z "$tag" ]; then
+            echo "::error::Could not resolve latest anodize release"
+            exit 1
+          fi
+        else
+          tag="$INPUT_VERSION"
+          if [[ ! "$tag" =~ ^v ]]; then
+            tag="v$tag"
+          fi
+        fi
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        echo "::notice::Installing anodize $tag"
+
+    - name: Download release
+      if: inputs.from-artifact == ''
+      id: install-release
+      shell: bash
+      env:
+        TAG: ${{ steps.version.outputs.tag }}
+        OS: ${{ steps.platform.outputs.os }}
+        ARCH: ${{ steps.platform.outputs.arch }}
+        EXT: ${{ steps.platform.outputs.ext }}
+        BIN: ${{ steps.platform.outputs.bin }}
+      run: |
+        version="${TAG#v}"
+        archive="anodize-${version}-${OS}-${ARCH}.${EXT}"
+        url="https://github.com/tj-smith47/anodize/releases/download/${TAG}/${archive}"
+
+        echo "::group::Downloading $url"
+        tmpdir=$(mktemp -d)
+        if ! curl -fsSL "$url" -o "${tmpdir}/${archive}"; then
+          echo "::error::Failed to download anodize ${TAG} from ${url}"
+          exit 1
+        fi
+        echo "::endgroup::"
+
+        echo "::group::Extracting"
+        install_dir="${RUNNER_TOOL_CACHE}/anodize/${version}"
+        mkdir -p "$install_dir"
+        if [ "$EXT" = "zip" ]; then
+          unzip -q -o "${tmpdir}/${archive}" -d "$install_dir"
+        else
+          tar -xzf "${tmpdir}/${archive}" -C "$install_dir"
+        fi
+        rm -rf "$tmpdir"
+        echo "::endgroup::"
+
+        chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
+        echo "${install_dir}" >> "$GITHUB_PATH"
+        echo "::notice::anodize ${TAG} installed to ${install_dir}"
+
+    # --- Run ---
+    - name: Run anodize
+      if: inputs.install-only != 'true' && inputs.args != ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: anodize ${{ inputs.args }}
+
+    # --- Outputs ---
+    - name: Collect outputs
+      if: inputs.install-only != 'true' && inputs.args != ''
+      id: outputs
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        dist="dist"
+        for cfg in .anodize.yaml .anodize.yml anodize.yaml anodize.yml; do
+          if [ -f "$cfg" ]; then
+            d=$(grep -E '^dist:' "$cfg" | head -1 | sed 's/^dist:\s*//' | tr -d '"' | tr -d "'")
+            [ -n "$d" ] && dist="$d"
+            break
+          fi
+        done
+
+        if [ -f "${dist}/artifacts.json" ]; then
+          echo "artifacts<<ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+          cat "${dist}/artifacts.json" >> "$GITHUB_OUTPUT"
+          echo "ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [ -f "${dist}/metadata.json" ]; then
+          echo "metadata<<ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+          cat "${dist}/metadata.json" >> "$GITHUB_OUTPUT"
+          echo "ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+        fi
