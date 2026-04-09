@@ -11,7 +11,23 @@ inputs:
     default: 'latest'
     required: false
   from-artifact:
-    description: 'Download a pre-built anodize binary from a workflow artifact instead of GitHub releases. Set to the artifact name (e.g. "anodize-linux"). Useful for dogfooding or testing unreleased builds.'
+    description: >
+      Download a pre-built anodize binary from a workflow artifact instead of
+      GitHub releases. Set to the artifact name (e.g. "anodize-linux").
+      For cross-workflow downloads, also set artifact-run-id.
+    required: false
+  artifact-run-id:
+    description: >
+      Workflow run ID to download the artifact from. Use "auto" to automatically
+      resolve the latest successful run of artifact-workflow for the current
+      commit. Use a numeric ID for explicit control. Omit to download from
+      the current workflow run.
+    required: false
+  artifact-workflow:
+    description: >
+      Workflow filename to search when artifact-run-id is "auto" (e.g. "ci.yml").
+      Ignored when artifact-run-id is a numeric ID or omitted.
+    default: 'ci.yml'
     required: false
   args:
     description: 'Arguments to pass to anodize (e.g. "release --snapshot")'
@@ -61,13 +77,61 @@ runs:
           echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
         fi
 
+    # --- Resolve cross-workflow run ID ---
+    - name: Resolve artifact run ID
+      if: inputs.from-artifact != '' && inputs.artifact-run-id != ''
+      id: resolve-run
+      shell: bash
+      env:
+        ARTIFACT_RUN_ID: ${{ inputs.artifact-run-id }}
+        ARTIFACT_WORKFLOW: ${{ inputs.artifact-workflow }}
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        COMMIT_SHA: ${{ github.sha }}
+      run: |
+        if [ "$ARTIFACT_RUN_ID" = "auto" ]; then
+          echo "::group::Resolving latest successful $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
+          # Query for successful runs of the specified workflow matching this commit
+          run_id=$(gh api "repos/${REPO}/actions/workflows/${ARTIFACT_WORKFLOW}/runs" \
+            --jq "[.workflow_runs[] | select(.head_sha==\"${COMMIT_SHA}\" and .conclusion==\"success\")][0].id" \
+            2>/dev/null || echo "")
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            # For tag-triggered workflows, the SHA is the tag commit. Try
+            # finding the CI run for the commit the tag points to.
+            deref_sha=$(git rev-parse "${COMMIT_SHA}^{commit}" 2>/dev/null || echo "$COMMIT_SHA")
+            if [ "$deref_sha" != "$COMMIT_SHA" ]; then
+              run_id=$(gh api "repos/${REPO}/actions/workflows/${ARTIFACT_WORKFLOW}/runs" \
+                --jq "[.workflow_runs[] | select(.head_sha==\"${deref_sha}\" and .conclusion==\"success\")][0].id" \
+                2>/dev/null || echo "")
+            fi
+          fi
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "::error::Could not find a successful ${ARTIFACT_WORKFLOW} run for commit ${COMMIT_SHA}"
+            exit 1
+          fi
+          echo "::notice::Resolved artifact-run-id=auto to run ${run_id}"
+          echo "::endgroup::"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+        else
+          echo "run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
+        fi
+
     # --- Path A: Install from workflow artifact ---
-    - name: Download artifact
-      if: inputs.from-artifact != ''
+    - name: Download artifact (same workflow)
+      if: inputs.from-artifact != '' && inputs.artifact-run-id == ''
       uses: actions/download-artifact@v4
       with:
         name: ${{ inputs.from-artifact }}
         path: ${{ runner.tool_cache }}/anodize/artifact
+
+    - name: Download artifact (cross-workflow)
+      if: inputs.from-artifact != '' && inputs.artifact-run-id != ''
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.from-artifact }}
+        path: ${{ runner.tool_cache }}/anodize/artifact
+        github-token: ${{ github.token }}
+        run-id: ${{ steps.resolve-run.outputs.run_id }}
 
     - name: Install from artifact
       if: inputs.from-artifact != ''

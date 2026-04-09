@@ -44,13 +44,13 @@ GitHub Action for [Anodize](https://github.com/tj-smith47/anodize), a Rust-nativ
 - run: anodize release --snapshot
 ```
 
-### Reuse CI-built binary (dogfooding)
+### Reuse CI-built binary (same workflow)
 
-Upload the binary in your test job, then download it in the release job:
+Upload the binary in your build job, then download it in the release job:
 
 ```yaml
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
           path: target/release/anodize
 
   release:
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +72,74 @@ jobs:
         with:
           from-artifact: anodize-linux
           args: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Reuse CI-built binary (cross-workflow)
+
+If your CI workflow builds and uploads anodize binaries per platform, a separate
+Release workflow (e.g. triggered by a tag) can download them instead of
+rebuilding from source. This is especially useful for skipping slow builds
+(e.g. ~15 min on Windows).
+
+Set `artifact-run-id: auto` to automatically find the latest successful CI run
+for the current commit:
+
+```yaml
+# CI workflow (ci.yml) — builds and uploads per-platform binaries
+jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: anodize-linux
+            bin: target/release/anodize
+          - os: macos-latest
+            artifact: anodize-macos
+            bin: target/release/anodize
+          - os: windows-latest
+            artifact: anodize-windows
+            bin: target/release/anodize.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - run: cargo build --release -p anodize
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.bin }}
+```
+
+```yaml
+# Release workflow (release.yml) — downloads pre-built binaries
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: anodize-linux
+          - os: macos-latest
+            artifact: anodize-macos
+          - os: windows-latest
+            artifact: anodize-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Download anodize from CI instead of rebuilding (~15 min saved on Windows)
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          from-artifact: ${{ matrix.artifact }}
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          install-only: true
+      - run: anodize release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -89,7 +157,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
       - uses: tj-smith47/anodize-action@v1
         with:
           args: release --split --clean
@@ -125,6 +192,8 @@ jobs:
 |-------|---------|-------------|
 | `version` | `latest` | Anodize version from GitHub releases (e.g. `v0.1.1`). Ignored when `from-artifact` is set. |
 | `from-artifact` | | Download pre-built binary from a workflow artifact instead of releases. |
+| `artifact-run-id` | | Workflow run ID for cross-workflow artifact downloads. Use `auto` to resolve from the current commit SHA. |
+| `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
 | `args` | | Arguments to pass to anodize. |
 | `workdir` | `.` | Working directory. |
 | `install-only` | `false` | Only install, don't run. |
