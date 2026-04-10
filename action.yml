@@ -536,16 +536,24 @@ runs:
           fi
         done
 
+        # Use a brace-grouped block so the closing delimiter always lands on
+        # its own line, even if the JSON file has no trailing newline.
         if [ -f "${dist}/artifacts.json" ]; then
-          echo "artifacts<<ANODIZE_EOF" >> "$GITHUB_OUTPUT"
-          cat "${dist}/artifacts.json" >> "$GITHUB_OUTPUT"
-          echo "ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "artifacts<<ANODIZE_EOF"
+            cat "${dist}/artifacts.json"
+            echo ""
+            echo "ANODIZE_EOF"
+          } >> "$GITHUB_OUTPUT"
         fi
 
         if [ -f "${dist}/metadata.json" ]; then
-          echo "metadata<<ANODIZE_EOF" >> "$GITHUB_OUTPUT"
-          cat "${dist}/metadata.json" >> "$GITHUB_OUTPUT"
-          echo "ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+          {
+            echo "metadata<<ANODIZE_EOF"
+            cat "${dist}/metadata.json"
+            echo ""
+            echo "ANODIZE_EOF"
+          } >> "$GITHUB_OUTPUT"
 
           # Extract release URL if present
           url=$(grep -o '"release_url"[^,}]*' "${dist}/metadata.json" 2>/dev/null | head -1 | sed 's/.*:\s*"\(.*\)"/\1/' || echo "")
