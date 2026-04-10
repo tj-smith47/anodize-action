@@ -201,17 +201,20 @@ runs:
             combined="$AUTO_INSTALL"
           fi
         fi
-        # Dedupe
+        # Dedupe (POSIX-safe; macOS ships bash 3.2 — no associative arrays)
         IFS=',' read -ra RAW <<< "$combined"
-        declare -A SEEN
         DEPS=()
+        seen_list=""
         for dep in "${RAW[@]}"; do
           dep=$(echo "$dep" | xargs)
           [ -z "$dep" ] && continue
-          if [ -z "${SEEN[$dep]:-}" ]; then
-            SEEN[$dep]=1
-            DEPS+=("$dep")
-          fi
+          case ",${seen_list}," in
+            *",${dep},"*) ;;
+            *)
+              DEPS+=("$dep")
+              seen_list="${seen_list:+${seen_list},}${dep}"
+              ;;
+          esac
         done
 
         echo "::group::Installing dependencies: ${DEPS[*]}"
