@@ -6,52 +6,117 @@ branding:
   icon: 'package'
 
 inputs:
+  # ---------------------------------------------------------------------------
+  # Installation source (pick one path)
+  # ---------------------------------------------------------------------------
   version:
-    description: 'Anodize version to install from GitHub releases (e.g. "v0.1.1", "latest"). Ignored when from-artifact is set.'
+    description: >
+      Anodize version to install from GitHub releases (e.g. "v0.1.1", "latest").
+      Ignored when `from-artifact` or `from-source` is set.
     default: 'latest'
     required: false
   from-artifact:
     description: >
       Download a pre-built anodize binary from a workflow artifact instead of
-      GitHub releases. Set to the artifact name (e.g. "anodize-linux").
-      For cross-workflow downloads, also set artifact-run-id.
+      GitHub releases. Set to the artifact name (e.g. "anodize-linux"). For
+      cross-workflow downloads, also set `artifact-run-id`.
     required: false
   artifact-run-id:
     description: >
       Workflow run ID to download the artifact from. Use "auto" to automatically
-      resolve the latest successful run of artifact-workflow for the current
+      resolve the latest successful run of `artifact-workflow` for the current
       commit. Use a numeric ID for explicit control. Omit to download from
       the current workflow run.
     required: false
   artifact-workflow:
     description: >
-      Workflow filename to search when artifact-run-id is "auto" (e.g. "ci.yml").
-      Ignored when artifact-run-id is a numeric ID or omitted.
+      Workflow filename to search when `artifact-run-id` is "auto"
+      (e.g. "ci.yml"). Ignored otherwise.
     default: 'ci.yml'
     required: false
+  from-source:
+    description: >
+      Build anodize from source in the current workdir (bootstrap mode).
+      Requires a Rust toolchain — combine with `install-rust: true` if needed.
+      Useful when `from-artifact` is only available for one platform and the
+      current runner needs a platform-native binary.
+    default: 'false'
+    required: false
+
+  # ---------------------------------------------------------------------------
+  # Dependency setup
+  # ---------------------------------------------------------------------------
+  install:
+    description: >
+      Comma-separated list of build/pipeline dependencies to install.
+      Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
+      cargo-zigbuild, upx. Uses the platform's native package manager
+      (apt on Linux, brew on macOS, choco on Windows).
+    required: false
+  auto-install:
+    description: >
+      Parse `.anodize.yaml` in the workdir and automatically install the
+      dependencies needed by the configured stages (nfpm for linux_packages,
+      makeself, snapcraft, rpmbuild for srpm, cosign for binary_signs, etc.).
+    default: 'false'
+    required: false
+  install-rust:
+    description: 'Install the stable Rust toolchain (dtolnay/rust-toolchain).'
+    default: 'false'
+    required: false
+
+  # ---------------------------------------------------------------------------
+  # Key material
+  # ---------------------------------------------------------------------------
+  gpg-private-key:
+    description: >
+      GPG private key contents to import for signing. The key is piped into
+      `gpg --batch --import`.
+    required: false
+  cosign-key:
+    description: >
+      Cosign private key contents. Written to `cosign.key` in the workdir
+      with mode 0600. Pair with `COSIGN_PASSWORD` in the env.
+    required: false
+
+  # ---------------------------------------------------------------------------
+  # Execution
+  # ---------------------------------------------------------------------------
   args:
-    description: 'Arguments to pass to anodize (e.g. "release --snapshot")'
+    description: 'Arguments to pass to anodize (e.g. "release --snapshot").'
     required: false
   workdir:
-    description: 'Working directory (below repository root)'
+    description: 'Working directory (below repository root).'
     default: '.'
     required: false
   install-only:
-    description: 'Only install anodize without running it'
+    description: 'Only install anodize without running it.'
     default: 'false'
     required: false
 
 outputs:
   artifacts:
-    description: 'Build result artifacts JSON (contents of dist/artifacts.json)'
+    description: 'Build result artifacts JSON (contents of dist/artifacts.json).'
     value: ${{ steps.outputs.outputs.artifacts }}
   metadata:
-    description: 'Build result metadata JSON (contents of dist/metadata.json)'
+    description: 'Build result metadata JSON (contents of dist/metadata.json).'
     value: ${{ steps.outputs.outputs.metadata }}
+  release-url:
+    description: 'URL of the created GitHub release (extracted from metadata.json).'
+    value: ${{ steps.outputs.outputs.release-url }}
+  split-matrix:
+    description: >
+      JSON matrix for `strategy.matrix` covering all configured build targets.
+      Produced from `.anodize.yaml` when `install-only: true`. Each entry has
+      `os`, `target`, and `artifact` fields.
+    value: ${{ steps.split-matrix.outputs.matrix }}
 
 runs:
   using: 'composite'
   steps:
+    # -------------------------------------------------------------------------
+    # Platform detection
+    # -------------------------------------------------------------------------
     - name: Determine platform
       id: platform
       shell: bash
@@ -77,7 +142,191 @@ runs:
           echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
         fi
 
-    # --- Resolve cross-workflow run ID ---
+    # -------------------------------------------------------------------------
+    # Rust toolchain (optional; prereq for from-source and cargo-zigbuild)
+    # -------------------------------------------------------------------------
+    - name: Install Rust toolchain
+      if: inputs.install-rust == 'true'
+      uses: dtolnay/rust-toolchain@stable
+
+    # -------------------------------------------------------------------------
+    # Dependency installation
+    # -------------------------------------------------------------------------
+    - name: Auto-detect dependencies from .anodize.yaml
+      if: inputs.auto-install == 'true'
+      id: auto-detect
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        deps=()
+        cfg=""
+        for candidate in .anodize.yaml .anodize.yml anodize.yaml anodize.yml; do
+          if [ -f "$candidate" ]; then
+            cfg="$candidate"
+            break
+          fi
+        done
+        if [ -z "$cfg" ]; then
+          echo "::warning::auto-install: no anodize config found, skipping"
+          echo "deps=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # Match top-level keys that signal dependency needs
+        grep -qE '^linux_packages:|^nfpms:|^  - name: anodize-stage-nfpm' "$cfg" && deps+=("nfpm") || true
+        grep -qE '^makeselfs:' "$cfg" && deps+=("makeself") || true
+        grep -qE '^snapcrafts:' "$cfg" && deps+=("snapcraft") || true
+        grep -qE '^srpm:' "$cfg" && deps+=("rpmbuild") || true
+        grep -qE '^binary_signs:|^docker_signs:' "$cfg" && deps+=("cosign") || true
+        grep -qE '^upx:' "$cfg" && deps+=("upx") || true
+        # Cross-compilation needs zig + cargo-zigbuild
+        grep -qE 'cross:.*auto|cross:.*zigbuild' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
+        joined=$(IFS=','; echo "${deps[*]}")
+        echo "::notice::auto-install detected: ${joined:-none}"
+        echo "deps=$joined" >> "$GITHUB_OUTPUT"
+
+    - name: Install dependencies
+      if: inputs.install != '' || steps.auto-detect.outputs.deps != ''
+      shell: bash
+      env:
+        EXPLICIT_INSTALL: ${{ inputs.install }}
+        AUTO_INSTALL: ${{ steps.auto-detect.outputs.deps }}
+      run: |
+        set -e
+        # Merge explicit and auto-detected lists, dedupe
+        combined="${EXPLICIT_INSTALL}"
+        if [ -n "$AUTO_INSTALL" ]; then
+          if [ -n "$combined" ]; then
+            combined="${combined},${AUTO_INSTALL}"
+          else
+            combined="$AUTO_INSTALL"
+          fi
+        fi
+        # Dedupe
+        IFS=',' read -ra RAW <<< "$combined"
+        declare -A SEEN
+        DEPS=()
+        for dep in "${RAW[@]}"; do
+          dep=$(echo "$dep" | xargs)
+          [ -z "$dep" ] && continue
+          if [ -z "${SEEN[$dep]:-}" ]; then
+            SEEN[$dep]=1
+            DEPS+=("$dep")
+          fi
+        done
+
+        echo "::group::Installing dependencies: ${DEPS[*]}"
+        for dep in "${DEPS[@]}"; do
+          echo "::group::Installing $dep"
+          case "$dep" in
+            nfpm)
+              case "$RUNNER_OS" in
+                Linux)
+                  echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list > /dev/null
+                  sudo apt-get update -q
+                  sudo apt-get install -yq nfpm
+                  ;;
+                macOS)  brew install goreleaser/tap/nfpm ;;
+                Windows) choco install nfpm -y --no-progress ;;
+              esac
+              ;;
+            makeself)
+              case "$RUNNER_OS" in
+                Linux)  sudo apt-get install -yq makeself ;;
+                macOS)  brew install makeself ;;
+                Windows)
+                  echo "::warning::makeself is not natively supported on Windows; skipping"
+                  ;;
+              esac
+              ;;
+            snapcraft)
+              case "$RUNNER_OS" in
+                Linux)  sudo snap install snapcraft --classic ;;
+                macOS)  brew install snapcraft ;;
+                Windows)
+                  echo "::warning::snapcraft is not natively supported on Windows; skipping"
+                  ;;
+              esac
+              ;;
+            rpmbuild)
+              case "$RUNNER_OS" in
+                Linux)  sudo apt-get install -yq rpm ;;
+                macOS)  brew install rpm ;;
+                Windows)
+                  echo "::warning::rpmbuild is not natively supported on Windows; skipping"
+                  ;;
+              esac
+              ;;
+            cosign)
+              case "$RUNNER_OS" in
+                Linux)
+                  curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /tmp/cosign
+                  sudo install /tmp/cosign /usr/local/bin/cosign
+                  ;;
+                macOS)  brew install cosign ;;
+                Windows) choco install cosign -y --no-progress ;;
+              esac
+              ;;
+            zig)
+              case "$RUNNER_OS" in
+                Linux)
+                  curl -sSfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o /tmp/zig.tar.xz
+                  sudo mkdir -p /opt/zig
+                  sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+                  sudo ln -sf /opt/zig/zig /usr/local/bin/zig
+                  ;;
+                macOS)  brew install zig ;;
+                Windows) choco install zig -y --no-progress ;;
+              esac
+              ;;
+            cargo-zigbuild)
+              if ! command -v cargo > /dev/null 2>&1; then
+                echo "::error::cargo-zigbuild requires Rust; set install-rust: true"
+                exit 1
+              fi
+              cargo install --locked cargo-zigbuild
+              ;;
+            upx)
+              case "$RUNNER_OS" in
+                Linux)  sudo apt-get install -yq upx ;;
+                macOS)  brew install upx ;;
+                Windows) choco install upx -y --no-progress ;;
+              esac
+              ;;
+            *)
+              echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig, cargo-zigbuild, upx)"
+              exit 1
+              ;;
+          esac
+          echo "::endgroup::"
+        done
+        echo "::endgroup::"
+
+    # -------------------------------------------------------------------------
+    # Key material
+    # -------------------------------------------------------------------------
+    - name: Import GPG private key
+      if: inputs.gpg-private-key != ''
+      shell: bash
+      env:
+        GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
+      run: |
+        echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+        echo "::notice::GPG private key imported"
+
+    - name: Write cosign key
+      if: inputs.cosign-key != ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        COSIGN_KEY_CONTENTS: ${{ inputs.cosign-key }}
+      run: |
+        printf '%s' "$COSIGN_KEY_CONTENTS" > cosign.key
+        chmod 600 cosign.key
+        echo "::notice::Cosign key written to cosign.key"
+
+    # -------------------------------------------------------------------------
+    # Installation — Path A: from workflow artifact
+    # -------------------------------------------------------------------------
     - name: Resolve artifact run ID
       if: inputs.from-artifact != '' && inputs.artifact-run-id != ''
       id: resolve-run
@@ -91,13 +340,10 @@ runs:
       run: |
         if [ "$ARTIFACT_RUN_ID" = "auto" ]; then
           echo "::group::Resolving latest successful $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
-          # Query for successful runs of the specified workflow matching this commit
           run_id=$(gh api "repos/${REPO}/actions/workflows/${ARTIFACT_WORKFLOW}/runs" \
             --jq "[.workflow_runs[] | select(.head_sha==\"${COMMIT_SHA}\" and .conclusion==\"success\")][0].id" \
             2>/dev/null || echo "")
           if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-            # For tag-triggered workflows, the SHA is the tag commit. Try
-            # finding the CI run for the commit the tag points to.
             deref_sha=$(git rev-parse "${COMMIT_SHA}^{commit}" 2>/dev/null || echo "$COMMIT_SHA")
             if [ "$deref_sha" != "$COMMIT_SHA" ]; then
               run_id=$(gh api "repos/${REPO}/actions/workflows/${ARTIFACT_WORKFLOW}/runs" \
@@ -116,7 +362,6 @@ runs:
           echo "run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
         fi
 
-    # --- Path A: Install from workflow artifact ---
     - name: Download artifact (same workflow)
       if: inputs.from-artifact != '' && inputs.artifact-run-id == ''
       uses: actions/download-artifact@v4
@@ -135,7 +380,6 @@ runs:
 
     - name: Install from artifact
       if: inputs.from-artifact != ''
-      id: install-artifact
       shell: bash
       env:
         BIN: ${{ steps.platform.outputs.bin }}
@@ -145,9 +389,11 @@ runs:
         echo "${install_dir}" >> "$GITHUB_PATH"
         echo "::notice::anodize installed from artifact to ${install_dir}"
 
-    # --- Path B: Install from GitHub release ---
+    # -------------------------------------------------------------------------
+    # Installation — Path B: from GitHub release
+    # -------------------------------------------------------------------------
     - name: Resolve version
-      if: inputs.from-artifact == ''
+      if: inputs.from-artifact == '' && inputs.from-source != 'true'
       id: version
       shell: bash
       env:
@@ -170,8 +416,7 @@ runs:
         echo "::notice::Installing anodize $tag"
 
     - name: Download release
-      if: inputs.from-artifact == ''
-      id: install-release
+      if: inputs.from-artifact == '' && inputs.from-source != 'true'
       shell: bash
       env:
         TAG: ${{ steps.version.outputs.tag }}
@@ -216,7 +461,55 @@ runs:
         echo "${install_dir}" >> "$GITHUB_PATH"
         echo "::notice::anodize ${TAG} installed to ${install_dir}"
 
-    # --- Run ---
+    # -------------------------------------------------------------------------
+    # Installation — Path C: from source (bootstrap)
+    # -------------------------------------------------------------------------
+    - name: Build anodize from source
+      if: inputs.from-source == 'true'
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        BIN: ${{ steps.platform.outputs.bin }}
+      run: |
+        if ! command -v cargo > /dev/null 2>&1; then
+          echo "::error::from-source requires Rust; set install-rust: true"
+          exit 1
+        fi
+        echo "::group::Building anodize from source"
+        cargo build --release -p anodize
+        install_dir="${RUNNER_TOOL_CACHE}/anodize/source"
+        mkdir -p "$install_dir"
+        cp "target/release/${BIN}" "${install_dir}/${BIN}"
+        chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
+        echo "${install_dir}" >> "$GITHUB_PATH"
+        echo "::notice::anodize built from source and installed to ${install_dir}"
+        echo "::endgroup::"
+
+    # -------------------------------------------------------------------------
+    # Split matrix output — for users building a fan-out from config
+    # -------------------------------------------------------------------------
+    - name: Produce split matrix
+      if: inputs.install-only == 'true'
+      id: split-matrix
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        # Produce a JSON matrix of { os, target, artifact } derived from
+        # anodize's configured build targets. Only runs when install-only.
+        if ! command -v anodize > /dev/null 2>&1; then
+          echo "matrix=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if targets=$(anodize targets --json 2>/dev/null); then
+          echo "matrix=$targets" >> "$GITHUB_OUTPUT"
+          echo "::notice::split-matrix output populated from anodize targets --json"
+        else
+          echo "matrix=" >> "$GITHUB_OUTPUT"
+        fi
+
+    # -------------------------------------------------------------------------
+    # Run anodize
+    # -------------------------------------------------------------------------
     - name: Run anodize
       if: inputs.install-only != 'true' && inputs.args != ''
       shell: bash
@@ -225,7 +518,9 @@ runs:
         ANODIZE_ARGS: ${{ inputs.args }}
       run: anodize $ANODIZE_ARGS
 
-    # --- Outputs ---
+    # -------------------------------------------------------------------------
+    # Outputs
+    # -------------------------------------------------------------------------
     - name: Collect outputs
       if: inputs.install-only != 'true' && inputs.args != ''
       id: outputs
@@ -251,4 +546,8 @@ runs:
           echo "metadata<<ANODIZE_EOF" >> "$GITHUB_OUTPUT"
           cat "${dist}/metadata.json" >> "$GITHUB_OUTPUT"
           echo "ANODIZE_EOF" >> "$GITHUB_OUTPUT"
+
+          # Extract release URL if present
+          url=$(grep -o '"release_url"[^,}]*' "${dist}/metadata.json" 2>/dev/null | head -1 | sed 's/.*:\s*"\(.*\)"/\1/' || echo "")
+          echo "release-url=${url}" >> "$GITHUB_OUTPUT"
         fi
