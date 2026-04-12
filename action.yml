@@ -66,6 +66,48 @@ inputs:
     required: false
 
   # ---------------------------------------------------------------------------
+  # Workspace resolution (monorepo tag → crate mapping)
+  # ---------------------------------------------------------------------------
+  resolve-workspace:
+    description: >
+      Resolve the triggering tag to a crate name using `anodize resolve-tag`.
+      Set to "true" on tag-triggered release workflows. Populates the
+      `workspace`, `crate-path`, and `has-builds` outputs.
+    default: 'false'
+    required: false
+
+  # ---------------------------------------------------------------------------
+  # Docker setup (for projects using docker_v2 in .anodize.yaml)
+  # ---------------------------------------------------------------------------
+  docker-registry:
+    description: >
+      Container registry to log in to (e.g. "ghcr.io"). When set, the action
+      logs in, and sets up QEMU + buildx for multi-platform builds.
+    required: false
+  docker-username:
+    description: 'Registry username (defaults to github.actor via GITHUB_ACTOR env).'
+    required: false
+  docker-password:
+    description: 'Registry password or token (e.g. secrets.GITHUB_TOKEN).'
+    required: false
+
+  # ---------------------------------------------------------------------------
+  # Split artifact management
+  # ---------------------------------------------------------------------------
+  upload-dist:
+    description: >
+      Upload dist/ as a workflow artifact after running anodize. Set to "true"
+      in split build jobs. The artifact name defaults to "dist-$RUNNER_OS".
+    default: 'false'
+    required: false
+  download-dist:
+    description: >
+      Download and merge dist-* artifacts before running anodize. Set to "true"
+      in merge jobs. Merges all artifacts matching "dist-*" into dist/.
+    default: 'false'
+    required: false
+
+  # ---------------------------------------------------------------------------
   # Key material
   # ---------------------------------------------------------------------------
   gpg-private-key:
@@ -104,6 +146,15 @@ outputs:
   release-url:
     description: 'URL of the created GitHub release (extracted from metadata.json).'
     value: ${{ steps.outputs.outputs.release-url }}
+  workspace:
+    description: 'Crate name resolved from the triggering tag (requires resolve-workspace: true).'
+    value: ${{ steps.resolve-workspace.outputs.crate }}
+  crate-path:
+    description: 'Path to the resolved crate directory (requires resolve-workspace: true).'
+    value: ${{ steps.resolve-workspace.outputs.path }}
+  has-builds:
+    description: 'Whether the resolved crate has binary builds configured (requires resolve-workspace: true).'
+    value: ${{ steps.resolve-workspace.outputs.has-builds }}
   split-matrix:
     description: >
       JSON matrix for `strategy.matrix` covering all configured build targets.
@@ -383,6 +434,84 @@ runs:
         anodize::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
+    # Workspace resolution (monorepo tag → crate)
+    # -------------------------------------------------------------------------
+    - name: Resolve workspace from tag
+      if: inputs.resolve-workspace == 'true'
+      id: resolve-workspace
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        TAG: ${{ github.ref_name }}
+      run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        if ! command -v anodize > /dev/null 2>&1; then
+          echo "::error::resolve-workspace requires anodize to be installed"
+          anodize::err "resolve-workspace requires anodize to be installed"
+          exit 1
+        fi
+        output=$(anodize resolve-tag "$TAG")
+        crate=$(echo "$output" | grep '^crate=' | cut -d= -f2)
+        path=$(echo "$output" | grep '^path=' | cut -d= -f2)
+        has_builds=$(echo "$output" | grep '^has-builds=' | cut -d= -f2)
+        if [ -z "$crate" ]; then
+          echo "::error::No crate matches tag '$TAG'"
+          anodize::err "no crate matches tag '$TAG'"
+          exit 1
+        fi
+        echo "crate=$crate" >> "$GITHUB_OUTPUT"
+        echo "path=$path" >> "$GITHUB_OUTPUT"
+        echo "has-builds=$has_builds" >> "$GITHUB_OUTPUT"
+        echo "::notice::Tag '$TAG' → crate '$crate' (path=$path, has-builds=$has_builds)"
+        anodize::verb Resolved "'$TAG' → $crate"
+        anodize::kv path "$path"
+        anodize::kv has-builds "$has_builds"
+
+    # -------------------------------------------------------------------------
+    # Docker setup (login + QEMU + buildx)
+    # -------------------------------------------------------------------------
+    - name: Log in to container registry
+      if: inputs.docker-registry != ''
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.docker-registry }}
+        username: ${{ inputs.docker-username || github.actor }}
+        password: ${{ inputs.docker-password }}
+
+    - name: Set up QEMU
+      if: inputs.docker-registry != ''
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      if: inputs.docker-registry != ''
+      uses: docker/setup-buildx-action@v3
+
+    # -------------------------------------------------------------------------
+    # Download split artifacts (for merge jobs)
+    # -------------------------------------------------------------------------
+    - name: Download split artifacts
+      if: inputs.download-dist == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        path: ${{ inputs.workdir }}/dist/
+        pattern: dist-*
+        merge-multiple: true
+
+    - name: Verify split artifacts
+      if: inputs.download-dist == 'true'
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        count=$(find dist -name context.json -type f 2>/dev/null | wc -l)
+        if [ "$count" -eq 0 ]; then
+          echo "::error::No split context files found in dist/"
+          anodize::err "no split context files found in dist/"
+          exit 1
+        fi
+        anodize::ok "found $count split context(s)"
+
+    # -------------------------------------------------------------------------
     # Split matrix output — for users building a fan-out from config
     # -------------------------------------------------------------------------
     - name: Produce split matrix
@@ -459,3 +588,13 @@ runs:
           url=$(grep -o '"release_url"[^,}]*' "${dist}/metadata.json" 2>/dev/null | head -1 | sed 's/.*:\s*"\(.*\)"/\1/' || echo "")
           echo "release-url=${url}" >> "$GITHUB_OUTPUT"
         fi
+
+    # -------------------------------------------------------------------------
+    # Upload split artifacts (for split build jobs)
+    # -------------------------------------------------------------------------
+    - name: Upload split artifacts
+      if: inputs.upload-dist == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-${{ runner.os }}
+        path: ${{ inputs.workdir }}/dist/
