@@ -9,10 +9,13 @@
 # Strategy:
 #  1. Fast path: look for a completed successful run matching the commit SHA
 #     (or the dereferenced commit SHA, for annotated tags).
-#  2. Slow path: poll for up to ~5 min, accepting in-progress runs whose
+#  2. Parent walk: if no run exists for the exact SHA, walk up to 5 parent
+#     commits. Handles version_sync commits where the tag points to a commit
+#     CI never built, but the parent has a successful run.
+#  3. Slow path: poll for up to ~5 min, accepting in-progress runs whose
 #     artifact has already been uploaded (the snapshot job runs well before
 #     the tag job, so the artifact exists long before ci.yml completes).
-#  3. Fail fast if a matching run has failed or been cancelled — no point
+#  4. Fail fast if a matching run has failed or been cancelled — no point
 #     waiting on something that will never publish.
 #
 # Required env vars:
@@ -73,6 +76,26 @@ run_has_artifact() {
 
 # Fast path — completed successful run.
 run_id=$(find_run '.conclusion=="success"')
+
+# Parent walk — when the tagged commit is a version_sync commit (e.g.
+# "chore: bump crates/foo to 1.2.3"), CI never ran on that SHA. Walk up to
+# 5 parent commits to find the one CI actually built.
+if [ -z "$run_id" ]; then
+    echo "::notice::No CI run for exact SHA; checking parent commits"
+    for depth in 1 2 3 4 5; do
+        parent_sha=$(git rev-parse "${deref_sha}~${depth}" 2>/dev/null || echo "")
+        [ -z "$parent_sha" ] && break
+        # Temporarily override the SHAs used by find_run.
+        orig_commit="$COMMIT_SHA"; orig_deref="$deref_sha"
+        COMMIT_SHA="$parent_sha"; deref_sha="$parent_sha"
+        run_id=$(find_run '.conclusion=="success"')
+        COMMIT_SHA="$orig_commit"; deref_sha="$orig_deref"
+        if [ -n "$run_id" ]; then
+            echo "::notice::Found CI run ${run_id} at parent ~${depth} (${parent_sha})"
+            break
+        fi
+    done
+fi
 
 if [ -z "$run_id" ]; then
     # Slow path — poll for up to 5 minutes.
