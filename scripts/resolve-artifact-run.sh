@@ -25,11 +25,18 @@
 # Writes `run_id=<id>` to $GITHUB_OUTPUT on success.
 set -euo pipefail
 
+# shellcheck source=./lib-colors.sh
+source "$(dirname "$0")/lib-colors.sh"
+
 : "${ARTIFACT_WORKFLOW:?ARTIFACT_WORKFLOW is required}"
 : "${FROM_ARTIFACT:?FROM_ARTIFACT is required}"
 : "${REPO:?REPO is required}"
 : "${COMMIT_SHA:?COMMIT_SHA is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+
+anodize::section "Resolving ${ARTIFACT_WORKFLOW} artifact"
+anodize::kv commit "${COMMIT_SHA}"
+anodize::kv artifact "${FROM_ARTIFACT}"
 
 echo "::group::Resolving $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
 
@@ -100,9 +107,11 @@ fi
 
 if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
     echo "::error::Could not find a successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
+    anodize::err "no successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
     exit 1
 fi
 
 echo "::notice::Resolved artifact-run-id=auto to run ${run_id}"
 echo "::endgroup::"
+anodize::ok "resolved to run ${run_id}"
 echo "run_id=$run_id" >> "$GITHUB_OUTPUT"

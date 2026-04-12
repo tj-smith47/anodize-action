@@ -190,119 +190,7 @@ runs:
       env:
         EXPLICIT_INSTALL: ${{ inputs.install }}
         AUTO_INSTALL: ${{ steps.auto-detect.outputs.deps }}
-      run: |
-        set -e
-        # Merge explicit and auto-detected lists, dedupe
-        combined="${EXPLICIT_INSTALL}"
-        if [ -n "$AUTO_INSTALL" ]; then
-          if [ -n "$combined" ]; then
-            combined="${combined},${AUTO_INSTALL}"
-          else
-            combined="$AUTO_INSTALL"
-          fi
-        fi
-        # Dedupe (POSIX-safe; macOS ships bash 3.2 — no associative arrays)
-        IFS=',' read -ra RAW <<< "$combined"
-        DEPS=()
-        seen_list=""
-        for dep in "${RAW[@]}"; do
-          dep=$(echo "$dep" | xargs)
-          [ -z "$dep" ] && continue
-          case ",${seen_list}," in
-            *",${dep},"*) ;;
-            *)
-              DEPS+=("$dep")
-              seen_list="${seen_list:+${seen_list},}${dep}"
-              ;;
-          esac
-        done
-
-        echo "::group::Installing dependencies: ${DEPS[*]}"
-        for dep in "${DEPS[@]}"; do
-          echo "::group::Installing $dep"
-          case "$dep" in
-            nfpm)
-              case "$RUNNER_OS" in
-                Linux)
-                  echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list > /dev/null
-                  sudo apt-get update -q
-                  sudo apt-get install -yq nfpm
-                  ;;
-                macOS)  brew install goreleaser/tap/nfpm ;;
-                Windows) choco install nfpm -y --no-progress ;;
-              esac
-              ;;
-            makeself)
-              case "$RUNNER_OS" in
-                Linux)  sudo apt-get install -yq makeself ;;
-                macOS)  brew install makeself ;;
-                Windows)
-                  echo "::warning::makeself is not natively supported on Windows; skipping"
-                  ;;
-              esac
-              ;;
-            snapcraft)
-              case "$RUNNER_OS" in
-                Linux)  sudo snap install snapcraft --classic ;;
-                macOS)  brew install snapcraft ;;
-                Windows)
-                  echo "::warning::snapcraft is not natively supported on Windows; skipping"
-                  ;;
-              esac
-              ;;
-            rpmbuild)
-              case "$RUNNER_OS" in
-                Linux)  sudo apt-get install -yq rpm ;;
-                macOS)  brew install rpm ;;
-                Windows)
-                  echo "::warning::rpmbuild is not natively supported on Windows; skipping"
-                  ;;
-              esac
-              ;;
-            cosign)
-              case "$RUNNER_OS" in
-                Linux)
-                  curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /tmp/cosign
-                  sudo install /tmp/cosign /usr/local/bin/cosign
-                  ;;
-                macOS)  brew install cosign ;;
-                Windows) choco install cosign -y --no-progress ;;
-              esac
-              ;;
-            zig)
-              case "$RUNNER_OS" in
-                Linux)
-                  curl -sSfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o /tmp/zig.tar.xz
-                  sudo mkdir -p /opt/zig
-                  sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
-                  sudo ln -sf /opt/zig/zig /usr/local/bin/zig
-                  ;;
-                macOS)  brew install zig ;;
-                Windows) choco install zig -y --no-progress ;;
-              esac
-              ;;
-            cargo-zigbuild)
-              if ! command -v cargo > /dev/null 2>&1; then
-                echo "::error::cargo-zigbuild requires Rust; set install-rust: true"
-                exit 1
-              fi
-              cargo install --locked cargo-zigbuild
-              ;;
-            upx)
-              case "$RUNNER_OS" in
-                Linux)  sudo apt-get install -yq upx ;;
-                macOS)  brew install upx ;;
-                Windows) choco install upx -y --no-progress ;;
-              esac
-              ;;
-            *)
-              echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig, cargo-zigbuild, upx)"
-              exit 1
-              ;;
-          esac
-          echo "::endgroup::"
-        done
-        echo "::endgroup::"
+      run: "${GITHUB_ACTION_PATH}/scripts/install-deps.sh"
 
     # -------------------------------------------------------------------------
     # Key material
@@ -313,8 +201,10 @@ runs:
       env:
         GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
       run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         echo "$GPG_PRIVATE_KEY" | gpg --batch --import
         echo "::notice::GPG private key imported"
+        anodize::ok "GPG private key imported"
 
     - name: Write cosign key
       if: inputs.cosign-key != ''
@@ -323,9 +213,11 @@ runs:
       env:
         COSIGN_KEY_CONTENTS: ${{ inputs.cosign-key }}
       run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         printf '%s' "$COSIGN_KEY_CONTENTS" > cosign.key
         chmod 600 cosign.key
         echo "::notice::Cosign key written to cosign.key"
+        anodize::ok "cosign key written to cosign.key"
 
     # -------------------------------------------------------------------------
     # Installation — Path A: from workflow artifact
@@ -370,10 +262,13 @@ runs:
       env:
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         install_dir="${RUNNER_TOOL_CACHE}/anodize/artifact"
         chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
         echo "${install_dir}" >> "$GITHUB_PATH"
         echo "::notice::anodize installed from artifact to ${install_dir}"
+        anodize::verb Installed "anodize from artifact"
+        anodize::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
     # Installation — Path B: from GitHub release
@@ -386,10 +281,12 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         GH_TOKEN: ${{ github.token }}
       run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if [ "$INPUT_VERSION" = "latest" ]; then
           tag=$(gh api repos/tj-smith47/anodize/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
           if [ -z "$tag" ]; then
             echo "::error::Could not resolve latest anodize release"
+            anodize::err "could not resolve latest anodize release"
             exit 1
           fi
         else
@@ -400,6 +297,7 @@ runs:
         fi
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
         echo "::notice::Installing anodize $tag"
+        anodize::verb Installing "anodize ${tag}"
 
     - name: Download release
       if: inputs.from-artifact == '' && inputs.from-source != 'true'
@@ -411,10 +309,13 @@ runs:
         EXT: ${{ steps.platform.outputs.ext }}
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         version="${TAG#v}"
         archive="anodize-${version}-${OS}-${ARCH}.${EXT}"
         url="https://github.com/tj-smith47/anodize/releases/download/${TAG}/${archive}"
 
+        anodize::verb Downloading "${archive}"
+        anodize::detail "${url}"
         echo "::group::Downloading $url"
         tmpdir=$(mktemp -d)
         downloaded=false
@@ -424,14 +325,17 @@ runs:
             break
           fi
           echo "::warning::Download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
+          anodize::warn "download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
           sleep "$attempt"
         done
         if [ "$downloaded" != "true" ]; then
           echo "::error::Failed to download anodize ${TAG} from ${url} after 3 attempts"
+          anodize::err "failed to download anodize ${TAG} after 3 attempts"
           exit 1
         fi
         echo "::endgroup::"
 
+        anodize::verb Extracting "${archive}"
         echo "::group::Extracting"
         install_dir="${RUNNER_TOOL_CACHE}/anodize/${version}"
         mkdir -p "$install_dir"
@@ -446,6 +350,8 @@ runs:
         chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
         echo "${install_dir}" >> "$GITHUB_PATH"
         echo "::notice::anodize ${TAG} installed to ${install_dir}"
+        anodize::ok "anodize ${TAG} installed"
+        anodize::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
     # Installation — Path C: from source (bootstrap)
@@ -457,10 +363,13 @@ runs:
       env:
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if ! command -v cargo > /dev/null 2>&1; then
           echo "::error::from-source requires Rust; set install-rust: true"
+          anodize::err "from-source requires Rust; set install-rust: true"
           exit 1
         fi
+        anodize::verb Building "anodize from source"
         echo "::group::Building anodize from source"
         cargo build --release -p anodize
         install_dir="${RUNNER_TOOL_CACHE}/anodize/source"
@@ -470,6 +379,8 @@ runs:
         echo "${install_dir}" >> "$GITHUB_PATH"
         echo "::notice::anodize built from source and installed to ${install_dir}"
         echo "::endgroup::"
+        anodize::ok "anodize built from source"
+        anodize::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
     # Split matrix output — for users building a fan-out from config
@@ -502,7 +413,10 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         ANODIZE_ARGS: ${{ inputs.args }}
-      run: anodize $ANODIZE_ARGS
+      run: |
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        anodize::section "anodize ${ANODIZE_ARGS}"
+        anodize $ANODIZE_ARGS
 
     # -------------------------------------------------------------------------
     # Outputs
