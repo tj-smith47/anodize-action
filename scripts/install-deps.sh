@@ -139,7 +139,6 @@ install_upx() {
 
 for dep in "${DEPS[@]}"; do
     anodize::verb Installing "${dep}"
-    echo "::group::install ${dep}"
     case "$dep" in
         nfpm)           install_nfpm ;;
         makeself)       install_makeself ;;
@@ -155,6 +154,5 @@ for dep in "${DEPS[@]}"; do
             exit 1
             ;;
     esac
-    echo "::endgroup::"
     anodize::ok "${dep} installed"
 done
