@@ -51,6 +51,28 @@ fi
 
 anodize::section "Dependency installation (${#DEPS[@]})"
 
+# Batch apt installs for efficiency (one apt-get install call instead of N)
+APT_PKGS=()
+APT_NAMES=()
+apt_queue() {
+    APT_PKGS+=("$1")
+    APT_NAMES+=("$2")
+    anodize::detail "${2} queued for batch apt install"
+}
+apt_flush() {
+    [ "${#APT_PKGS[@]}" -eq 0 ] && return
+    anodize::verb Installing "apt batch: ${APT_NAMES[*]}"
+    if ! sudo apt-get install -yq "${APT_PKGS[@]}"; then
+        anodize::err "apt batch install failed for: ${APT_NAMES[*]}"
+        exit 1
+    fi
+    for name in "${APT_NAMES[@]}"; do
+        anodize::ok "${name} installed"
+    done
+    APT_PKGS=()
+    APT_NAMES=()
+}
+
 install_nfpm() {
     case "$RUNNER_OS" in
         Linux)
@@ -65,7 +87,7 @@ install_nfpm() {
 
 install_makeself() {
     case "$RUNNER_OS" in
-        Linux)   sudo apt-get install -yq makeself ;;
+        Linux)   apt_queue makeself makeself ;;
         macOS)   brew install makeself ;;
         Windows)
             echo "::warning::makeself is not natively supported on Windows; skipping"
@@ -87,7 +109,7 @@ install_snapcraft() {
 
 install_rpmbuild() {
     case "$RUNNER_OS" in
-        Linux)   sudo apt-get install -yq rpm ;;
+        Linux)   apt_queue rpm rpmbuild ;;
         macOS)   brew install rpm ;;
         Windows)
             echo "::warning::rpmbuild is not natively supported on Windows; skipping"
@@ -131,7 +153,7 @@ install_cargo_zigbuild() {
 
 install_upx() {
     case "$RUNNER_OS" in
-        Linux)   sudo apt-get install -yq upx ;;
+        Linux)   apt_queue upx upx ;;
         macOS)   brew install upx ;;
         Windows) choco install upx -y --no-progress ;;
     esac
@@ -139,6 +161,7 @@ install_upx() {
 
 for dep in "${DEPS[@]}"; do
     anodize::verb Installing "${dep}"
+    pre_queue=${#APT_PKGS[@]}
     case "$dep" in
         nfpm)           install_nfpm ;;
         makeself)       install_makeself ;;
@@ -154,5 +177,10 @@ for dep in "${DEPS[@]}"; do
             exit 1
             ;;
     esac
-    anodize::ok "${dep} installed"
+    # Only print "installed" for deps that ran immediately (not apt-queued).
+    [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && anodize::ok "${dep} installed"
 done
+
+# Flush any batched apt packages (makeself, rpm, upx queued above).
+# apt_flush prints its own success messages per package.
+apt_flush

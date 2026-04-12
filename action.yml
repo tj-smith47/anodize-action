@@ -291,21 +291,14 @@ runs:
           echo "run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Download artifact (same workflow)
-      if: inputs.from-artifact != '' && inputs.artifact-run-id == ''
+    - name: Download artifact
+      if: inputs.from-artifact != ''
       uses: actions/download-artifact@v4
       with:
         name: ${{ inputs.from-artifact }}
         path: ${{ runner.tool_cache }}/anodize/artifact
-
-    - name: Download artifact (cross-workflow)
-      if: inputs.from-artifact != '' && inputs.artifact-run-id != ''
-      uses: actions/download-artifact@v4
-      with:
-        name: ${{ inputs.from-artifact }}
-        path: ${{ runner.tool_cache }}/anodize/artifact
-        github-token: ${{ github.token }}
-        run-id: ${{ steps.resolve-run.outputs.run_id }}
+        github-token: ${{ inputs.artifact-run-id != '' && github.token || '' }}
+        run-id: ${{ steps.resolve-run.outputs.run_id || '' }}
 
     - name: Install from artifact
       if: inputs.from-artifact != ''
@@ -545,7 +538,24 @@ runs:
       run: |
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         anodize::section "anodize ${ANODIZE_ARGS}"
-        anodize $ANODIZE_ARGS
+        # Retry up to 3 times for transient failures (registry rate limits,
+        # network timeouts, Docker push auth expiry). Deterministic failures
+        # (config errors, compile failures) will fail identically each time
+        # but the cost of two extra 10s waits is low vs. a flaky release.
+        max_retries=3
+        attempt=1
+        while [ $attempt -le $max_retries ]; do
+          if anodize $ANODIZE_ARGS; then
+            break
+          fi
+          if [ $attempt -eq $max_retries ]; then
+            anodize::err "anodize failed after ${max_retries} attempts"
+            exit 1
+          fi
+          anodize::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
+          sleep 10
+          attempt=$((attempt + 1))
+        done
 
     # -------------------------------------------------------------------------
     # Outputs
@@ -585,7 +595,7 @@ runs:
           } >> "$GITHUB_OUTPUT"
 
           # Extract release URL if present
-          url=$(grep -o '"release_url"[^,}]*' "${dist}/metadata.json" 2>/dev/null | head -1 | sed 's/.*:\s*"\(.*\)"/\1/' || echo "")
+          url=$(jq -r '.release_url // empty' "${dist}/metadata.json" 2>/dev/null || echo "")
           echo "release-url=${url}" >> "$GITHUB_OUTPUT"
         fi
 

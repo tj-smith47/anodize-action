@@ -98,8 +98,10 @@ if [ -z "$run_id" ]; then
 fi
 
 if [ -z "$run_id" ]; then
-    # Slow path — poll for up to 5 minutes.
-    max_attempts=60  # 60 * 5s = 5 minutes
+    # Slow path — poll with exponential backoff (5s → 10s → 20s → 30s cap).
+    # 20 attempts × mostly 30s ≈ 9 min max wait (generous for CI overlap).
+    max_attempts=20
+    sleep_secs=5
     attempt=1
     while [ $attempt -le $max_attempts ]; do
         run_id=$(find_run '.conclusion=="success"')
@@ -122,9 +124,11 @@ if [ -z "$run_id" ]; then
             break
         fi
 
-        echo "::notice::Waiting for ${ARTIFACT_WORKFLOW} run on ${COMMIT_SHA} (attempt ${attempt}/${max_attempts})"
-        sleep 5
+        echo "::notice::Waiting for ${ARTIFACT_WORKFLOW} run on ${COMMIT_SHA} (attempt ${attempt}/${max_attempts}, next check in ${sleep_secs}s)"
+        sleep "$sleep_secs"
         attempt=$((attempt + 1))
+        next=$((sleep_secs * 2))
+        sleep_secs=$((next > 30 ? 30 : next))
     done
 fi
 
