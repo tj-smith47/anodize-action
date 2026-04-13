@@ -553,6 +553,13 @@ runs:
             exit 1
           fi
           anodize::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
+          # Clean generated artifacts between retries to prevent "already exists"
+          # collisions.  Preserve split context files (*/context.json) so --merge
+          # can still find them.
+          if [ -d "./dist" ]; then
+            find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
+            find ./dist -mindepth 2 -not -name 'context.json' -type f -delete 2>/dev/null || true
+          fi
           sleep 10
           attempt=$((attempt + 1))
         done
