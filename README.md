@@ -3,9 +3,11 @@
 GitHub Action for [Anodize](https://github.com/tj-smith47/anodize), a
 Rust-native release automation tool inspired by GoReleaser.
 
-The action installs anodize, sets up any dependencies your release pipeline
-needs (nfpm, makeself, snapcraft, rpmbuild, cosign, zig, upx...), imports
-signing keys, and runs anodize — all in one step.
+The action installs anodize (cached per version), auto-installs pipeline
+dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
+cargo-zigbuild, upx) based on your `.anodize.yaml`, imports signing keys,
+logs in to container registries, handles split/merge artifact plumbing, and
+runs any anodize subcommand — all in one step.
 
 ## Usage
 
@@ -19,9 +21,7 @@ signing keys, and runs anodize — all in one step.
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### Full release with auto-installed dependencies
-
-Let the action parse your `.anodize.yaml` and install everything you need:
+### Auto-install dependencies from config
 
 ```yaml
 - uses: tj-smith47/anodize-action@v1
@@ -36,105 +36,11 @@ Let the action parse your `.anodize.yaml` and install everything you need:
     COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 ```
 
-### Explicit dependency list
+### Split/merge cross-platform build
 
-```yaml
-- uses: tj-smith47/anodize-action@v1
-  with:
-    install: nfpm,makeself,snapcraft,rpmbuild,cosign
-    gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-    args: release --merge
-```
-
-### Cross-compile build jobs
-
-```yaml
-- uses: tj-smith47/anodize-action@v1
-  with:
-    install-rust: true
-    install: zig,cargo-zigbuild,upx
-    args: release --split --clean
-```
-
-### Specific version
-
-```yaml
-- uses: tj-smith47/anodize-action@v1
-  with:
-    version: v0.1.1
-    args: release
-```
-
-### Install only
-
-```yaml
-- uses: tj-smith47/anodize-action@v1
-  with:
-    install-only: true
-
-- run: anodize check
-- run: anodize release --snapshot
-```
-
-### Reuse CI-built binary (cross-workflow)
-
-If your CI workflow builds and uploads anodize binaries per platform, a
-separate Release workflow (e.g. triggered by a tag) can download them instead
-of rebuilding from source. Set `artifact-run-id: auto` to automatically find
-the latest successful CI run for the current commit:
-
-```yaml
-# CI workflow (ci.yml) — test + upload a reusable anodize binary
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
-      - run: cargo build --release -p anodize
-      - uses: actions/upload-artifact@v4
-        with:
-          name: anodize-linux
-          path: target/release/anodize
-```
-
-```yaml
-# Release workflow (release.yml) — reuse CI binary, then run release
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
-        with:
-          from-artifact: anodize-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          auto-install: true
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-### Bootstrap from source
-
-When you need anodize built on the current runner (e.g. the CI-provided
-artifact is for a different platform) set `from-source: true`:
-
-```yaml
-- uses: tj-smith47/anodize-action@v1
-  with:
-    install-rust: true
-    from-source: true
-    install: zig,cargo-zigbuild,upx
-    args: release --split --clean
-```
-
-### Split/merge cross-platform release
+`upload-dist` and `download-dist` replace the manual
+`actions/upload-artifact` / `actions/download-artifact` pair for split
+builds.
 
 ```yaml
 jobs:
@@ -151,13 +57,10 @@ jobs:
         with:
           install-rust: true
           install: zig,cargo-zigbuild,upx
+          upload-dist: true                 # uploads dist/ as dist-$RUNNER_OS
           args: release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ runner.os }}
-          path: dist/
 
   release:
     needs: build
@@ -166,56 +69,172 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          pattern: dist-*
-          merge-multiple: true
       - uses: tj-smith47/anodize-action@v1
         with:
           auto-install: true
+          download-dist: true               # downloads + merges dist-* artifacts
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           args: release --merge
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 ```
 
+### Tag-triggered monorepo release (resolve tag → crate)
+
+```yaml
+on:
+  push:
+    tags: ["*-v*"]
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      crate: ${{ steps.a.outputs.workspace }}
+      has-builds: ${{ steps.a.outputs.has-builds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodize-action@v1
+        id: a
+        with:
+          resolve-workspace: true
+          install-only: true
+
+  release:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          auto-install: true
+          docker-registry: ghcr.io
+          docker-password: ${{ secrets.GITHUB_TOKEN }}
+          args: release --crate ${{ needs.resolve.outputs.crate }} --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Reuse CI-built binary across workflows
+
+```yaml
+# ci.yml — build and upload anodize once per commit
+- uses: actions/checkout@v4
+- uses: dtolnay/rust-toolchain@stable
+- run: cargo build --release -p anodize
+- uses: actions/upload-artifact@v4
+  with:
+    name: anodize-linux
+    path: target/release/anodize
+
+# release.yml — reuse the artifact
+- uses: tj-smith47/anodize-action@v1
+  with:
+    from-artifact: anodize-linux
+    artifact-run-id: auto                   # resolves latest ci.yml run for this SHA
+    artifact-workflow: ci.yml
+    auto-install: true
+    args: release --clean
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Bootstrap from source
+
+When `from-artifact` is only available for one platform and the current
+runner needs a platform-native binary:
+
+```yaml
+- uses: tj-smith47/anodize-action@v1
+  with:
+    install-rust: true
+    from-source: true
+    install: zig,cargo-zigbuild,upx
+    args: release --split --clean
+```
+
+### Install only, drive anodize yourself
+
+Useful for multi-crate loops, tagging, and ad-hoc subcommands:
+
+```yaml
+- uses: tj-smith47/anodize-action@v1
+  with:
+    install-only: true
+
+- run: anodize check
+- run: anodize healthcheck
+- run: |
+    for crate in my-core my-cli my-operator; do
+      anodize tag --crate "$crate" || true
+    done
+    git push origin HEAD
+```
+
 ## Inputs
 
-### Installation source (choose one)
+### Installation source
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodize version to install from GitHub releases (e.g. `v0.1.1`). |
-| `from-artifact` | | Download pre-built binary from a workflow artifact instead of releases. |
-| `artifact-run-id` | | Workflow run ID for cross-workflow downloads. Use `auto` to resolve from the current commit SHA. |
+| `version` | `latest` | Anodize version to install from GitHub releases (e.g. `v0.1.1`). Ignored when `from-artifact` or `from-source` is set. |
+| `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodize-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
+| `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
-| `from-source` | `false` | Build anodize from source in the workdir. Requires Rust (`install-rust: true`). |
+| `from-source` | `false` | Build anodize from source in the workdir. Requires a Rust toolchain (`install-rust: true`). |
 
 ### Dependency setup
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps to install: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`. |
 | `auto-install` | `false` | Parse `.anodize.yaml` and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
+
+### Workspace resolution (monorepo)
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `resolve-workspace` | `false` | Run `anodize resolve-tag $GITHUB_REF_NAME` and expose the result via the `workspace`, `crate-path`, and `has-builds` outputs. |
+
+### Docker setup
+
+When `docker-registry` is set, the action logs in to the registry, configures QEMU (for emulated platforms), and sets up Docker Buildx (for multi-platform builds).
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `docker-registry` | | Container registry hostname (e.g. `ghcr.io`, `docker.io`). |
+| `docker-username` | `github.actor` | Registry username. |
+| `docker-password` | | Registry password or token (commonly `secrets.GITHUB_TOKEN` for ghcr.io). |
+
+### Split / merge artifact management
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `upload-dist` | `false` | After running anodize, upload `dist/` as a workflow artifact named `dist-$RUNNER_OS`. |
+| `download-dist` | `false` | Before running anodize, download all `dist-*` artifacts and merge them into `dist/`. Fails if no split context files are found. |
 
 ### Key material
 
 | Input | Description |
 |-------|-------------|
-| `gpg-private-key` | GPG private key contents to import. |
-| `cosign-key` | Cosign private key contents (written to `cosign.key`). |
+| `gpg-private-key` | GPG private key contents. Imported via `gpg --batch --import`. |
+| `cosign-key` | Cosign private key contents. Written to `cosign.key` with mode `0600`. Pair with `COSIGN_PASSWORD` in env. |
 
 ### Execution
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `args` | | Arguments to pass to anodize (e.g. `release --snapshot`). |
-| `workdir` | `.` | Working directory. |
-| `install-only` | `false` | Only install, don't run. |
+| `workdir` | `.` | Working directory (relative to repo root). |
+| `install-only` | `false` | Only install anodize (and any requested dependencies/keys); skip running. |
 
 ## Outputs
 
@@ -223,8 +242,18 @@ jobs:
 |--------|-------------|
 | `artifacts` | Contents of `dist/artifacts.json` |
 | `metadata` | Contents of `dist/metadata.json` |
-| `release-url` | URL of the created GitHub release (from metadata) |
-| `split-matrix` | JSON matrix for `strategy.matrix` covering configured build targets |
+| `release-url` | URL of the created GitHub release (extracted from metadata) |
+| `workspace` | Crate name resolved from the triggering tag (requires `resolve-workspace: true`) |
+| `crate-path` | Path to the resolved crate directory (requires `resolve-workspace: true`) |
+| `has-builds` | Whether the resolved crate has binary builds configured (requires `resolve-workspace: true`) |
+| `split-matrix` | JSON matrix for `strategy.matrix` covering configured build targets (requires `install-only: true`) |
+
+## Retry behavior
+
+The `Run anodize` step retries up to 3 times for transient failures (registry
+rate limits, Docker push auth expiry, network blips). Between retries it
+prunes generated artifacts from `dist/` while preserving split context files
+(`dist/*/context.json`) so `--merge` can still find them.
 
 ## License
 
