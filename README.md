@@ -5,9 +5,10 @@ Rust-native release automation tool inspired by GoReleaser.
 
 The action installs anodize (cached per version), auto-installs pipeline
 dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
-cargo-zigbuild, upx) based on your `.anodize.yaml`, imports signing keys,
-logs in to container registries, handles split/merge artifact plumbing, and
-runs any anodize subcommand — all in one step.
+cargo-zigbuild, upx, nsis, create-dmg, flatpak) based on your
+`.anodize.yaml`, imports signing keys, logs in to container registries,
+handles split/merge artifact plumbing, and runs any anodize subcommand —
+all in one step.
 
 ## Usage
 
@@ -184,7 +185,7 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodize version to install from GitHub releases (e.g. `v0.1.1`). Ignored when `from-artifact` or `from-source` is set. |
+| `version` | `latest` | Anodize version to install from GitHub releases — exact tag (e.g. `v0.1.1`) or the literal `latest`. **No semver ranges** (`~> v2`) or `nightly` alias unlike goreleaser-action. Ignored when `from-artifact` or `from-source` is set. |
 | `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodize-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
@@ -194,9 +195,27 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`. |
 | `auto-install` | `false` | Parse `.anodize.yaml` and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
+
+When `auto-install: true`, the action scans `.anodize.yaml` for the
+following top-level keys and installs the matching tool:
+
+| `.anodize.yaml` key | Installs | Notes |
+|---------------------|----------|-------|
+| `nfpm:` | `nfpm` | |
+| `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
+| `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). |
+| `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
+| `binary_signs:` / `docker_signs:` | `cosign` | |
+| `upx:` | `upx` | |
+| `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
+| `dmgs:` | `create-dmg` | macOS only (warns on other runners). |
+| `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
+| `pkgs:` | _none_ | Warns if runner is not macOS. |
+| `msis:` | _none_ | Warns if runner is not Windows. |
+| `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
 
 ### Workspace resolution (monorepo)
 

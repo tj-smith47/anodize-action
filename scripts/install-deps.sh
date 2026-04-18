@@ -6,7 +6,7 @@
 # each requested dep via the platform-native package manager.
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
-# cargo-zigbuild, upx.
+# cargo-zigbuild, upx, nsis, create-dmg, flatpak.
 #
 # Called from action.yml; expects $GITHUB_ACTION_PATH to point at the
 # action root so we can source scripts/lib-colors.sh.
@@ -73,6 +73,39 @@ apt_flush() {
     APT_NAMES=()
 }
 
+skip_unsupported_os() {
+    local tool="$1"
+    local reason="${2:-not natively supported on ${RUNNER_OS}}"
+    echo "::warning::${tool} is ${reason}; skipping"
+    anodize::warn "${tool} is ${reason}; skipping"
+}
+
+# brew_install <formula> <version_env_var>
+# If the named env var is set and non-empty, pins the formula to `formula@VERSION`.
+brew_install() {
+    local formula="$1"
+    local var="$2"
+    local version="${!var:-}"
+    if [ -n "$version" ]; then
+        brew install "${formula}@${version}"
+    else
+        brew install "$formula"
+    fi
+}
+
+# choco_install <package> <version_env_var>
+# If the named env var is set and non-empty, passes --version=VERSION to choco.
+choco_install() {
+    local pkg="$1"
+    local var="$2"
+    local version="${!var:-}"
+    if [ -n "$version" ]; then
+        choco install "$pkg" -y --no-progress --version="$version"
+    else
+        choco install "$pkg" -y --no-progress
+    fi
+}
+
 install_nfpm() {
     case "$RUNNER_OS" in
         Linux)
@@ -80,65 +113,88 @@ install_nfpm() {
             sudo apt-get update -q
             sudo apt-get install -yq nfpm
             ;;
-        macOS)   brew install goreleaser/tap/nfpm ;;
-        Windows) choco install nfpm -y --no-progress ;;
+        macOS)   brew_install goreleaser/tap/nfpm NFPM_VERSION ;;
+        Windows) choco_install nfpm NFPM_VERSION ;;
     esac
 }
 
 install_makeself() {
     case "$RUNNER_OS" in
         Linux)   apt_queue makeself makeself ;;
-        macOS)   brew install makeself ;;
-        Windows)
-            echo "::warning::makeself is not natively supported on Windows; skipping"
-            anodize::warn "makeself is not natively supported on Windows; skipping"
-            ;;
+        macOS)   brew_install makeself MAKESELF_VERSION ;;
+        Windows) skip_unsupported_os makeself ;;
     esac
 }
 
 install_snapcraft() {
     case "$RUNNER_OS" in
         Linux)   sudo snap install snapcraft --classic ;;
-        macOS)   brew install snapcraft ;;
-        Windows)
-            echo "::warning::snapcraft is not natively supported on Windows; skipping"
-            anodize::warn "snapcraft is not natively supported on Windows; skipping"
-            ;;
+        macOS)   brew_install snapcraft SNAPCRAFT_VERSION ;;
+        Windows) skip_unsupported_os snapcraft ;;
     esac
 }
 
 install_rpmbuild() {
     case "$RUNNER_OS" in
         Linux)   apt_queue rpm rpmbuild ;;
-        macOS)   brew install rpm ;;
-        Windows)
-            echo "::warning::rpmbuild is not natively supported on Windows; skipping"
-            anodize::warn "rpmbuild is not natively supported on Windows; skipping"
-            ;;
+        macOS)   brew_install rpm RPM_VERSION ;;
+        Windows) skip_unsupported_os rpmbuild ;;
     esac
 }
 
 install_cosign() {
     case "$RUNNER_OS" in
         Linux)
-            curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /tmp/cosign
+            local version="${COSIGN_VERSION:-v2.4.1}"
+            local base="https://github.com/sigstore/cosign/releases/download/${version}"
+            local bin="cosign-linux-amd64"
+            curl -sSfL "${base}/${bin}" -o /tmp/cosign
+            curl -sSfL "${base}/${bin}-keyless.pem" -o /tmp/cosign.pem
+            curl -sSfL "${base}/${bin}-keyless.sig" -o /tmp/cosign.sig
+            curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
+            # SHA256 verification — bootstraps trust without requiring cosign-to-verify-cosign.
+            expected=$(grep " ${bin}\$" /tmp/cosign_checksums.txt | awk '{print $1}')
+            if [ -z "$expected" ]; then
+                echo "::error::cosign checksum entry for ${bin} not found in cosign_checksums.txt (${version})"
+                anodize::err "cosign checksum entry for ${bin} not found (${version})"
+                exit 1
+            fi
+            echo "${expected}  /tmp/cosign" | sha256sum -c -
             sudo install /tmp/cosign /usr/local/bin/cosign
+            # Post-install keyless signature verification (best-effort — won't block install).
+            COSIGN_EXPERIMENTAL=1 cosign verify-blob \
+                --certificate /tmp/cosign.pem \
+                --signature /tmp/cosign.sig \
+                --certificate-identity-regexp 'https://github\.com/sigstore/cosign/.*' \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                /tmp/cosign || anodize::warn "cosign keyless signature verification failed (SHA256 already verified)"
             ;;
-        macOS)   brew install cosign ;;
-        Windows) choco install cosign -y --no-progress ;;
+        macOS)   brew_install cosign COSIGN_VERSION ;;
+        Windows) choco_install cosign COSIGN_VERSION ;;
     esac
 }
 
 install_zig() {
     case "$RUNNER_OS" in
         Linux)
-            curl -sSfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o /tmp/zig.tar.xz
+            local version="${ZIG_VERSION:-0.13.0}"
+            local tarball="zig-linux-x86_64-${version}.tar.xz"
+            local base="https://ziglang.org/download/${version}"
+            curl -sSfL "${base}/${tarball}" -o /tmp/zig.tar.xz
+            curl -sSfL "${base}/${tarball}.sha256" -o /tmp/zig.tar.xz.sha256
+            expected=$(awk '{print $1}' /tmp/zig.tar.xz.sha256)
+            if [ -z "$expected" ]; then
+                echo "::error::zig sha256 sidecar empty for ${tarball}"
+                anodize::err "zig sha256 sidecar empty for ${tarball}"
+                exit 1
+            fi
+            echo "${expected}  /tmp/zig.tar.xz" | sha256sum -c -
             sudo mkdir -p /opt/zig
             sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
             sudo ln -sf /opt/zig/zig /usr/local/bin/zig
             ;;
-        macOS)   brew install zig ;;
-        Windows) choco install zig -y --no-progress ;;
+        macOS)   brew_install zig ZIG_VERSION ;;
+        Windows) choco_install zig ZIG_VERSION ;;
     esac
 }
 
@@ -154,8 +210,30 @@ install_cargo_zigbuild() {
 install_upx() {
     case "$RUNNER_OS" in
         Linux)   apt_queue upx upx ;;
-        macOS)   brew install upx ;;
-        Windows) choco install upx -y --no-progress ;;
+        macOS)   brew_install upx UPX_VERSION ;;
+        Windows) choco_install upx UPX_VERSION ;;
+    esac
+}
+
+install_nsis() {
+    case "$RUNNER_OS" in
+        Linux)   apt_queue nsis nsis ;;
+        macOS)   brew_install makensis NSIS_VERSION ;;
+        Windows) choco_install nsis NSIS_VERSION ;;
+    esac
+}
+
+install_create_dmg() {
+    case "$RUNNER_OS" in
+        macOS)   brew_install create-dmg CREATE_DMG_VERSION ;;
+        Linux|Windows) skip_unsupported_os create-dmg "macOS-only (dmgs: config requires a macOS runner)" ;;
+    esac
+}
+
+install_flatpak() {
+    case "$RUNNER_OS" in
+        Linux)   apt_queue flatpak-builder flatpak-builder ;;
+        macOS|Windows) skip_unsupported_os flatpak-builder "Linux-only (flatpaks: config requires a Linux runner)" ;;
     esac
 }
 
@@ -171,8 +249,11 @@ for dep in "${DEPS[@]}"; do
         zig)            install_zig ;;
         cargo-zigbuild) install_cargo_zigbuild ;;
         upx)            install_upx ;;
+        nsis)           install_nsis ;;
+        create-dmg)     install_create_dmg ;;
+        flatpak)        install_flatpak ;;
         *)
-            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig, cargo-zigbuild, upx)"
+            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak)"
             anodize::err "unknown dependency: $dep"
             exit 1
             ;;

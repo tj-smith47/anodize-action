@@ -11,7 +11,10 @@ inputs:
   # ---------------------------------------------------------------------------
   version:
     description: >
-      Anodize version to install from GitHub releases (e.g. "v0.1.1", "latest").
+      Anodize version to install from GitHub releases. Accepts an exact tag
+      (e.g. "v0.1.1") or the literal "latest". Unlike goreleaser-action, this
+      input does NOT accept semver ranges such as "~> v2" or the "nightly"
+      alias — pass an explicit tag or use `from-artifact` / `from-source`.
       Ignored when `from-artifact` or `from-source` is set.
     default: 'latest'
     required: false
@@ -56,8 +59,9 @@ inputs:
   auto-install:
     description: >
       Parse `.anodize.yaml` in the workdir and automatically install the
-      dependencies needed by the configured stages (nfpm for linux_packages,
-      makeself, snapcraft, rpmbuild for srpm, cosign for binary_signs, etc.).
+      dependencies needed by the configured stages (nfpm, makeself, snapcraft,
+      rpmbuild for srpm, cosign for binary_signs/docker_signs, nsis, create-dmg,
+      flatpak-builder, upx, zig+cargo-zigbuild for cross-compilation).
     default: 'false'
     required: false
   install-rust:
@@ -125,7 +129,10 @@ inputs:
   # Execution
   # ---------------------------------------------------------------------------
   args:
-    description: 'Arguments to pass to anodize (e.g. "release --snapshot").'
+    description: >
+      Arguments to pass to anodize (e.g. "release --snapshot"). Do NOT embed
+      secrets or tokens here — this value appears in workflow logs. Pass
+      secrets via the `env:` block (e.g. `GITHUB_TOKEN`, `COSIGN_PASSWORD`).
     required: false
   workdir:
     description: 'Working directory (below repository root).'
@@ -172,6 +179,7 @@ runs:
       id: platform
       shell: bash
       run: |
+        set -euo pipefail
         case "$RUNNER_OS" in
           Linux)   os=linux ;;
           macOS)   os=darwin ;;
@@ -198,7 +206,7 @@ runs:
     # -------------------------------------------------------------------------
     - name: Install Rust toolchain
       if: inputs.install-rust == 'true'
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
     # -------------------------------------------------------------------------
     # Dependency installation
@@ -209,6 +217,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.workdir }}
       run: |
+        set -euo pipefail
         deps=()
         cfg=""
         for candidate in .anodize.yaml .anodize.yml anodize.yaml anodize.yml; do
@@ -223,14 +232,24 @@ runs:
           exit 0
         fi
         # Match top-level keys that signal dependency needs
-        grep -qE '^linux_packages:|^nfpms:|^  - name: anodize-stage-nfpm' "$cfg" && deps+=("nfpm") || true
+        grep -qE '^nfpm:|^  - name: anodize-stage-nfpm' "$cfg" && deps+=("nfpm") || true
         grep -qE '^makeselfs:' "$cfg" && deps+=("makeself") || true
         grep -qE '^snapcrafts:' "$cfg" && deps+=("snapcraft") || true
         grep -qE '^srpm:' "$cfg" && deps+=("rpmbuild") || true
         grep -qE '^binary_signs:|^docker_signs:' "$cfg" && deps+=("cosign") || true
         grep -qE '^upx:' "$cfg" && deps+=("upx") || true
+        grep -qE '^nsis:' "$cfg" && deps+=("nsis") || true
+        grep -qE '^dmgs:' "$cfg" && deps+=("create-dmg") || true
+        grep -qE '^flatpaks:' "$cfg" && deps+=("flatpak") || true
+        # pkgs/msis can't be cross-built: warn when config asks for them on the wrong runner.
+        if grep -qE '^pkgs:' "$cfg" && [ "${RUNNER_OS:-}" != "macOS" ]; then
+          echo "::warning::auto-install: pkgs: requires macOS runner (got ${RUNNER_OS:-unset}); skipping"
+        fi
+        if grep -qE '^msis:' "$cfg" && [ "${RUNNER_OS:-}" != "Windows" ]; then
+          echo "::warning::auto-install: msis: requires Windows runner (got ${RUNNER_OS:-unset}); skipping"
+        fi
         # Cross-compilation needs zig + cargo-zigbuild
-        grep -qE 'cross:.*auto|cross:.*zigbuild' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
+        grep -qE '^[[:space:]]*cross:[[:space:]]*(auto|zigbuild)[[:space:]]*$' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
         joined=$(IFS=','; echo "${deps[*]}")
         echo "::notice::auto-install detected: ${joined:-none}"
         echo "deps=$joined" >> "$GITHUB_OUTPUT"
@@ -252,7 +271,13 @@ runs:
       env:
         GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        # Defence-in-depth: mask each line of the key in case auto-masking was
+        # lost crossing a reusable-workflow boundary.
+        while IFS= read -r line; do
+          [ -n "$line" ] && echo "::add-mask::$line"
+        done <<< "$GPG_PRIVATE_KEY"
         echo "$GPG_PRIVATE_KEY" | gpg --batch --import
         echo "::notice::GPG private key imported"
         anodize::ok "GPG private key imported"
@@ -264,7 +289,13 @@ runs:
       env:
         COSIGN_KEY_CONTENTS: ${{ inputs.cosign-key }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        # Defence-in-depth: mask each line of the key in case auto-masking was
+        # lost crossing a reusable-workflow boundary.
+        while IFS= read -r line; do
+          [ -n "$line" ] && echo "::add-mask::$line"
+        done <<< "$COSIGN_KEY_CONTENTS"
         printf '%s' "$COSIGN_KEY_CONTENTS" > cosign.key
         chmod 600 cosign.key
         echo "::notice::Cosign key written to cosign.key"
@@ -285,6 +316,7 @@ runs:
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ github.sha }}
       run: |
+        set -euo pipefail
         if [ "$ARTIFACT_RUN_ID" = "auto" ]; then
           "${GITHUB_ACTION_PATH}/scripts/resolve-artifact-run.sh"
         else
@@ -293,7 +325,7 @@ runs:
 
     - name: Download artifact
       if: inputs.from-artifact != ''
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: ${{ inputs.from-artifact }}
         path: ${{ runner.tool_cache }}/anodize/artifact
@@ -306,6 +338,7 @@ runs:
       env:
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         install_dir="${RUNNER_TOOL_CACHE}/anodize/artifact"
         chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
@@ -325,6 +358,7 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         GH_TOKEN: ${{ github.token }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if [ "$INPUT_VERSION" = "latest" ]; then
           tag=$(gh api repos/tj-smith47/anodize/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
@@ -334,9 +368,19 @@ runs:
             exit 1
           fi
         else
+          if [[ "$INPUT_VERSION" =~ ^(~\>|\^|\>=|\<=|\>|\<)|nightly ]]; then
+            echo "::error::version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
+            anodize::err "version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
+            exit 1
+          fi
           tag="$INPUT_VERSION"
           if [[ ! "$tag" =~ ^v ]]; then
             tag="v$tag"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$ ]]; then
+            echo "::error::version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
+            anodize::err "version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
+            exit 1
           fi
         fi
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -353,6 +397,7 @@ runs:
         EXT: ${{ steps.platform.outputs.ext }}
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         version="${TAG#v}"
         archive="anodize-${version}-${OS}-${ARCH}.${EXT}"
@@ -407,6 +452,7 @@ runs:
       env:
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if ! command -v cargo > /dev/null 2>&1; then
           echo "::error::from-source requires Rust; set install-rust: true"
@@ -430,13 +476,14 @@ runs:
     # Workspace resolution (monorepo tag → crate)
     # -------------------------------------------------------------------------
     - name: Resolve workspace from tag
-      if: inputs.resolve-workspace == 'true'
+      if: inputs.resolve-workspace == 'true' && github.ref_type == 'tag'
       id: resolve-workspace
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
         TAG: ${{ github.ref_name }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if ! command -v anodize > /dev/null 2>&1; then
           echo "::error::resolve-workspace requires anodize to be installed"
@@ -465,7 +512,7 @@ runs:
     # -------------------------------------------------------------------------
     - name: Log in to container registry
       if: inputs.docker-registry != ''
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
       with:
         registry: ${{ inputs.docker-registry }}
         username: ${{ inputs.docker-username || github.actor }}
@@ -473,18 +520,18 @@ runs:
 
     - name: Set up QEMU
       if: inputs.docker-registry != ''
-      uses: docker/setup-qemu-action@v3
+      uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
     - name: Set up Docker Buildx
       if: inputs.docker-registry != ''
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
     # -------------------------------------------------------------------------
     # Download split artifacts (for merge jobs)
     # -------------------------------------------------------------------------
     - name: Download split artifacts
       if: inputs.download-dist == 'true'
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         path: ${{ inputs.workdir }}/dist/
         pattern: dist-*
@@ -495,6 +542,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.workdir }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         count=$(find dist -name context.json -type f 2>/dev/null | wc -l)
         if [ "$count" -eq 0 ]; then
@@ -513,6 +561,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.workdir }}
       run: |
+        set -euo pipefail
         # Produce a JSON matrix of { os, target, artifact } derived from
         # anodize's configured build targets. Only runs when install-only.
         if ! command -v anodize > /dev/null 2>&1; then
@@ -536,8 +585,11 @@ runs:
       env:
         ANODIZE_ARGS: ${{ inputs.args }}
       run: |
+        set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        anodize::section "anodize ${ANODIZE_ARGS}"
+        # Don't echo ANODIZE_ARGS — users pass tokens/flags via `inputs.args`
+        # and GitHub Actions only auto-masks secrets registered with `::add-mask::`.
+        anodize::section "anodize"
         # Retry up to 3 times for transient failures (registry rate limits,
         # network timeouts, Docker push auth expiry). Deterministic failures
         # (config errors, compile failures) will fail identically each time
@@ -545,6 +597,10 @@ runs:
         max_retries=3
         attempt=1
         while [ $attempt -le $max_retries ]; do
+          # shellcheck disable=SC2086
+          # ANODIZE_ARGS is intentionally unquoted — users pass multiple flags
+          # separated by whitespace via `inputs.args`, and we rely on word
+          # splitting to forward them as distinct argv entries.
           if anodize $ANODIZE_ARGS; then
             break
           fi
@@ -582,6 +638,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.workdir }}
       run: |
+        set -euo pipefail
         dist="dist"
         for cfg in .anodize.yaml .anodize.yml anodize.yaml anodize.yml; do
           if [ -f "$cfg" ]; then
@@ -620,7 +677,7 @@ runs:
     # -------------------------------------------------------------------------
     - name: Upload split artifacts
       if: inputs.upload-dist == 'true'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: dist-${{ runner.os }}
         path: ${{ inputs.workdir }}/dist/
