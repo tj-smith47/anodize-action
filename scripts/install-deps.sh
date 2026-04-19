@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-deps.sh — install anodize pipeline dependencies.
+# install-deps.sh — install anodizer pipeline dependencies.
 #
 # Accepts a comma-separated list from the $EXPLICIT_INSTALL env var, merges
 # with $AUTO_INSTALL (from the auto-detect step), dedupes, and installs
@@ -45,11 +45,11 @@ for dep in "${RAW[@]}"; do
 done
 
 if [ "${#DEPS[@]}" -eq 0 ]; then
-    anodize::detail "no dependencies requested"
+    anodizer::detail "no dependencies requested"
     exit 0
 fi
 
-anodize::section "Dependency installation (${#DEPS[@]})"
+anodizer::section "Dependency installation (${#DEPS[@]})"
 
 # Batch apt installs for efficiency (one apt-get install call instead of N)
 APT_PKGS=()
@@ -57,17 +57,17 @@ APT_NAMES=()
 apt_queue() {
     APT_PKGS+=("$1")
     APT_NAMES+=("$2")
-    anodize::detail "${2} queued for batch apt install"
+    anodizer::detail "${2} queued for batch apt install"
 }
 apt_flush() {
     [ "${#APT_PKGS[@]}" -eq 0 ] && return
-    anodize::verb Installing "apt batch: ${APT_NAMES[*]}"
+    anodizer::verb Installing "apt batch: ${APT_NAMES[*]}"
     if ! sudo apt-get install -yq "${APT_PKGS[@]}"; then
-        anodize::err "apt batch install failed for: ${APT_NAMES[*]}"
+        anodizer::err "apt batch install failed for: ${APT_NAMES[*]}"
         exit 1
     fi
     for name in "${APT_NAMES[@]}"; do
-        anodize::ok "${name} installed"
+        anodizer::ok "${name} installed"
     done
     APT_PKGS=()
     APT_NAMES=()
@@ -77,7 +77,7 @@ skip_unsupported_os() {
     local tool="$1"
     local reason="${2:-not natively supported on ${RUNNER_OS}}"
     echo "::warning::${tool} is ${reason}; skipping"
-    anodize::warn "${tool} is ${reason}; skipping"
+    anodizer::warn "${tool} is ${reason}; skipping"
 }
 
 # brew_install <formula> <version_env_var>
@@ -156,7 +156,7 @@ install_cosign() {
             expected=$(grep " ${bin}\$" /tmp/cosign_checksums.txt | awk '{print $1}')
             if [ -z "$expected" ]; then
                 echo "::error::cosign checksum entry for ${bin} not found in cosign_checksums.txt (${version})"
-                anodize::err "cosign checksum entry for ${bin} not found (${version})"
+                anodizer::err "cosign checksum entry for ${bin} not found (${version})"
                 exit 1
             fi
             echo "${expected}  /tmp/cosign" | sha256sum -c -
@@ -167,7 +167,7 @@ install_cosign() {
                 --signature /tmp/cosign.sig \
                 --certificate-identity-regexp 'https://github\.com/sigstore/cosign/.*' \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                /tmp/cosign || anodize::warn "cosign keyless signature verification failed (SHA256 already verified)"
+                /tmp/cosign || anodizer::warn "cosign keyless signature verification failed (SHA256 already verified)"
             ;;
         macOS)   brew_install cosign COSIGN_VERSION ;;
         Windows) choco_install cosign COSIGN_VERSION ;;
@@ -185,7 +185,7 @@ install_zig() {
             expected=$(awk '{print $1}' /tmp/zig.tar.xz.sha256)
             if [ -z "$expected" ]; then
                 echo "::error::zig sha256 sidecar empty for ${tarball}"
-                anodize::err "zig sha256 sidecar empty for ${tarball}"
+                anodizer::err "zig sha256 sidecar empty for ${tarball}"
                 exit 1
             fi
             echo "${expected}  /tmp/zig.tar.xz" | sha256sum -c -
@@ -201,7 +201,7 @@ install_zig() {
 install_cargo_zigbuild() {
     if ! command -v cargo > /dev/null 2>&1; then
         echo "::error::cargo-zigbuild requires Rust; set install-rust: true"
-        anodize::err "cargo-zigbuild requires Rust; set install-rust: true"
+        anodizer::err "cargo-zigbuild requires Rust; set install-rust: true"
         exit 1
     fi
     cargo install --locked cargo-zigbuild
@@ -238,7 +238,7 @@ install_flatpak() {
 }
 
 for dep in "${DEPS[@]}"; do
-    anodize::verb Installing "${dep}"
+    anodizer::verb Installing "${dep}"
     pre_queue=${#APT_PKGS[@]}
     case "$dep" in
         nfpm)           install_nfpm ;;
@@ -254,12 +254,12 @@ for dep in "${DEPS[@]}"; do
         flatpak)        install_flatpak ;;
         *)
             echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak)"
-            anodize::err "unknown dependency: $dep"
+            anodizer::err "unknown dependency: $dep"
             exit 1
             ;;
     esac
     # Only print "installed" for deps that ran immediately (not apt-queued).
-    [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && anodize::ok "${dep} installed"
+    [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && anodizer::ok "${dep} installed"
 done
 
 # Flush any batched apt packages (makeself, rpm, upx queued above).

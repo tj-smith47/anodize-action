@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # resolve-artifact-run.sh — resolve the workflow run ID to cross-download an
-# anodize artifact from, with tolerance for CI↔release overlap races.
+# anodizer artifact from, with tolerance for CI↔release overlap races.
 #
 # The common race: release.yml is triggered on a tag push from ci.yml's tag
 # job, but ci.yml itself is still in progress when release.yml starts. A
@@ -20,7 +20,7 @@
 #
 # Required env vars:
 #   ARTIFACT_WORKFLOW — workflow filename (e.g. ci.yml)
-#   FROM_ARTIFACT     — artifact name (e.g. anodize-linux)
+#   FROM_ARTIFACT     — artifact name (e.g. anodizer-linux)
 #   REPO              — owner/name of the repository hosting the workflow
 #   COMMIT_SHA        — commit SHA to search for
 #   GH_TOKEN          — gh CLI token
@@ -37,9 +37,9 @@ source "$(dirname "$0")/lib-colors.sh"
 : "${COMMIT_SHA:?COMMIT_SHA is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
 
-anodize::section "Resolving ${ARTIFACT_WORKFLOW} artifact"
-anodize::kv commit "${COMMIT_SHA}"
-anodize::kv artifact "${FROM_ARTIFACT}"
+anodizer::section "Resolving ${ARTIFACT_WORKFLOW} artifact"
+anodizer::kv commit "${COMMIT_SHA}"
+anodizer::kv artifact "${FROM_ARTIFACT}"
 
 echo "::group::Resolving $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
 
@@ -134,11 +134,11 @@ fi
 
 if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
     echo "::error::Could not find a successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
-    anodize::err "no successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
+    anodizer::err "no successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
     exit 1
 fi
 
 echo "::notice::Resolved artifact-run-id=auto to run ${run_id}"
 echo "::endgroup::"
-anodize::ok "resolved to run ${run_id}"
+anodizer::ok "resolved to run ${run_id}"
 echo "run_id=$run_id" >> "$GITHUB_OUTPUT"

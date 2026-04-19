@@ -1,5 +1,5 @@
-name: 'Anodize Action'
-description: 'GitHub Action for Anodize — a Rust-native release automation tool'
+name: 'Anodizer Action'
+description: 'GitHub Action for Anodizer — a Rust-native release automation tool'
 author: 'tj-smith47'
 branding:
   color: 'orange'
@@ -11,7 +11,7 @@ inputs:
   # ---------------------------------------------------------------------------
   version:
     description: >
-      Anodize version to install from GitHub releases. Accepts an exact tag
+      Anodizer version to install from GitHub releases. Accepts an exact tag
       (e.g. "v0.1.1") or the literal "latest". Unlike goreleaser-action, this
       input does NOT accept semver ranges such as "~> v2" or the "nightly"
       alias — pass an explicit tag or use `from-artifact` / `from-source`.
@@ -20,8 +20,8 @@ inputs:
     required: false
   from-artifact:
     description: >
-      Download a pre-built anodize binary from a workflow artifact instead of
-      GitHub releases. Set to the artifact name (e.g. "anodize-linux"). For
+      Download a pre-built anodizer binary from a workflow artifact instead of
+      GitHub releases. Set to the artifact name (e.g. "anodizer-linux"). For
       cross-workflow downloads, also set `artifact-run-id`.
     required: false
   artifact-run-id:
@@ -39,7 +39,7 @@ inputs:
     required: false
   from-source:
     description: >
-      Build anodize from source in the current workdir (bootstrap mode).
+      Build anodizer from source in the current workdir (bootstrap mode).
       Requires a Rust toolchain — combine with `install-rust: true` if needed.
       Useful when `from-artifact` is only available for one platform and the
       current runner needs a platform-native binary.
@@ -58,7 +58,7 @@ inputs:
     required: false
   auto-install:
     description: >
-      Parse `.anodize.yaml` in the workdir and automatically install the
+      Parse `.anodizer.yaml` in the workdir and automatically install the
       dependencies needed by the configured stages (nfpm, makeself, snapcraft,
       rpmbuild for srpm, cosign for binary_signs/docker_signs, nsis, create-dmg,
       flatpak-builder, upx, zig+cargo-zigbuild for cross-compilation).
@@ -74,14 +74,14 @@ inputs:
   # ---------------------------------------------------------------------------
   resolve-workspace:
     description: >
-      Resolve the triggering tag to a crate name using `anodize resolve-tag`.
+      Resolve the triggering tag to a crate name using `anodizer resolve-tag`.
       Set to "true" on tag-triggered release workflows. Populates the
       `workspace`, `crate-path`, and `has-builds` outputs.
     default: 'false'
     required: false
 
   # ---------------------------------------------------------------------------
-  # Docker setup (for projects using docker_v2 in .anodize.yaml)
+  # Docker setup (for projects using docker_v2 in .anodizer.yaml)
   # ---------------------------------------------------------------------------
   docker-registry:
     description: >
@@ -100,13 +100,13 @@ inputs:
   # ---------------------------------------------------------------------------
   upload-dist:
     description: >
-      Upload dist/ as a workflow artifact after running anodize. Set to "true"
+      Upload dist/ as a workflow artifact after running anodizer. Set to "true"
       in split build jobs. The artifact name defaults to "dist-$RUNNER_OS".
     default: 'false'
     required: false
   download-dist:
     description: >
-      Download and merge dist-* artifacts before running anodize. Set to "true"
+      Download and merge dist-* artifacts before running anodizer. Set to "true"
       in merge jobs. Merges all artifacts matching "dist-*" into dist/.
     default: 'false'
     required: false
@@ -130,7 +130,7 @@ inputs:
   # ---------------------------------------------------------------------------
   args:
     description: >
-      Arguments to pass to anodize (e.g. "release --snapshot"). Do NOT embed
+      Arguments to pass to anodizer (e.g. "release --snapshot"). Do NOT embed
       secrets or tokens here — this value appears in workflow logs. Pass
       secrets via the `env:` block (e.g. `GITHUB_TOKEN`, `COSIGN_PASSWORD`).
     required: false
@@ -139,7 +139,7 @@ inputs:
     default: '.'
     required: false
   install-only:
-    description: 'Only install anodize without running it.'
+    description: 'Only install anodizer without running it.'
     default: 'false'
     required: false
 
@@ -165,7 +165,7 @@ outputs:
   split-matrix:
     description: >
       JSON matrix for `strategy.matrix` covering all configured build targets.
-      Produced from `.anodize.yaml` when `install-only: true`. Each entry has
+      Produced from `.anodizer.yaml` when `install-only: true`. Each entry has
       `os`, `target`, and `artifact` fields.
     value: ${{ steps.split-matrix.outputs.matrix }}
 
@@ -194,10 +194,10 @@ runs:
         echo "os=$os" >> "$GITHUB_OUTPUT"
         echo "arch=$arch" >> "$GITHUB_OUTPUT"
         if [ "$os" = "windows" ]; then
-          echo "bin=anodize.exe" >> "$GITHUB_OUTPUT"
+          echo "bin=anodizer.exe" >> "$GITHUB_OUTPUT"
           echo "ext=zip" >> "$GITHUB_OUTPUT"
         else
-          echo "bin=anodize" >> "$GITHUB_OUTPUT"
+          echo "bin=anodizer" >> "$GITHUB_OUTPUT"
           echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
         fi
 
@@ -211,7 +211,7 @@ runs:
     # -------------------------------------------------------------------------
     # Dependency installation
     # -------------------------------------------------------------------------
-    - name: Auto-detect dependencies from .anodize.yaml
+    - name: Auto-detect dependencies from .anodizer.yaml
       if: inputs.auto-install == 'true'
       id: auto-detect
       shell: bash
@@ -220,19 +220,19 @@ runs:
         set -euo pipefail
         deps=()
         cfg=""
-        for candidate in .anodize.yaml .anodize.yml anodize.yaml anodize.yml; do
+        for candidate in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
           if [ -f "$candidate" ]; then
             cfg="$candidate"
             break
           fi
         done
         if [ -z "$cfg" ]; then
-          echo "::warning::auto-install: no anodize config found, skipping"
+          echo "::warning::auto-install: no anodizer config found, skipping"
           echo "deps=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
         # Match top-level keys that signal dependency needs
-        grep -qE '^nfpm:|^  - name: anodize-stage-nfpm' "$cfg" && deps+=("nfpm") || true
+        grep -qE '^nfpm:|^  - name: anodizer-stage-nfpm' "$cfg" && deps+=("nfpm") || true
         grep -qE '^makeselfs:' "$cfg" && deps+=("makeself") || true
         grep -qE '^snapcrafts:' "$cfg" && deps+=("snapcraft") || true
         grep -qE '^srpm:' "$cfg" && deps+=("rpmbuild") || true
@@ -280,7 +280,7 @@ runs:
         done <<< "$GPG_PRIVATE_KEY"
         echo "$GPG_PRIVATE_KEY" | gpg --batch --import
         echo "::notice::GPG private key imported"
-        anodize::ok "GPG private key imported"
+        anodizer::ok "GPG private key imported"
 
     - name: Write cosign key
       if: inputs.cosign-key != ''
@@ -299,7 +299,7 @@ runs:
         printf '%s' "$COSIGN_KEY_CONTENTS" > cosign.key
         chmod 600 cosign.key
         echo "::notice::Cosign key written to cosign.key"
-        anodize::ok "cosign key written to cosign.key"
+        anodizer::ok "cosign key written to cosign.key"
 
     # -------------------------------------------------------------------------
     # Installation — Path A: from workflow artifact
@@ -328,7 +328,7 @@ runs:
       uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: ${{ inputs.from-artifact }}
-        path: ${{ runner.tool_cache }}/anodize/artifact
+        path: ${{ runner.tool_cache }}/anodizer/artifact
         github-token: ${{ inputs.artifact-run-id != '' && github.token || '' }}
         run-id: ${{ steps.resolve-run.outputs.run_id || '' }}
 
@@ -340,12 +340,12 @@ runs:
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        install_dir="${RUNNER_TOOL_CACHE}/anodize/artifact"
+        install_dir="${RUNNER_TOOL_CACHE}/anodizer/artifact"
         chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
         echo "${install_dir}" >> "$GITHUB_PATH"
-        echo "::notice::anodize installed from artifact to ${install_dir}"
-        anodize::verb Installed "anodize from artifact"
-        anodize::detail "${install_dir}/${BIN}"
+        echo "::notice::anodizer installed from artifact to ${install_dir}"
+        anodizer::verb Installed "anodizer from artifact"
+        anodizer::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
     # Installation — Path B: from GitHub release
@@ -361,16 +361,16 @@ runs:
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if [ "$INPUT_VERSION" = "latest" ]; then
-          tag=$(gh api repos/tj-smith47/anodize/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
+          tag=$(gh api repos/tj-smith47/anodizer/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
           if [ -z "$tag" ]; then
-            echo "::error::Could not resolve latest anodize release"
-            anodize::err "could not resolve latest anodize release"
+            echo "::error::Could not resolve latest anodizer release"
+            anodizer::err "could not resolve latest anodizer release"
             exit 1
           fi
         else
           if [[ "$INPUT_VERSION" =~ ^(~\>|\^|\>=|\<=|\>|\<)|nightly ]]; then
             echo "::error::version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
-            anodize::err "version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
+            anodizer::err "version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
             exit 1
           fi
           tag="$INPUT_VERSION"
@@ -379,13 +379,13 @@ runs:
           fi
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$ ]]; then
             echo "::error::version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
-            anodize::err "version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
+            anodizer::err "version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
             exit 1
           fi
         fi
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
-        echo "::notice::Installing anodize $tag"
-        anodize::verb Installing "anodize ${tag}"
+        echo "::notice::Installing anodizer $tag"
+        anodizer::verb Installing "anodizer ${tag}"
 
     - name: Download release
       if: inputs.from-artifact == '' && inputs.from-source != 'true'
@@ -400,11 +400,11 @@ runs:
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         version="${TAG#v}"
-        archive="anodize-${version}-${OS}-${ARCH}.${EXT}"
-        url="https://github.com/tj-smith47/anodize/releases/download/${TAG}/${archive}"
+        archive="anodizer-${version}-${OS}-${ARCH}.${EXT}"
+        url="https://github.com/tj-smith47/anodizer/releases/download/${TAG}/${archive}"
 
-        anodize::verb Downloading "${archive}"
-        anodize::detail "${url}"
+        anodizer::verb Downloading "${archive}"
+        anodizer::detail "${url}"
         echo "::group::Downloading $url"
         tmpdir=$(mktemp -d)
         downloaded=false
@@ -414,19 +414,19 @@ runs:
             break
           fi
           echo "::warning::Download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
-          anodize::warn "download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
+          anodizer::warn "download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
           sleep "$attempt"
         done
         if [ "$downloaded" != "true" ]; then
-          echo "::error::Failed to download anodize ${TAG} from ${url} after 3 attempts"
-          anodize::err "failed to download anodize ${TAG} after 3 attempts"
+          echo "::error::Failed to download anodizer ${TAG} from ${url} after 3 attempts"
+          anodizer::err "failed to download anodizer ${TAG} after 3 attempts"
           exit 1
         fi
         echo "::endgroup::"
 
-        anodize::verb Extracting "${archive}"
+        anodizer::verb Extracting "${archive}"
         echo "::group::Extracting"
-        install_dir="${RUNNER_TOOL_CACHE}/anodize/${version}"
+        install_dir="${RUNNER_TOOL_CACHE}/anodizer/${version}"
         mkdir -p "$install_dir"
         if [ "$EXT" = "zip" ]; then
           unzip -q -o "${tmpdir}/${archive}" -d "$install_dir"
@@ -438,14 +438,14 @@ runs:
 
         chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
         echo "${install_dir}" >> "$GITHUB_PATH"
-        echo "::notice::anodize ${TAG} installed to ${install_dir}"
-        anodize::ok "anodize ${TAG} installed"
-        anodize::detail "${install_dir}/${BIN}"
+        echo "::notice::anodizer ${TAG} installed to ${install_dir}"
+        anodizer::ok "anodizer ${TAG} installed"
+        anodizer::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
     # Installation — Path C: from source (bootstrap)
     # -------------------------------------------------------------------------
-    - name: Build anodize from source
+    - name: Build anodizer from source
       if: inputs.from-source == 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
@@ -456,21 +456,21 @@ runs:
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         if ! command -v cargo > /dev/null 2>&1; then
           echo "::error::from-source requires Rust; set install-rust: true"
-          anodize::err "from-source requires Rust; set install-rust: true"
+          anodizer::err "from-source requires Rust; set install-rust: true"
           exit 1
         fi
-        anodize::verb Building "anodize from source"
-        echo "::group::Building anodize from source"
-        cargo build --release -p anodize
-        install_dir="${RUNNER_TOOL_CACHE}/anodize/source"
+        anodizer::verb Building "anodizer from source"
+        echo "::group::Building anodizer from source"
+        cargo build --release -p anodizer
+        install_dir="${RUNNER_TOOL_CACHE}/anodizer/source"
         mkdir -p "$install_dir"
         cp "target/release/${BIN}" "${install_dir}/${BIN}"
         chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
         echo "${install_dir}" >> "$GITHUB_PATH"
-        echo "::notice::anodize built from source and installed to ${install_dir}"
+        echo "::notice::anodizer built from source and installed to ${install_dir}"
         echo "::endgroup::"
-        anodize::ok "anodize built from source"
-        anodize::detail "${install_dir}/${BIN}"
+        anodizer::ok "anodizer built from source"
+        anodizer::detail "${install_dir}/${BIN}"
 
     # -------------------------------------------------------------------------
     # Workspace resolution (monorepo tag → crate)
@@ -485,27 +485,27 @@ runs:
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        if ! command -v anodize > /dev/null 2>&1; then
-          echo "::error::resolve-workspace requires anodize to be installed"
-          anodize::err "resolve-workspace requires anodize to be installed"
+        if ! command -v anodizer > /dev/null 2>&1; then
+          echo "::error::resolve-workspace requires anodizer to be installed"
+          anodizer::err "resolve-workspace requires anodizer to be installed"
           exit 1
         fi
-        output=$(anodize resolve-tag "$TAG")
+        output=$(anodizer resolve-tag "$TAG")
         crate=$(echo "$output" | grep '^crate=' | cut -d= -f2)
         path=$(echo "$output" | grep '^path=' | cut -d= -f2)
         has_builds=$(echo "$output" | grep '^has-builds=' | cut -d= -f2)
         if [ -z "$crate" ]; then
           echo "::error::No crate matches tag '$TAG'"
-          anodize::err "no crate matches tag '$TAG'"
+          anodizer::err "no crate matches tag '$TAG'"
           exit 1
         fi
         echo "crate=$crate" >> "$GITHUB_OUTPUT"
         echo "path=$path" >> "$GITHUB_OUTPUT"
         echo "has-builds=$has_builds" >> "$GITHUB_OUTPUT"
         echo "::notice::Tag '$TAG' → crate '$crate' (path=$path, has-builds=$has_builds)"
-        anodize::verb Resolved "'$TAG' → $crate"
-        anodize::kv path "$path"
-        anodize::kv has-builds "$has_builds"
+        anodizer::verb Resolved "'$TAG' → $crate"
+        anodizer::kv path "$path"
+        anodizer::kv has-builds "$has_builds"
 
     # -------------------------------------------------------------------------
     # Docker setup (login + QEMU + buildx)
@@ -547,10 +547,10 @@ runs:
         count=$(find dist -name context.json -type f 2>/dev/null | wc -l)
         if [ "$count" -eq 0 ]; then
           echo "::error::No split context files found in dist/"
-          anodize::err "no split context files found in dist/"
+          anodizer::err "no split context files found in dist/"
           exit 1
         fi
-        anodize::ok "found $count split context(s)"
+        anodizer::ok "found $count split context(s)"
 
     # -------------------------------------------------------------------------
     # Split matrix output — for users building a fan-out from config
@@ -563,33 +563,33 @@ runs:
       run: |
         set -euo pipefail
         # Produce a JSON matrix of { os, target, artifact } derived from
-        # anodize's configured build targets. Only runs when install-only.
-        if ! command -v anodize > /dev/null 2>&1; then
+        # anodizer's configured build targets. Only runs when install-only.
+        if ! command -v anodizer > /dev/null 2>&1; then
           echo "matrix=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
-        if targets=$(anodize targets --json 2>/dev/null); then
+        if targets=$(anodizer targets --json 2>/dev/null); then
           echo "matrix=$targets" >> "$GITHUB_OUTPUT"
-          echo "::notice::split-matrix output populated from anodize targets --json"
+          echo "::notice::split-matrix output populated from anodizer targets --json"
         else
           echo "matrix=" >> "$GITHUB_OUTPUT"
         fi
 
     # -------------------------------------------------------------------------
-    # Run anodize
+    # Run anodizer
     # -------------------------------------------------------------------------
-    - name: Run anodize
+    - name: Run anodizer
       if: inputs.install-only != 'true' && inputs.args != ''
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
-        ANODIZE_ARGS: ${{ inputs.args }}
+        ANODIZER_ARGS: ${{ inputs.args }}
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # Don't echo ANODIZE_ARGS — users pass tokens/flags via `inputs.args`
+        # Don't echo ANODIZER_ARGS — users pass tokens/flags via `inputs.args`
         # and GitHub Actions only auto-masks secrets registered with `::add-mask::`.
-        anodize::section "anodize"
+        anodizer::section "anodizer"
         # Retry up to 3 times for transient failures (registry rate limits,
         # network timeouts, Docker push auth expiry). Deterministic failures
         # (config errors, compile failures) will fail identically each time
@@ -598,17 +598,17 @@ runs:
         attempt=1
         while [ $attempt -le $max_retries ]; do
           # shellcheck disable=SC2086
-          # ANODIZE_ARGS is intentionally unquoted — users pass multiple flags
+          # ANODIZER_ARGS is intentionally unquoted — users pass multiple flags
           # separated by whitespace via `inputs.args`, and we rely on word
           # splitting to forward them as distinct argv entries.
-          if anodize $ANODIZE_ARGS; then
+          if anodizer $ANODIZER_ARGS; then
             break
           fi
           if [ $attempt -eq $max_retries ]; then
-            anodize::err "anodize failed after ${max_retries} attempts"
+            anodizer::err "anodizer failed after ${max_retries} attempts"
             exit 1
           fi
-          anodize::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
+          anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
           # Clean generated artifacts between retries to prevent "already exists"
           # collisions.  Preserve split-build subdirectories entirely — any
           # directory holding a `context.json` is a split input (produced by a
@@ -640,7 +640,7 @@ runs:
       run: |
         set -euo pipefail
         dist="dist"
-        for cfg in .anodize.yaml .anodize.yml anodize.yaml anodize.yml; do
+        for cfg in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
           if [ -f "$cfg" ]; then
             d=$(grep -E '^dist:' "$cfg" | head -1 | sed 's/^dist:\s*//' | tr -d '"' | tr -d "'")
             [ -n "$d" ] && dist="$d"
@@ -652,19 +652,19 @@ runs:
         # its own line, even if the JSON file has no trailing newline.
         if [ -f "${dist}/artifacts.json" ]; then
           {
-            echo "artifacts<<ANODIZE_EOF"
+            echo "artifacts<<ANODIZER_EOF"
             cat "${dist}/artifacts.json"
             echo ""
-            echo "ANODIZE_EOF"
+            echo "ANODIZER_EOF"
           } >> "$GITHUB_OUTPUT"
         fi
 
         if [ -f "${dist}/metadata.json" ]; then
           {
-            echo "metadata<<ANODIZE_EOF"
+            echo "metadata<<ANODIZER_EOF"
             cat "${dist}/metadata.json"
             echo ""
-            echo "ANODIZE_EOF"
+            echo "ANODIZER_EOF"
           } >> "$GITHUB_OUTPUT"
 
           # Extract release URL if present

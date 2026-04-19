@@ -1,13 +1,13 @@
-# Anodize Action
+# Anodizer Action
 
-GitHub Action for [Anodize](https://github.com/tj-smith47/anodize), a
+GitHub Action for [Anodizer](https://github.com/tj-smith47/anodizer), a
 Rust-native release automation tool inspired by GoReleaser.
 
-The action installs anodize (cached per version), auto-installs pipeline
+The action installs anodizer (cached per version), auto-installs pipeline
 dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
 cargo-zigbuild, upx, nsis, create-dmg, flatpak) based on your
-`.anodize.yaml`, imports signing keys, logs in to container registries,
-handles split/merge artifact plumbing, and runs any anodize subcommand —
+`.anodizer.yaml`, imports signing keys, logs in to container registries,
+handles split/merge artifact plumbing, and runs any anodizer subcommand —
 all in one step.
 
 ## Usage
@@ -15,7 +15,7 @@ all in one step.
 ### Basic release
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     args: release --clean
   env:
@@ -25,7 +25,7 @@ all in one step.
 ### Auto-install dependencies from config
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true
     gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           install-rust: true
           install: zig,cargo-zigbuild,upx
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           download-dist: true               # downloads + merges dist-* artifacts
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         id: a
         with:
           resolve-workspace: true
@@ -113,7 +113,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           docker-registry: ghcr.io
@@ -126,19 +126,19 @@ jobs:
 ### Reuse CI-built binary across workflows
 
 ```yaml
-# ci.yml — build and upload anodize once per commit
+# ci.yml — build and upload anodizer once per commit
 - uses: actions/checkout@v4
 - uses: dtolnay/rust-toolchain@stable
-- run: cargo build --release -p anodize
+- run: cargo build --release -p anodizer
 - uses: actions/upload-artifact@v4
   with:
-    name: anodize-linux
-    path: target/release/anodize
+    name: anodizer-linux
+    path: target/release/anodizer
 
 # release.yml — reuse the artifact
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
-    from-artifact: anodize-linux
+    from-artifact: anodizer-linux
     artifact-run-id: auto                   # resolves latest ci.yml run for this SHA
     artifact-workflow: ci.yml
     auto-install: true
@@ -153,7 +153,7 @@ When `from-artifact` is only available for one platform and the current
 runner needs a platform-native binary:
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     install-rust: true
     from-source: true
@@ -161,20 +161,20 @@ runner needs a platform-native binary:
     args: release --split --clean
 ```
 
-### Install only, drive anodize yourself
+### Install only, drive anodizer yourself
 
 Useful for multi-crate loops, tagging, and ad-hoc subcommands:
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     install-only: true
 
-- run: anodize check
-- run: anodize healthcheck
+- run: anodizer check
+- run: anodizer healthcheck
 - run: |
     for crate in my-core my-cli my-operator; do
-      anodize tag --crate "$crate" || true
+      anodizer tag --crate "$crate" || true
     done
     git push origin HEAD
 ```
@@ -185,24 +185,24 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodize version to install from GitHub releases — exact tag (e.g. `v0.1.1`) or the literal `latest`. **No semver ranges** (`~> v2`) or `nightly` alias unlike goreleaser-action. Ignored when `from-artifact` or `from-source` is set. |
-| `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodize-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
+| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.1.1`) or the literal `latest`. **No semver ranges** (`~> v2`) or `nightly` alias unlike goreleaser-action. Ignored when `from-artifact` or `from-source` is set. |
+| `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
-| `from-source` | `false` | Build anodize from source in the workdir. Requires a Rust toolchain (`install-rust: true`). |
+| `from-source` | `false` | Build anodizer from source in the workdir. Requires a Rust toolchain (`install-rust: true`). |
 
 ### Dependency setup
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`. |
-| `auto-install` | `false` | Parse `.anodize.yaml` and auto-install whatever the configured stages need. |
+| `auto-install` | `false` | Parse `.anodizer.yaml` and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
 
-When `auto-install: true`, the action scans `.anodize.yaml` for the
+When `auto-install: true`, the action scans `.anodizer.yaml` for the
 following top-level keys and installs the matching tool:
 
-| `.anodize.yaml` key | Installs | Notes |
+| `.anodizer.yaml` key | Installs | Notes |
 |---------------------|----------|-------|
 | `nfpm:` | `nfpm` | |
 | `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
@@ -221,7 +221,7 @@ following top-level keys and installs the matching tool:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `resolve-workspace` | `false` | Run `anodize resolve-tag $GITHUB_REF_NAME` and expose the result via the `workspace`, `crate-path`, and `has-builds` outputs. |
+| `resolve-workspace` | `false` | Run `anodizer resolve-tag $GITHUB_REF_NAME` and expose the result via the `workspace`, `crate-path`, and `has-builds` outputs. |
 
 ### Docker setup
 
@@ -237,8 +237,8 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `upload-dist` | `false` | After running anodize, upload `dist/` as a workflow artifact named `dist-$RUNNER_OS`. |
-| `download-dist` | `false` | Before running anodize, download all `dist-*` artifacts and merge them into `dist/`. Fails if no split context files are found. |
+| `upload-dist` | `false` | After running anodizer, upload `dist/` as a workflow artifact named `dist-$RUNNER_OS`. |
+| `download-dist` | `false` | Before running anodizer, download all `dist-*` artifacts and merge them into `dist/`. Fails if no split context files are found. |
 
 ### Key material
 
@@ -251,9 +251,9 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `args` | | Arguments to pass to anodize (e.g. `release --snapshot`). |
+| `args` | | Arguments to pass to anodizer (e.g. `release --snapshot`). |
 | `workdir` | `.` | Working directory (relative to repo root). |
-| `install-only` | `false` | Only install anodize (and any requested dependencies/keys); skip running. |
+| `install-only` | `false` | Only install anodizer (and any requested dependencies/keys); skip running. |
 
 ## Outputs
 
@@ -269,7 +269,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 ## Retry behavior
 
-The `Run anodize` step retries up to 3 times for transient failures (registry
+The `Run anodizer` step retries up to 3 times for transient failures (registry
 rate limits, Docker push auth expiry, network blips). Between retries it
 prunes generated artifacts from `dist/` while preserving split context files
 (`dist/*/context.json`) so `--merge` can still find them.
