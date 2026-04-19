@@ -178,14 +178,28 @@ install_zig() {
     case "$RUNNER_OS" in
         Linux)
             local version="${ZIG_VERSION:-0.13.0}"
-            local tarball="zig-linux-x86_64-${version}.tar.xz"
+            local arch
+            case "$RUNNER_ARCH" in
+                X64)   arch=x86_64 ;;
+                ARM64) arch=aarch64 ;;
+                *)
+                    echo "::error::Unsupported Linux arch for zig: $RUNNER_ARCH"
+                    anodizer::err "Unsupported Linux arch for zig: $RUNNER_ARCH"
+                    exit 1
+                    ;;
+            esac
+            local tarball="zig-linux-${arch}-${version}.tar.xz"
             local base="https://ziglang.org/download/${version}"
+            # ziglang.org does not publish per-tarball .sha256 sidecars;
+            # canonical shasums live in download/index.json.
             curl -sSfL "${base}/${tarball}" -o /tmp/zig.tar.xz
-            curl -sSfL "${base}/${tarball}.sha256" -o /tmp/zig.tar.xz.sha256
-            expected=$(awk '{print $1}' /tmp/zig.tar.xz.sha256)
+            local expected
+            expected=$(curl -sSfL "https://ziglang.org/download/index.json" \
+                | jq -r --arg v "$version" --arg k "${arch}-linux" \
+                    '.[$v][$k].shasum // empty')
             if [ -z "$expected" ]; then
-                echo "::error::zig sha256 sidecar empty for ${tarball}"
-                anodizer::err "zig sha256 sidecar empty for ${tarball}"
+                echo "::error::zig sha256 missing from index.json for ${version}/${arch}-linux"
+                anodizer::err "zig sha256 missing from index.json for ${version}/${arch}-linux"
                 exit 1
             fi
             echo "${expected}  /tmp/zig.tar.xz" | sha256sum -c -
