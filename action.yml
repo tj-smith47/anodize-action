@@ -278,9 +278,27 @@ runs:
         while IFS= read -r line; do
           [ -n "$line" ] && echo "::add-mask::$line"
         done <<< "$GPG_PRIVATE_KEY"
+        # Import into the keyring (consumed by archive/checksum `signs:` blocks
+        # via `--local-user $GPG_FINGERPRINT`).
         echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+        # Also write the key to a file for nfpm package signing. rpmsign /
+        # dpkg-sig / abuild-sign read the secret key directly off disk rather
+        # than going through gpg-agent, so anodizer's `nfpm.signature.key_file`
+        # needs a path. Same key material as the keyring import above.
+        gpg_key_file="${RUNNER_TEMP}/anodizer-signing.asc"
+        printf '%s' "$GPG_PRIVATE_KEY" > "$gpg_key_file"
+        chmod 600 "$gpg_key_file"
+        echo "GPG_KEY_PATH=${gpg_key_file}" >> "$GITHUB_ENV"
+        # Allow non-interactive passphrase (rpmsign / gpg need this in CI).
+        mkdir -p "${HOME}/.gnupg"
+        chmod 700 "${HOME}/.gnupg"
+        grep -qxF 'allow-loopback-pinentry' "${HOME}/.gnupg/gpg-agent.conf" 2>/dev/null \
+          || echo 'allow-loopback-pinentry' >> "${HOME}/.gnupg/gpg-agent.conf"
+        grep -qxF 'pinentry-mode loopback' "${HOME}/.gnupg/gpg.conf" 2>/dev/null \
+          || echo 'pinentry-mode loopback' >> "${HOME}/.gnupg/gpg.conf"
+        gpgconf --kill gpg-agent || true
         echo "::notice::GPG private key imported"
-        anodizer::ok "GPG private key imported"
+        anodizer::ok "GPG private key imported (keyring + GPG_KEY_PATH for nfpm)"
 
     - name: Write cosign key
       if: inputs.cosign-key != ''

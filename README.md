@@ -244,7 +244,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 | Input | Description |
 |-------|-------------|
-| `gpg-private-key` | GPG private key contents. Imported via `gpg --batch --import`. |
+| `gpg-private-key` | GPG private key contents. Imported into the keyring via `gpg --batch --import` (used by `signs:` blocks). The same key is also written to `$RUNNER_TEMP/anodizer-signing.asc` and exported as `GPG_KEY_PATH` for nfpm package signing — `rpmsign` / `dpkg-sig` / `abuild-sign` read the key directly off disk. Loopback pinentry is enabled so any `GPG_PASSPHRASE` works non-interactively. |
 | `cosign-key` | Cosign private key contents. Written to `cosign.key` with mode `0600`. Pair with `COSIGN_PASSWORD` in env. |
 
 ### Execution
