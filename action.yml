@@ -12,10 +12,12 @@ inputs:
   version:
     description: >
       Anodizer version to install from GitHub releases. Accepts an exact tag
-      (e.g. "v0.1.1") or the literal "latest". Unlike goreleaser-action, this
-      input does NOT accept semver ranges such as "~> v2" or the "nightly"
-      alias — pass an explicit tag or use `from-artifact` / `from-source`.
-      Ignored when `from-artifact` or `from-source` is set.
+      (e.g. "v0.1.1"), the literal "latest" (newest stable release), or the
+      literal "nightly" (newest release whose tag matches `*-nightly`,
+      i.e. `vX.Y.Z-<sha>-nightly`). Semver ranges such as "~> v2" are NOT
+      supported — pass an explicit tag, "latest", "nightly", or use
+      `from-artifact` / `from-source`. Ignored when `from-artifact` or
+      `from-source` is set.
     default: 'latest'
     required: false
   from-artifact:
@@ -385,10 +387,23 @@ runs:
             anodizer::err "could not resolve latest anodizer release"
             exit 1
           fi
+        elif [ "$INPUT_VERSION" = "nightly" ]; then
+          # Mirrors goreleaser-action ≥ v7.2.0 immutable-nightly resolution:
+          # list releases (newest first), pick the first non-draft tag whose
+          # name matches `*-nightly`. Anodizer's nightly tag format is
+          # `vX.Y.Z-<sha>-nightly`, so this jq pattern is exact.
+          tag=$(gh api 'repos/tj-smith47/anodizer/releases?per_page=30' \
+            --jq '[.[] | select(.draft == false) | .tag_name | select(test("-nightly$"))] | .[0] // empty' \
+            2>/dev/null || echo "")
+          if [ -z "$tag" ]; then
+            echo "::error::Could not resolve nightly anodizer release (no published tag matches '*-nightly')"
+            anodizer::err "could not resolve nightly anodizer release"
+            exit 1
+          fi
         else
-          if [[ "$INPUT_VERSION" =~ ^(~\>|\^|\>=|\<=|\>|\<)|nightly ]]; then
-            echo "::error::version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
-            anodizer::err "version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1') or 'latest'"
+          if [[ "$INPUT_VERSION" =~ ^(~\>|\^|\>=|\<=|\>|\<) ]]; then
+            echo "::error::version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1'), 'latest', or 'nightly'"
+            anodizer::err "version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1'), 'latest', or 'nightly'"
             exit 1
           fi
           tag="$INPUT_VERSION"

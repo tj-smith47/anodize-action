@@ -179,13 +179,36 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
     git push origin HEAD
 ```
 
+### Nightly builds
+
+Anodizer publishes immutable nightly tags shaped `vX.Y.Z-<sha>-nightly`
+(e.g. `v0.2.0-7fe10db-nightly`) — every nightly is its own permanent
+release rather than a moving `nightly` tag. Mirrors goreleaser-action ≥
+v7.2.0.
+
+```yaml
+- uses: tj-smith47/anodizer-action@v1
+  with:
+    version: nightly                       # newest *-nightly tag
+```
+
+The action lists releases newest-first and installs the first non-draft
+tag whose name ends in `-nightly`. Pin a specific nightly by passing the
+exact tag instead:
+
+```yaml
+- uses: tj-smith47/anodizer-action@v1
+  with:
+    version: v0.2.0-7fe10db-nightly        # exact pin, won't drift
+```
+
 ## Inputs
 
 ### Installation source
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.1.1`) or the literal `latest`. **No semver ranges** (`~> v2`) or `nightly` alias unlike goreleaser-action. Ignored when `from-artifact` or `from-source` is set. |
+| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.1.1`), the literal `latest` (newest stable release), or the literal `nightly` (newest release whose tag matches `vX.Y.Z-<sha>-nightly`). **No semver ranges** (`~> v2`) — pass an explicit tag or one of the aliases. Ignored when `from-artifact` or `from-source` is set. |
 | `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
