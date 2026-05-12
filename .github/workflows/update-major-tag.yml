@@ -57,13 +57,13 @@ jobs:
           fi
           echo "Release $TAG_NAME -> commit $sha"
 
-          # 2. Force-update (or create) refs/tags/${MAJOR_TAG} to point at sha.
+          # 2. Update (or create) refs/tags/${MAJOR_TAG} to point at sha.
           if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" >/dev/null 2>&1; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
-              -f sha="$sha" -F force=true >/dev/null
-            echo "Updated existing tag $MAJOR_TAG -> $sha"
+              -f sha="$sha" -F force=true
+            echo "Updated $MAJOR_TAG -> $sha"
           else
             gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${MAJOR_TAG}" -f sha="$sha" >/dev/null
-            echo "Created new tag $MAJOR_TAG -> $sha"
+              -f ref="refs/tags/${MAJOR_TAG}" -f sha="$sha"
+            echo "Created $MAJOR_TAG -> $sha"
           fi
