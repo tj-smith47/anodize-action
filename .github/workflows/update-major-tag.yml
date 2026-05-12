@@ -38,36 +38,49 @@ jobs:
           echo "Major tag: $major (from $TAG_NAME)"
           echo "tag=$major" >> "$GITHUB_OUTPUT"
 
-      - name: Force-update major tag via GitHub API
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ inputs.release_tag }}
-          MAJOR_TAG: ${{ steps.major.outputs.tag }}
-        run: |
-          set -euo pipefail
+      - name: Force-update major tag via octokit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tagName = '${{ inputs.release_tag }}';
+            const majorTag = '${{ steps.major.outputs.tag }}';
+            const { owner, repo } = context.repo;
 
-          # 1. Resolve inputs.release_tag (e.g. v1.0.0) to a commit SHA. Peel
-          #    annotated tag objects to reach the underlying commit.
-          obj_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}" --jq '.object.sha')
-          obj_type=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}" --jq '.object.type')
-          if [[ "$obj_type" == "tag" ]]; then
-            sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${obj_sha}" --jq '.object.sha')
-          else
-            sha="$obj_sha"
-          fi
-          echo "Release $TAG_NAME -> commit $sha"
+            // 1. Resolve release_tag to a commit SHA, peeling annotated tags.
+            const tagRef = await github.rest.git.getRef({
+              owner, repo, ref: `tags/${tagName}`,
+            });
+            let sha = tagRef.data.object.sha;
+            if (tagRef.data.object.type === 'tag') {
+              const tagObj = await github.rest.git.getTag({
+                owner, repo, tag_sha: sha,
+              });
+              sha = tagObj.data.object.sha;
+            }
+            core.info(`Release ${tagName} -> commit ${sha}`);
 
-          # 2. Update (or create) refs/tags/${MAJOR_TAG} to point at sha.
-          # PATCH refs/tags/X with sha only (no force flag) — this is the
-          # call shape octokit's git.updateRef uses internally, and
-          # GITHUB_TOKEN is allowed to perform it. Passing force=true via
-          # the REST API triggers 403 from GITHUB_TOKEN integrations.
-          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
-              -f sha="$sha"
-            echo "Updated $MAJOR_TAG -> $sha"
-          else
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${MAJOR_TAG}" -f sha="$sha"
-            echo "Created $MAJOR_TAG -> $sha"
-          fi
+            // 2. Update or create the major tag.
+            //    octokit updateRef without force= matches what
+            //    richardsimko/update-tag@v1 does internally and works under
+            //    GITHUB_TOKEN; the equivalent `gh api PATCH .../refs`
+            //    returns 403 "Resource not accessible by integration".
+            try {
+              await github.rest.git.updateRef({
+                owner, repo,
+                ref: `tags/${majorTag}`,
+                sha,
+                force: true,
+              });
+              core.info(`Updated ${majorTag} -> ${sha}`);
+            } catch (e) {
+              if (e.status === 404 || e.status === 422) {
+                await github.rest.git.createRef({
+                  owner, repo,
+                  ref: `refs/tags/${majorTag}`,
+                  sha,
+                });
+                core.info(`Created ${majorTag} -> ${sha}`);
+              } else {
+                throw e;
+              }
+            }
