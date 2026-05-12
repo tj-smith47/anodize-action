@@ -38,30 +38,32 @@ jobs:
           echo "Major tag: $major (from $TAG_NAME)"
           echo "tag=$major" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve release tag to commit SHA
-        id: resolve
+      - name: Force-update major tag via GitHub API
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ inputs.release_tag }}
+          MAJOR_TAG: ${{ steps.major.outputs.tag }}
         run: |
           set -euo pipefail
-          # The GitHub API may return a tag-object or commit SHA depending on
-          # how the tag was created; peel until we reach a commit.
-          sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}" --jq '.object.sha')
-          type=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}" --jq '.object.type')
-          if [[ "$type" == "tag" ]]; then
-            sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')
+
+          # 1. Resolve inputs.release_tag (e.g. v1.0.0) to a commit SHA. Peel
+          #    annotated tag objects to reach the underlying commit.
+          obj_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}" --jq '.object.sha')
+          obj_type=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}" --jq '.object.type')
+          if [[ "$obj_type" == "tag" ]]; then
+            sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${obj_sha}" --jq '.object.sha')
+          else
+            sha="$obj_sha"
           fi
           echo "Release $TAG_NAME -> commit $sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Force-update major tag
-        uses: richardsimko/update-tag@v1
-        with:
-          tag_name: ${{ steps.major.outputs.tag }}
-        env:
-          # Override GITHUB_SHA so update-tag points the moving major tag at
-          # the resolved release commit instead of the workflow_dispatch
-          # branch HEAD (which may have advanced past the release).
-          GITHUB_SHA: ${{ steps.resolve.outputs.sha }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 2. Force-update (or create) refs/tags/${MAJOR_TAG} to point at sha.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
+              -f sha="$sha" -F force=true >/dev/null
+            echo "Updated existing tag $MAJOR_TAG -> $sha"
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${MAJOR_TAG}" -f sha="$sha" >/dev/null
+            echo "Created new tag $MAJOR_TAG -> $sha"
+          fi
