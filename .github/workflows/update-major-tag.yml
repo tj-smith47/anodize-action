@@ -59,28 +59,24 @@ jobs:
             }
             core.info(`Release ${tagName} -> commit ${sha}`);
 
-            // 2. Update or create the major tag.
-            //    octokit updateRef without force= matches what
-            //    richardsimko/update-tag@v1 does internally and works under
-            //    GITHUB_TOKEN; the equivalent `gh api PATCH .../refs`
-            //    returns 403 "Resource not accessible by integration".
+            // 2. Delete-then-recreate the major tag.
+            //    updateRef returns 403 "Resource not accessible by
+            //    integration" under GITHUB_TOKEN when moving v1 to an
+            //    arbitrary commit (the API appears to gate non-fast-forward
+            //    ref moves more strictly than creates/deletes). Splitting
+            //    the operation into deleteRef + createRef sidesteps that.
             try {
-              await github.rest.git.updateRef({
+              await github.rest.git.deleteRef({
                 owner, repo,
                 ref: `tags/${majorTag}`,
-                sha,
-                force: true,
               });
-              core.info(`Updated ${majorTag} -> ${sha}`);
+              core.info(`Deleted existing ${majorTag}`);
             } catch (e) {
-              if (e.status === 404 || e.status === 422) {
-                await github.rest.git.createRef({
-                  owner, repo,
-                  ref: `refs/tags/${majorTag}`,
-                  sha,
-                });
-                core.info(`Created ${majorTag} -> ${sha}`);
-              } else {
-                throw e;
-              }
+              if (e.status !== 404 && e.status !== 422) throw e;
             }
+            await github.rest.git.createRef({
+              owner, repo,
+              ref: `refs/tags/${majorTag}`,
+              sha,
+            });
+            core.info(`Created ${majorTag} -> ${sha}`);
