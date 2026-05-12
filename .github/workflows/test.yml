@@ -1,0 +1,54 @@
+name: Test
+
+on:
+  push:
+    branches-ignore:
+      - 'gh-readonly-queue/**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run shellcheck on scripts/
+        run: |
+          shopt -s nullglob
+          shellcheck -x scripts/*.sh
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install and run actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  validate-action-yml:
+    name: Validate action.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Parse action.yml
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+          with open('action.yml', 'r') as f:
+              data = yaml.safe_load(f)
+          required = ['name', 'description', 'runs']
+          missing = [k for k in required if k not in data]
+          if missing:
+              sys.exit(f"action.yml missing required keys: {missing}")
+          if data['runs'].get('using') != 'composite':
+              sys.exit(f"expected runs.using=composite, got {data['runs'].get('using')}")
+          print(f"action.yml OK: name={data['name']!r}, steps={len(data['runs'].get('steps', []))}")
+          PY

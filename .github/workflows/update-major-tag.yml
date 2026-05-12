@@ -1,0 +1,47 @@
+name: Update Major Tag
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  update-major-tag:
+    name: Force-update vN to release commit
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.release.prerelease && !github.event.release.draft }}
+    steps:
+      - name: Compute major tag
+        id: major
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # github.event.release.tag_name is the just-published tag (e.g. v1.2.3).
+          # Extract the major component to derive the moving tag (e.g. v1).
+          if [[ ! "$TAG_NAME" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+([.-].+)?$ ]]; then
+            echo "Tag '$TAG_NAME' is not a vMAJOR.MINOR.PATCH semver — skipping major-tag update." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          major="v${BASH_REMATCH[1]}"
+          echo "Major tag: $major (from $TAG_NAME)"
+          echo "tag=$major" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout at release commit
+        if: steps.major.outputs.skip != 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Force-update major tag
+        if: steps.major.outputs.skip != 'true'
+        uses: richardsimko/update-tag@v1
+        with:
+          tag_name: ${{ steps.major.outputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
