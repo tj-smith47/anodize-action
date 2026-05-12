@@ -54,7 +54,7 @@ inputs:
   install:
     description: >
       Comma-separated list of build/pipeline dependencies to install.
-      Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
+      Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
       cargo-zigbuild, upx. Uses the platform's native package manager
       (apt on Linux, brew on macOS, choco on Windows).
     required: false
@@ -62,7 +62,8 @@ inputs:
     description: >
       Parse `.anodizer.yaml` in the workdir and automatically install the
       dependencies needed by the configured stages (nfpm, makeself, snapcraft,
-      rpmbuild for srpm, cosign for binary_signs/docker_signs, nsis, create-dmg,
+      rpmbuild for srpm, cosign for binary_signs/docker_signs, syft for sboms,
+      nsis, create-dmg,
       flatpak-builder, upx, zig+cargo-zigbuild for cross-compilation).
     default: 'false'
     required: false
@@ -256,6 +257,7 @@ runs:
         grep -qE '^snapcrafts:' "$cfg" && deps+=("snapcraft") || true
         grep -qE '^srpm:' "$cfg" && deps+=("rpmbuild") || true
         grep -qE '^binary_signs:|^docker_signs:' "$cfg" && deps+=("cosign") || true
+        grep -qE '^sboms:' "$cfg" && deps+=("syft") || true
         grep -qE '^upx:' "$cfg" && deps+=("upx") || true
         grep -qE '^nsis:' "$cfg" && deps+=("nsis") || true
         grep -qE '^dmgs:' "$cfg" && deps+=("create-dmg") || true

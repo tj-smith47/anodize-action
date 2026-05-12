@@ -5,7 +5,7 @@
 # with $AUTO_INSTALL (from the auto-detect step), dedupes, and installs
 # each requested dep via the platform-native package manager.
 #
-# Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
+# Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # cargo-zigbuild, upx, nsis, create-dmg, flatpak.
 #
 # Called from action.yml; expects $GITHUB_ACTION_PATH to point at the
@@ -174,6 +174,20 @@ install_cosign() {
     esac
 }
 
+install_syft() {
+    case "$RUNNER_OS" in
+        Linux)
+            local version="${SYFT_VERSION:-v1.18.0}"
+            curl -sSfL "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
+                -o /tmp/syft-install.sh
+            chmod +x /tmp/syft-install.sh
+            sudo /tmp/syft-install.sh -b /usr/local/bin "${version}"
+            ;;
+        macOS)   brew_install syft SYFT_VERSION ;;
+        Windows) choco_install syft SYFT_VERSION ;;
+    esac
+}
+
 install_zig() {
     case "$RUNNER_OS" in
         Linux)
@@ -260,6 +274,7 @@ for dep in "${DEPS[@]}"; do
         snapcraft)      install_snapcraft ;;
         rpmbuild)       install_rpmbuild ;;
         cosign)         install_cosign ;;
+        syft)           install_syft ;;
         zig)            install_zig ;;
         cargo-zigbuild) install_cargo_zigbuild ;;
         upx)            install_upx ;;
@@ -267,7 +282,7 @@ for dep in "${DEPS[@]}"; do
         create-dmg)     install_create_dmg ;;
         flatpak)        install_flatpak ;;
         *)
-            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak)"
+            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak)"
             anodizer::err "unknown dependency: $dep"
             exit 1
             ;;
