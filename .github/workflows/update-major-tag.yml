@@ -1,82 +1,56 @@
 name: Update Major Tag (manual recovery)
 
 # The primary major-tag update path is the inline step in release.yml,
-# because releases created by the default GITHUB_TOKEN do not fire the
-# release:published event (GitHub's recursive-trigger guard).
+# fired after each successful release.
 #
-# This workflow exists for manual recovery: if a major tag (e.g. v1)
-# ever points at the wrong commit, trigger this from the Actions UI
-# with the target release tag and it will re-point.
+# This workflow is a manual recovery path: if a major tag (e.g. v1) is
+# pointing at the wrong commit or has been deleted, an operator can
+# trigger this from the Actions UI to rebuild it from current master
+# HEAD.
+#
+# IMPORTANT: GITHUB_TOKEN (which is what this workflow uses) cannot
+# create or non-fast-forward-update a tag ref to an arbitrary commit
+# that the running workflow is not tied to — both POST git/refs and
+# PATCH git/refs/<tag> return 403 "Resource not accessible by
+# integration". The action used here (richardsimko/update-tag@v1) only
+# works because GitHub allows the workflow's own GITHUB_SHA (= master
+# HEAD at workflow_dispatch time) to be the tag target.
+#
+# So: to retarget v1 at an older release, first push a revert (or
+# cherry-pick) of that release's tip to master, then trigger this
+# workflow. v1 will land at the new master HEAD.
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'Release tag to retarget the major tag to (e.g. v1.2.3)'
+      major:
+        description: 'Major version tag to rebuild (e.g. v1)'
         required: true
         type: string
+        default: 'v1'
 
 permissions:
   contents: write
 
 jobs:
   update-major-tag:
-    name: Force-update vN to release commit
+    name: Rebuild major tag from master HEAD
     runs-on: ubuntu-latest
     steps:
-      - name: Compute major tag
-        id: major
+      - name: Validate major tag shape
         env:
-          TAG_NAME: ${{ inputs.release_tag }}
+          MAJOR: ${{ inputs.major }}
         run: |
           set -euo pipefail
-          if [[ ! "$TAG_NAME" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+([.-].+)?$ ]]; then
-            echo "Tag '$TAG_NAME' is not a vMAJOR.MINOR.PATCH semver — aborting." >&2
+          if [[ ! "$MAJOR" =~ ^v[0-9]+$ ]]; then
+            echo "Input 'major' must be of the form vN (e.g. v1), got: $MAJOR" >&2
             exit 1
           fi
-          major="v${BASH_REMATCH[1]}"
-          echo "Major tag: $major (from $TAG_NAME)"
-          echo "tag=$major" >> "$GITHUB_OUTPUT"
+          echo "Will retarget tag $MAJOR to master HEAD."
 
-      - name: Force-update major tag via octokit
-        uses: actions/github-script@v7
+      - name: Force-update major tag to master HEAD
+        uses: richardsimko/update-tag@v1
         with:
-          script: |
-            const tagName = '${{ inputs.release_tag }}';
-            const majorTag = '${{ steps.major.outputs.tag }}';
-            const { owner, repo } = context.repo;
-
-            // 1. Resolve release_tag to a commit SHA, peeling annotated tags.
-            const tagRef = await github.rest.git.getRef({
-              owner, repo, ref: `tags/${tagName}`,
-            });
-            let sha = tagRef.data.object.sha;
-            if (tagRef.data.object.type === 'tag') {
-              const tagObj = await github.rest.git.getTag({
-                owner, repo, tag_sha: sha,
-              });
-              sha = tagObj.data.object.sha;
-            }
-            core.info(`Release ${tagName} -> commit ${sha}`);
-
-            // 2. Delete-then-recreate the major tag.
-            //    updateRef returns 403 "Resource not accessible by
-            //    integration" under GITHUB_TOKEN when moving v1 to an
-            //    arbitrary commit (the API appears to gate non-fast-forward
-            //    ref moves more strictly than creates/deletes). Splitting
-            //    the operation into deleteRef + createRef sidesteps that.
-            try {
-              await github.rest.git.deleteRef({
-                owner, repo,
-                ref: `tags/${majorTag}`,
-              });
-              core.info(`Deleted existing ${majorTag}`);
-            } catch (e) {
-              if (e.status !== 404 && e.status !== 422) throw e;
-            }
-            await github.rest.git.createRef({
-              owner, repo,
-              ref: `refs/tags/${majorTag}`,
-              sha,
-            });
-            core.info(`Created ${majorTag} -> ${sha}`);
+          tag_name: ${{ inputs.major }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
