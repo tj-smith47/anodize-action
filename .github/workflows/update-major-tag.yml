@@ -58,9 +58,13 @@ jobs:
           echo "Release $TAG_NAME -> commit $sha"
 
           # 2. Update (or create) refs/tags/${MAJOR_TAG} to point at sha.
+          # PATCH refs/tags/X with sha only (no force flag) — this is the
+          # call shape octokit's git.updateRef uses internally, and
+          # GITHUB_TOKEN is allowed to perform it. Passing force=true via
+          # the REST API triggers 403 from GITHUB_TOKEN integrations.
           if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" >/dev/null 2>&1; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR_TAG}" \
-              -f sha="$sha" -F force=true
+              -f sha="$sha"
             echo "Updated $MAJOR_TAG -> $sha"
           else
             gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
