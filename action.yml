@@ -132,7 +132,7 @@ inputs:
       subsequent steps and the anodizer config to consume. The matching
       public key is derived via `openssl rsa -pubout`, exported as
       `APK_PUBLIC_KEY_PATH`, and copied into `./dist/` as
-      `anodizer-apk-signing-key.rsa.pub` so consumers can attach it as
+      `<repo>-apk-signing-key.rsa.pub` so consumers can attach it as
       a release asset via `release.extra_files`; apk verifiers install
       that file under `/etc/apk/keys/` before `apk add`-ing a signed
       package.
@@ -350,7 +350,7 @@ runs:
         # in single-shot release jobs; create it. In --merge jobs dist/ has
         # already been populated by actions/download-artifact.
         mkdir -p ./dist
-        cp "$pubfile" ./dist/anodizer-apk-signing-key.rsa.pub
+        cp "$pubfile" "./dist/${GITHUB_REPOSITORY##*/}-apk-signing-key.rsa.pub"
         echo "APK_PRIVATE_KEY_PATH=${privfile}" >> "$GITHUB_ENV"
         echo "APK_PUBLIC_KEY_PATH=${pubfile}" >> "$GITHUB_ENV"
         echo "::notice::apk signing keys written"
