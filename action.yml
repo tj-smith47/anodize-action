@@ -121,6 +121,23 @@ inputs:
       GPG private key contents to import for signing. The key is piped into
       `gpg --batch --import`.
     required: false
+  apk-private-key:
+    description: >-
+      PEM-format RSA private key for signing apk packages produced by
+      nfpm. Required if your `.anodizer.yaml` configures
+      `nfpm[].apk.signature` (apk-tools uses its own RSA-PSS scheme,
+      not OpenPGP, so the GPG key consumed by `gpg-private-key` does
+      not work here). The private key is written to a temp file with
+      mode 0600 and the path is exported as `APK_PRIVATE_KEY_PATH` for
+      subsequent steps and the anodizer config to consume. The matching
+      public key is derived via `openssl rsa -pubout`, exported as
+      `APK_PUBLIC_KEY_PATH`, and copied into `./dist/` as
+      `anodizer-apk-signing-key.rsa.pub` so consumers can attach it as
+      a release asset via `release.extra_files`; apk verifiers install
+      that file under `/etc/apk/keys/` before `apk add`-ing a signed
+      package.
+    required: false
+    default: ""
   cosign-key:
     description: >
       Cosign private key contents. Written to `cosign.key` in the workdir
@@ -301,6 +318,43 @@ runs:
         gpgconf --kill gpg-agent || true
         echo "::notice::GPG private key imported"
         anodizer::ok "GPG private key imported (keyring + GPG_KEY_PATH for nfpm)"
+
+    - name: Provision apk signing keys
+      if: inputs.apk-private-key != ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        APK_PRIVATE_KEY_INPUT: ${{ inputs.apk-private-key }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        # Defence-in-depth: mask each line in case auto-masking was lost
+        # crossing a reusable-workflow boundary.
+        while IFS= read -r line; do
+          [ -n "$line" ] && echo "::add-mask::$line"
+        done <<< "$APK_PRIVATE_KEY_INPUT"
+        # apk-tools uses RSA-PSS, not OpenPGP, so nfpm's apk packager needs
+        # a raw PEM RSA private key (not the GPG-armored block deb/rpm
+        # consume). Write to $RUNNER_TEMP so the file is cleaned at job end.
+        privfile="${RUNNER_TEMP}/anodizer-apk.rsa"
+        pubfile="${RUNNER_TEMP}/anodizer-apk.rsa.pub"
+        install -m 0600 /dev/null "$privfile"
+        printf '%s\n' "$APK_PRIVATE_KEY_INPUT" > "$privfile"
+        # Derive the matching public key so the release pipeline can attach
+        # it as an asset. apk verifiers install the pub key to
+        # /etc/apk/keys/ before `apk add`-ing a signed package.
+        openssl rsa -in "$privfile" -pubout -out "$pubfile" 2>/dev/null
+        chmod 0644 "$pubfile"
+        # Drop the pub key into dist/ so anodizer's release.extra_files glob
+        # can pick it up alongside the signed apk(s). dist/ may not exist yet
+        # in single-shot release jobs; create it. In --merge jobs dist/ has
+        # already been populated by actions/download-artifact.
+        mkdir -p ./dist
+        cp "$pubfile" ./dist/anodizer-apk-signing-key.rsa.pub
+        echo "APK_PRIVATE_KEY_PATH=${privfile}" >> "$GITHUB_ENV"
+        echo "APK_PUBLIC_KEY_PATH=${pubfile}" >> "$GITHUB_ENV"
+        echo "::notice::apk signing keys written"
+        anodizer::ok "apk signing keys written (APK_PRIVATE_KEY_PATH for nfpm; pub key staged in dist/)"
 
     - name: Write cosign key
       if: inputs.cosign-key != ''

@@ -268,6 +268,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | Input | Description |
 |-------|-------------|
 | `gpg-private-key` | GPG private key contents. Imported into the keyring via `gpg --batch --import` (used by `signs:` blocks). The same key is also written to `$RUNNER_TEMP/anodizer-signing.asc` and exported as `GPG_KEY_PATH` for nfpm package signing — `rpmsign` / `dpkg-sig` / `abuild-sign` read the key directly off disk. Loopback pinentry is enabled so any `GPG_PASSPHRASE` works non-interactively. |
+| `apk-private-key` | PEM-format RSA private key for nfpm's apk packager. apk-tools uses RSA-PSS, not OpenPGP, so the `gpg-private-key` value does not satisfy apk signing. The private key is written to `$RUNNER_TEMP/anodizer-apk.rsa` with mode `0600` and exported as `APK_PRIVATE_KEY_PATH`. Reference from `.anodizer.yaml` via `apk.signature.key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"`. The matching public key is derived via `openssl rsa -pubout`, exported as `APK_PUBLIC_KEY_PATH`, and copied into `./dist/` as `anodizer-apk-signing-key.rsa.pub` so it can be attached to the GitHub Release via `release.extra_files` (apk verifiers need it under `/etc/apk/keys/`). |
 | `cosign-key` | Cosign private key contents. Written to `cosign.key` with mode `0600`. Pair with `COSIGN_PASSWORD` in env. |
 
 ### Execution
