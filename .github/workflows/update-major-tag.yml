@@ -1,8 +1,20 @@
-name: Update Major Tag
+name: Update Major Tag (manual recovery)
+
+# The primary major-tag update path is the inline step in release.yml,
+# because releases created by the default GITHUB_TOKEN do not fire the
+# release:published event (GitHub's recursive-trigger guard).
+#
+# This workflow exists for manual recovery: if a major tag (e.g. v1)
+# ever points at the wrong commit, trigger this from the Actions UI
+# with the target release tag and it will re-point.
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to retarget the major tag to (e.g. v1.2.3)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,35 +23,28 @@ jobs:
   update-major-tag:
     name: Force-update vN to release commit
     runs-on: ubuntu-latest
-    if: ${{ !github.event.release.prerelease && !github.event.release.draft }}
     steps:
       - name: Compute major tag
         id: major
         env:
-          TAG_NAME: ${{ github.event.release.tag_name }}
+          TAG_NAME: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          # github.event.release.tag_name is the just-published tag (e.g. v1.2.3).
-          # Extract the major component to derive the moving tag (e.g. v1).
           if [[ ! "$TAG_NAME" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+([.-].+)?$ ]]; then
-            echo "Tag '$TAG_NAME' is not a vMAJOR.MINOR.PATCH semver — skipping major-tag update." >&2
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "Tag '$TAG_NAME' is not a vMAJOR.MINOR.PATCH semver — aborting." >&2
+            exit 1
           fi
           major="v${BASH_REMATCH[1]}"
           echo "Major tag: $major (from $TAG_NAME)"
           echo "tag=$major" >> "$GITHUB_OUTPUT"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout at release commit
-        if: steps.major.outputs.skip != 'true'
+      - name: Checkout at release tag
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag }}
           fetch-depth: 0
 
       - name: Force-update major tag
-        if: steps.major.outputs.skip != 'true'
         uses: richardsimko/update-tag@v1
         with:
           tag_name: ${{ steps.major.outputs.tag }}

@@ -19,7 +19,10 @@ jobs:
       - name: Run shellcheck on scripts/
         run: |
           shopt -s nullglob
-          shellcheck -x scripts/*.sh
+          # --severity=warning skips SC1091 info noise (shellcheck cannot
+          # resolve ${GITHUB_ACTION_PATH}/... sources outside the action
+          # runtime). Real bugs surface as warning or error.
+          shellcheck --severity=warning -x scripts/*.sh
 
   actionlint:
     name: actionlint

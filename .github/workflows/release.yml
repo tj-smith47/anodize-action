@@ -26,9 +26,25 @@ jobs:
           persist-credentials: false
 
       - name: Semantic Release
+        id: semantic
         uses: cycjimmy/semantic-release-action@v6
         with:
           extra_plugins: |
             conventional-changelog-conventionalcommits@8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Force-update the floating major tag (e.g. v1) to point at the
+      # release commit. Done inline rather than in a separate
+      # release:published-triggered workflow because releases created by
+      # the default GITHUB_TOKEN do NOT fire downstream workflows
+      # (GitHub's recursive-trigger guard). The standalone
+      # update-major-tag.yml is kept for workflow_dispatch / manual
+      # recovery, but the live path is this step.
+      - name: Force-update major tag
+        if: steps.semantic.outputs.new_release_published == 'true'
+        uses: richardsimko/update-tag@v1
+        with:
+          tag_name: v${{ steps.semantic.outputs.new_release_major_version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
