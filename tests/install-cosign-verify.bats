@@ -147,8 +147,11 @@ STUB
         "
     # Must exit non-zero.
     [ "$status" -ne 0 ]
-    # Must emit a message that clearly says verification failed.
-    [[ "$output" == *"FAILED"* ]] || [[ "$output" == *"failed"* ]]
+    # Must emit the loud-fail message from install-deps.sh verbatim.  The
+    # bytes are stable in both NO_COLOR=1 (current test) and ANSI-on modes
+    # because anodizer::err inserts colour escapes around the leading glyph,
+    # not inside the message text.
+    [[ "$output" == *"cosign keyless signature verification FAILED"* ]]
     # Must NOT treat the SHA256 hash-check as a substitute for signature verification.
     [[ "$output" != *"SHA256 already verified"* ]]
 }
