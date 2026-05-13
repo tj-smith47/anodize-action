@@ -161,13 +161,27 @@ install_cosign() {
             fi
             echo "${expected}  /tmp/cosign" | sha256sum -c -
             sudo install /tmp/cosign /usr/local/bin/cosign
-            # Post-install keyless signature verification (best-effort — won't block install).
-            COSIGN_EXPERIMENTAL=1 cosign verify-blob \
-                --certificate /tmp/cosign.pem \
-                --signature /tmp/cosign.sig \
-                --certificate-identity-regexp 'https://github\.com/sigstore/cosign/.*' \
-                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                /tmp/cosign || anodizer::warn "cosign keyless signature verification failed (SHA256 already verified)"
+            # Keyless signature verification.
+            # Cosign releases are signed by the GCP service account
+            # keyless@projectsigstore.iam.gserviceaccount.com via Google OIDC
+            # (not GitHub Actions OIDC).  See:
+            # https://docs.sigstore.dev/cosign/system_config/installation/
+            if [ "${ANODIZER_ACTION_SKIP_COSIGN_VERIFY:-}" = "1" ]; then
+                echo "::warning::cosign keyless signature verification skipped at user request (ANODIZER_ACTION_SKIP_COSIGN_VERIFY=1); SHA256-only validation was performed"
+                anodizer::warn "cosign keyless signature verification skipped by user (SHA256-only, not signature-verified)"
+            else
+                if ! cosign verify-blob \
+                    --certificate /tmp/cosign.pem \
+                    --signature /tmp/cosign.sig \
+                    --certificate-identity keyless@projectsigstore.iam.gserviceaccount.com \
+                    --certificate-oidc-issuer https://accounts.google.com \
+                    /tmp/cosign; then
+                    echo "::error::cosign keyless signature verification FAILED — refusing to install unverified binary"
+                    anodizer::err "cosign keyless signature verification FAILED — refusing to install unverified binary"
+                    exit 1
+                fi
+                anodizer::ok "cosign keyless signature verified"
+            fi
             ;;
         macOS)   brew_install cosign COSIGN_VERSION ;;
         Windows) choco_install cosign COSIGN_VERSION ;;
