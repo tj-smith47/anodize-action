@@ -55,16 +55,19 @@ inputs:
     description: >
       Comma-separated list of build/pipeline dependencies to install.
       Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-      cargo-zigbuild, upx. Uses the platform's native package manager
-      (apt on Linux, brew on macOS, choco on Windows).
+      cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra. Uses the
+      platform's native package manager (apt on Linux, brew on macOS,
+      choco on Windows); some deps fall back to direct downloads when no
+      packaged version exists.
     required: false
   auto-install:
     description: >
       Parse `.anodizer.yaml` in the workdir and automatically install the
       dependencies needed by the configured stages (nfpm, makeself, snapcraft,
       rpmbuild for srpm, cosign for binary_signs/docker_signs, syft for sboms,
-      nsis, create-dmg,
-      flatpak-builder, upx, zig+cargo-zigbuild for cross-compilation).
+      nsis, create-dmg, flatpak-builder, upx, zig+cargo-zigbuild for
+      cross-compilation, alejandra when the nix publisher requests it as the
+      formatter).
     default: 'false'
     required: false
   install-rust:
@@ -262,6 +265,10 @@ runs:
         grep -qE '^nsis:' "$cfg" && deps+=("nsis") || true
         grep -qE '^dmgs:' "$cfg" && deps+=("create-dmg") || true
         grep -qE '^flatpaks:' "$cfg" && deps+=("flatpak") || true
+        # alejandra is only needed when the nix publisher opts into it as
+        # the formatter (the alternative is `nixfmt`, which we don't ship
+        # an auto-installer for yet).
+        grep -qE '^[[:space:]]+formatter:[[:space:]]*alejandra[[:space:]]*$' "$cfg" && deps+=("alejandra") || true
         # pkgs/msis can't be cross-built: warn when config asks for them on the wrong runner.
         if grep -qE '^pkgs:' "$cfg" && [ "${RUNNER_OS:-}" != "macOS" ]; then
           echo "::warning::auto-install: pkgs: requires macOS runner (got ${RUNNER_OS:-unset}); skipping"

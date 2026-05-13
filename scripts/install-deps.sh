@@ -6,7 +6,7 @@
 # each requested dep via the platform-native package manager.
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-# cargo-zigbuild, upx, nsis, create-dmg, flatpak.
+# cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra.
 #
 # Called from action.yml; expects $GITHUB_ACTION_PATH to point at the
 # action root so we can source scripts/lib-colors.sh.
@@ -279,6 +279,49 @@ install_flatpak() {
     esac
 }
 
+# Pinned defaults below MUST be updated together — sha256 is keyed to version.
+# Override with ALEJANDRA_VERSION + ALEJANDRA_SHA256 (both required) when
+# pulling a different release.
+ALEJANDRA_DEFAULT_VERSION="4.0.0"
+ALEJANDRA_DEFAULT_SHA_AMD64="a23b9d47cba945805c6169541046de890e94e07a5aa416c86dee15bca2da6216"
+ALEJANDRA_DEFAULT_SHA_ARM64="a30b0d54ee3f0d6633d0398b50258408d2cc31646a9c8c4ba3ee4ebf2cebd8c8"
+
+install_alejandra() {
+    case "$RUNNER_OS" in
+        Linux)
+            local version="${ALEJANDRA_VERSION:-$ALEJANDRA_DEFAULT_VERSION}"
+            local arch sha
+            case "$RUNNER_ARCH" in
+                X64)   arch=x86_64;  sha="$ALEJANDRA_DEFAULT_SHA_AMD64" ;;
+                ARM64) arch=aarch64; sha="$ALEJANDRA_DEFAULT_SHA_ARM64" ;;
+                *)
+                    echo "::error::Unsupported Linux arch for alejandra: $RUNNER_ARCH"
+                    anodizer::err "Unsupported Linux arch for alejandra: $RUNNER_ARCH"
+                    exit 1
+                    ;;
+            esac
+            if [ "$version" != "$ALEJANDRA_DEFAULT_VERSION" ]; then
+                # Upstream publishes no checksums file, so a version override
+                # MUST come with its own sha — refusing unverified installs.
+                local override_sha="${ALEJANDRA_SHA256:-}"
+                if [ -z "$override_sha" ]; then
+                    echo "::error::ALEJANDRA_VERSION=$version requires ALEJANDRA_SHA256 (upstream publishes no checksums file)"
+                    anodizer::err "ALEJANDRA_VERSION=$version requires ALEJANDRA_SHA256"
+                    exit 1
+                fi
+                sha="$override_sha"
+            fi
+            local bin="alejandra-${arch}-unknown-linux-musl"
+            curl -sSfL "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" -o /tmp/alejandra
+            echo "${sha}  /tmp/alejandra" | sha256sum -c -
+            sudo install -m 0755 /tmp/alejandra /usr/local/bin/alejandra
+            rm -f /tmp/alejandra
+            ;;
+        macOS)   brew_install alejandra ALEJANDRA_VERSION ;;
+        Windows) skip_unsupported_os alejandra "Linux/macOS only (nix publisher targets Unix runners)" ;;
+    esac
+}
+
 for dep in "${DEPS[@]}"; do
     anodizer::verb Installing "${dep}"
     pre_queue=${#APT_PKGS[@]}
@@ -295,8 +338,9 @@ for dep in "${DEPS[@]}"; do
         nsis)           install_nsis ;;
         create-dmg)     install_create_dmg ;;
         flatpak)        install_flatpak ;;
+        alejandra)      install_alejandra ;;
         *)
-            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak)"
+            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra)"
             anodizer::err "unknown dependency: $dep"
             exit 1
             ;;
