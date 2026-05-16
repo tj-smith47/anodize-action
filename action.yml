@@ -350,14 +350,17 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # The harness's default --stages=build,archive,sbom,sign,checksum spawns
+        # a child `anodize release` that hits the sbom (needs syft) and sign
+        # (needs cosign) stages, so syft+cosign must be present on every shard.
         # zig + cargo-zigbuild are only consumed by Linux cross-compile builds.
         # macOS / Windows compile natively for their per-shard target list, so
         # install-deps.sh would skip them anyway — but pre-filtering here keeps
         # the action log readable on those runners.
         if [ "$RUNNER_OS" = "Linux" ]; then
-          echo "deps=zig,cargo-zigbuild,upx" >> "$GITHUB_OUTPUT"
+          echo "deps=zig,cargo-zigbuild,upx,syft,cosign" >> "$GITHUB_OUTPUT"
         else
-          echo "deps=upx" >> "$GITHUB_OUTPUT"
+          echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Install dependencies

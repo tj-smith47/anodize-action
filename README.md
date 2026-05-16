@@ -186,9 +186,11 @@ worktree and diffs the artifact digests, surfacing non-deterministic
 inputs (timestamps, build-id, randomized symbol layout, …) before they
 poison a release. With `determinism: true`, a 3-OS matrix collapses to
 ~10 lines per shard — the action handles Rust toolchain install,
-cross-build deps (zig + cargo-zigbuild + upx on Linux), from-source
-build of anodizer, per-shard target-CSV derivation via `anodizer targets
---json`, `rustup target add` for each triple, and harness invocation:
+cross-build deps (zig + cargo-zigbuild + upx on Linux; upx on
+macOS/Windows) plus the harness's stage deps (syft for sbom, cosign for
+sign), from-source build of anodizer, per-shard target-CSV derivation via
+`anodizer targets --json`, `rustup target add` for each triple, and
+harness invocation:
 
 ```yaml
 determinism-check:
@@ -331,7 +333,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `determinism` | `false` | Run `anodizer check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx on Linux, upx on macOS/Windows). Mutually exclusive with `args`. |
+| `determinism` | `false` | Run `anodizer check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx + syft + cosign on Linux; upx + syft + cosign on macOS/Windows). Mutually exclusive with `args`. |
 | `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
 | `determinism-stages` | `build,archive,sbom,sign,checksum` | Stages to validate (comma-separated). |
 | `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodizer targets --json` by filtering on the current runner label. |
