@@ -5,7 +5,7 @@
 # Inputs (env):
 #   RUNNER_OS   — Linux | macOS | Windows (set automatically by GitHub Actions)
 #   OVERRIDE    — optional explicit target CSV; bypasses derivation when set
-#   ANODIZE_BIN — optional `anodize` invocation (defaults to `anodize`). Tests
+#   ANODIZE_BIN — optional `anodizer` invocation (defaults to `anodizer`). Tests
 #                 stub this to feed a fixture JSON without spawning the real
 #                 binary.
 #
@@ -19,7 +19,7 @@
 #   - the targets JSON is missing/empty for the runner,
 #   - jq cannot parse the output.
 #
-# Filters `anodize targets --json` (which emits a GitHub-Actions matrix-style
+# Filters `anodizer targets --json` (which emits a GitHub-Actions matrix-style
 # `{"include": [{"os": "ubuntu-latest", "target": "...", "artifact": "..."}]}`)
 # by mapping RUNNER_OS to its runner label.
 
@@ -27,7 +27,7 @@ set -euo pipefail
 
 : "${RUNNER_OS:?RUNNER_OS is required}"
 OVERRIDE="${OVERRIDE:-}"
-ANODIZE_BIN="${ANODIZE_BIN:-anodize}"
+ANODIZE_BIN="${ANODIZE_BIN:-anodizer}"
 
 emit_csv() {
     local csv="$1"
@@ -53,10 +53,10 @@ case "$RUNNER_OS" in
         ;;
 esac
 
-# `anodize targets --json` emits `{"include": [{"os":..., "target":..., ...}]}`.
+# `anodizer targets --json` emits `{"include": [{"os":..., "target":..., ...}]}`.
 # Filter to entries whose `os` matches the runner label for this shard.
 if ! json=$($ANODIZE_BIN targets --json 2>/dev/null); then
-    echo "::error::\`$ANODIZE_BIN targets --json\` failed; is anodize installed and is .anodizer.yaml present?"
+    echo "::error::\`$ANODIZE_BIN targets --json\` failed; is anodizer installed and is .anodizer.yaml present?"
     exit 1
 fi
 
@@ -70,7 +70,7 @@ csv=$(printf '%s' "$json" \
     ')
 
 if [ -z "$csv" ]; then
-    echo "::error::No targets match RUNNER_OS=$RUNNER_OS (looked for os=$want in \`anodize targets --json\`)"
+    echo "::error::No targets match RUNNER_OS=$RUNNER_OS (looked for os=$want in \`anodizer targets --json\`)"
     exit 1
 fi
 

@@ -181,13 +181,13 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
 
 ### Determinism harness (one-liner cross-platform shard)
 
-`anodize check determinism` rebuilds your pipeline N times in a hermetic
+`anodizer check determinism` rebuilds your pipeline N times in a hermetic
 worktree and diffs the artifact digests, surfacing non-deterministic
 inputs (timestamps, build-id, randomized symbol layout, …) before they
 poison a release. With `determinism: true`, a 3-OS matrix collapses to
 ~10 lines per shard — the action handles Rust toolchain install,
 cross-build deps (zig + cargo-zigbuild + upx on Linux), from-source
-build of anodize, per-shard target-CSV derivation via `anodize targets
+build of anodizer, per-shard target-CSV derivation via `anodizer targets
 --json`, `rustup target add` for each triple, and harness invocation:
 
 ```yaml
@@ -331,10 +331,10 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `determinism` | `false` | Run `anodize check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx on Linux, upx on macOS/Windows). Mutually exclusive with `args`. |
-| `determinism-runs` | `2` | N for `anodize check determinism --runs=N`. |
+| `determinism` | `false` | Run `anodizer check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx on Linux, upx on macOS/Windows). Mutually exclusive with `args`. |
+| `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
 | `determinism-stages` | `build,archive,sbom,sign,checksum` | Stages to validate (comma-separated). |
-| `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodize targets --json` by filtering on the current runner label. |
+| `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodizer targets --json` by filtering on the current runner label. |
 
 ## Outputs
 
