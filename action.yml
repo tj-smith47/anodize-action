@@ -166,6 +166,36 @@ inputs:
     default: 'false'
     required: false
 
+  # ---------------------------------------------------------------------------
+  # Determinism harness
+  # ---------------------------------------------------------------------------
+  determinism:
+    description: >
+      Run the determinism harness (`anodize check determinism`) on this shard.
+      When true, the action: installs Rust (if not already), builds anodize
+      from source, installs cross-build deps (zig, cargo-zigbuild, upx) on
+      Linux, derives the configured-target CSV for the current RUNNER_OS via
+      `anodize targets --json`, `rustup target add`s those triples, and
+      invokes the harness. Intended to be the entire body of a per-OS
+      harness shard on a 3-OS matrix [ubuntu-latest, macos-latest,
+      windows-latest]. Mutually exclusive with `args`.
+    default: 'false'
+    required: false
+  determinism-runs:
+    description: 'N for `anodize check determinism --runs=N`.'
+    default: '2'
+    required: false
+  determinism-stages:
+    description: 'Stages to validate (comma-separated).'
+    default: 'build,archive,sbom,sign,checksum'
+    required: false
+  determinism-targets:
+    description: >
+      Explicit target CSV override. When unset, the action filters
+      `anodize targets --json` to entries matching the current RUNNER_OS.
+      Set when your shard runs on a non-standard runner label.
+    required: false
+
 outputs:
   artifacts:
     description: 'Build result artifacts JSON (contents of dist/artifacts.json).'
@@ -225,10 +255,28 @@ runs:
         fi
 
     # -------------------------------------------------------------------------
-    # Rust toolchain (optional; prereq for from-source and cargo-zigbuild)
+    # Determinism-mode mutual-exclusion check — `args` is forbidden in
+    # determinism mode because the action drives the harness invocation
+    # itself (the harness already wraps `anodize release ...` via
+    # `anodize check determinism`).
+    # -------------------------------------------------------------------------
+    - name: Validate determinism inputs
+      if: inputs.determinism == 'true' && inputs.args != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        echo "::error::determinism: true is mutually exclusive with args:; the action invokes \`anodize check determinism\` directly"
+        anodizer::err "determinism: true is mutually exclusive with args:"
+        exit 1
+
+    # -------------------------------------------------------------------------
+    # Rust toolchain (optional; prereq for from-source and cargo-zigbuild).
+    # Determinism mode auto-enables this — the harness builds anodize from
+    # source so it tests the actual code under review, not a stale release.
     # -------------------------------------------------------------------------
     - name: Install Rust toolchain
-      if: inputs.install-rust == 'true'
+      if: inputs.install-rust == 'true' || inputs.determinism == 'true'
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
     # -------------------------------------------------------------------------
@@ -282,12 +330,29 @@ runs:
         echo "::notice::auto-install detected: ${joined:-none}"
         echo "deps=$joined" >> "$GITHUB_OUTPUT"
 
+    - name: Emit determinism dependency set
+      if: inputs.determinism == 'true'
+      id: det-deps
+      shell: bash
+      run: |
+        set -euo pipefail
+        # zig + cargo-zigbuild are only consumed by Linux cross-compile builds.
+        # macOS / Windows compile natively for their per-shard target list, so
+        # install-deps.sh would skip them anyway — but pre-filtering here keeps
+        # the action log readable on those runners.
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          echo "deps=zig,cargo-zigbuild,upx" >> "$GITHUB_OUTPUT"
+        else
+          echo "deps=upx" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Install dependencies
-      if: inputs.install != '' || steps.auto-detect.outputs.deps != ''
+      if: inputs.install != '' || steps.auto-detect.outputs.deps != '' || steps.det-deps.outputs.deps != ''
       shell: bash
       env:
         EXPLICIT_INSTALL: ${{ inputs.install }}
         AUTO_INSTALL: ${{ steps.auto-detect.outputs.deps }}
+        DETERMINISM_INSTALL: ${{ steps.det-deps.outputs.deps }}
       run: "${GITHUB_ACTION_PATH}/scripts/install-deps.sh"
 
     # -------------------------------------------------------------------------
@@ -434,7 +499,7 @@ runs:
     # Installation — Path B: from GitHub release
     # -------------------------------------------------------------------------
     - name: Resolve version
-      if: inputs.from-artifact == '' && inputs.from-source != 'true'
+      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true'
       id: version
       shell: bash
       env:
@@ -484,7 +549,7 @@ runs:
         anodizer::verb Installing "anodizer ${tag}"
 
     - name: Download release
-      if: inputs.from-artifact == '' && inputs.from-source != 'true'
+      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true'
       shell: bash
       env:
         TAG: ${{ steps.version.outputs.tag }}
@@ -542,7 +607,7 @@ runs:
     # Installation — Path C: from source (bootstrap)
     # -------------------------------------------------------------------------
     - name: Build anodizer from source
-      if: inputs.from-source == 'true'
+      if: inputs.from-source == 'true' || inputs.determinism == 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
@@ -672,10 +737,65 @@ runs:
         fi
 
     # -------------------------------------------------------------------------
+    # Determinism harness — runs after the from-source build (so `anodize`
+    # is on PATH) and after install-deps (so zig / cargo-zigbuild / upx are
+    # available for the per-target rebuilds the harness drives).
+    # -------------------------------------------------------------------------
+    - name: Resolve determinism target CSV
+      if: inputs.determinism == 'true'
+      id: det-targets
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        RUNNER_OS: ${{ runner.os }}
+        OVERRIDE: ${{ inputs.determinism-targets }}
+      run: "${GITHUB_ACTION_PATH}/scripts/determinism-resolve-targets.sh"
+
+    - name: Install determinism target triples
+      if: inputs.determinism == 'true'
+      shell: bash
+      env:
+        TARGETS: ${{ steps.det-targets.outputs.csv }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        # The from-source build only installed the host triple. The harness
+        # rebuilds anodize per configured target inside its hermetic worktree,
+        # so each shard needs its per-OS target list rustup-target-added.
+        IFS=',' read -ra triples <<< "$TARGETS"
+        for t in "${triples[@]}"; do
+          t=$(printf '%s' "$t" | xargs)
+          [ -z "$t" ] && continue
+          anodizer::verb Adding "rust target $t"
+          rustup target add "$t"
+        done
+        anodizer::ok "rust targets installed: ${TARGETS}"
+
+    - name: Run determinism harness
+      if: inputs.determinism == 'true'
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        TARGETS: ${{ steps.det-targets.outputs.csv }}
+        STAGES: ${{ inputs.determinism-stages }}
+        RUNS: ${{ inputs.determinism-runs }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        anodizer::section "anodize check determinism"
+        anodizer::kv targets "$TARGETS"
+        anodizer::kv stages "$STAGES"
+        anodizer::kv runs "$RUNS"
+        # No retry loop here. The harness gates release-quality drift; a
+        # retry would mask a flaky-but-real failure. Fail loudly on the
+        # first run.
+        anodize check determinism --stages="$STAGES" --runs="$RUNS" --targets="$TARGETS"
+
+    # -------------------------------------------------------------------------
     # Run anodizer
     # -------------------------------------------------------------------------
     - name: Run anodizer
-      if: inputs.install-only != 'true' && inputs.args != ''
+      if: inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
@@ -729,7 +849,7 @@ runs:
     # Outputs
     # -------------------------------------------------------------------------
     - name: Collect outputs
-      if: inputs.install-only != 'true' && inputs.args != ''
+      if: inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
       id: outputs
       shell: bash
       working-directory: ${{ inputs.workdir }}

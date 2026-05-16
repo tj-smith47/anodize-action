@@ -179,6 +179,54 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
     git push origin HEAD
 ```
 
+### Determinism harness (one-liner cross-platform shard)
+
+`anodize check determinism` rebuilds your pipeline N times in a hermetic
+worktree and diffs the artifact digests, surfacing non-deterministic
+inputs (timestamps, build-id, randomized symbol layout, …) before they
+poison a release. With `determinism: true`, a 3-OS matrix collapses to
+~10 lines per shard — the action handles Rust toolchain install,
+cross-build deps (zig + cargo-zigbuild + upx on Linux), from-source
+build of anodize, per-shard target-CSV derivation via `anodize targets
+--json`, `rustup target add` for each triple, and harness invocation:
+
+```yaml
+determinism-check:
+  name: Determinism Harness (${{ matrix.os }})
+  strategy:
+    fail-fast: false
+    matrix:
+      os: [ubuntu-latest, macos-latest, windows-latest]
+  runs-on: ${{ matrix.os }}
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - uses: tj-smith47/anodizer-action@v1
+      with:
+        determinism: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Per-shard target lists are auto-derived from `.anodizer.yaml` (only
+targets whose `os` matches the current runner are validated, mirroring
+how `build:` shards split work). The CSV is logged as a notice so a
+shard's scope is visible in the run log.
+
+Tune with:
+
+| Input | Default | Purpose |
+|-------|---------|---------|
+| `determinism-runs` | `2` | N for `--runs=N`. |
+| `determinism-stages` | `build,archive,sbom,sign,checksum` | Stages to diff per run. |
+| `determinism-targets` | (auto) | Override the target CSV; useful on non-standard runner labels. |
+
+The harness step does **not** retry on failure — it gates release
+quality, so a flaky retry would mask drift. `determinism: true` is
+mutually exclusive with `args:` (the action invokes the harness
+directly).
+
 ### Nightly builds
 
 Anodizer publishes immutable nightly tags shaped `vX.Y.Z-<sha>-nightly`
@@ -278,6 +326,15 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | `args` | | Arguments to pass to anodizer (e.g. `release --snapshot`). |
 | `workdir` | `.` | Working directory (relative to repo root). |
 | `install-only` | `false` | Only install anodizer (and any requested dependencies/keys); skip running. |
+
+### Determinism harness
+
+| Input | Default | Description |
+|-------|---------|-------------|
+| `determinism` | `false` | Run `anodize check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx on Linux, upx on macOS/Windows). Mutually exclusive with `args`. |
+| `determinism-runs` | `2` | N for `anodize check determinism --runs=N`. |
+| `determinism-stages` | `build,archive,sbom,sign,checksum` | Stages to validate (comma-separated). |
+| `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodize targets --json` by filtering on the current runner label. |
 
 ## Outputs
 

@@ -18,15 +18,19 @@ source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
 : "${RUNNER_OS:?RUNNER_OS is required}"
 EXPLICIT_INSTALL="${EXPLICIT_INSTALL:-}"
 AUTO_INSTALL="${AUTO_INSTALL:-}"
+DETERMINISM_INSTALL="${DETERMINISM_INSTALL:-}"
 
+# Merge order: explicit (user) → auto-detect (.anodizer.yaml) → determinism
+# (action-derived). Dedupe pass below collapses overlaps.
 combined="${EXPLICIT_INSTALL}"
-if [ -n "$AUTO_INSTALL" ]; then
+for extra in "$AUTO_INSTALL" "$DETERMINISM_INSTALL"; do
+    [ -z "$extra" ] && continue
     if [ -n "$combined" ]; then
-        combined="${combined},${AUTO_INSTALL}"
+        combined="${combined},${extra}"
     else
-        combined="$AUTO_INSTALL"
+        combined="$extra"
     fi
-fi
+done
 
 # Dedupe (POSIX-safe; macOS ships bash 3.2 — no associative arrays).
 IFS=',' read -ra RAW <<< "$combined"
