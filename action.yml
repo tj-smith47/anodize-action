@@ -280,6 +280,20 @@ runs:
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
     # -------------------------------------------------------------------------
+    # Cargo target-dir cache (from-source / determinism paths only).
+    # Without this, every determinism shard cold-builds anodize from scratch,
+    # which dominates shard wall-time on cache-cold runners. The cache key is
+    # disambiguated per mode so a from-source consumer doesn't collide with a
+    # determinism shard (different feature sets / build profiles otherwise).
+    # -------------------------------------------------------------------------
+    - name: Cache cargo target dir
+      if: inputs.determinism == 'true' || inputs.from-source == 'true'
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        key: anodize-action-${{ inputs.determinism == 'true' && 'determinism' || 'from-source' }}
+        workspaces: ${{ inputs.workdir }}
+
+    # -------------------------------------------------------------------------
     # Dependency installation
     # -------------------------------------------------------------------------
     - name: Auto-detect dependencies from .anodizer.yaml
