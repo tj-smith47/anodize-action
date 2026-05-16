@@ -221,7 +221,7 @@ Tune with:
 | Input | Default | Purpose |
 |-------|---------|---------|
 | `determinism-runs` | `2` | N for `--runs=N`. |
-| `determinism-stages` | `build,archive,sbom,sign,checksum` | Stages to diff per run. |
+| `determinism-stages` | `build,archive,sbom,checksum` | Stages to diff per run. `sign` is excluded by default (shards lack keys); pass `build,archive,sbom,sign,checksum` to opt in when keys are provisioned. |
 | `determinism-targets` | (auto) | Override the target CSV; useful on non-standard runner labels. |
 
 The harness step does **not** retry on failure — it gates release
@@ -335,7 +335,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 |-------|---------|-------------|
 | `determinism` | `false` | Run `anodizer check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx + syft + cosign on Linux; upx + syft + cosign on macOS/Windows). Mutually exclusive with `args`. |
 | `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
-| `determinism-stages` | `build,archive,sbom,sign,checksum` | Stages to validate (comma-separated). |
+| `determinism-stages` | `build,archive,sbom,checksum` | Stages to validate (comma-separated). `sign` is opt-in only — pass `build,archive,sbom,sign,checksum` when GPG/cosign keys are provisioned. |
 | `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodizer targets --json` by filtering on the current runner label. |
 
 ## Outputs

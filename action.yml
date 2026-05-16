@@ -186,8 +186,11 @@ inputs:
     default: '2'
     required: false
   determinism-stages:
-    description: 'Stages to validate (comma-separated).'
-    default: 'build,archive,sbom,sign,checksum'
+    description: >
+      Stages to validate (comma-separated). Default omits `sign` because
+      hermetic determinism shards typically lack GPG_FINGERPRINT /
+      COSIGN_KEY; override to include `sign` when keys are provisioned.
+    default: 'build,archive,sbom,checksum'
     required: false
   determinism-targets:
     description: >
@@ -350,9 +353,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # The harness's default --stages=build,archive,sbom,sign,checksum spawns
-        # a child `anodize release` that hits the sbom (needs syft) and sign
-        # (needs cosign) stages, so syft+cosign must be present on every shard.
+        # The harness's default --stages=build,archive,sbom,checksum spawns
+        # a child `anodize release` that hits the sbom stage (needs syft).
+        # `sign` is excluded from the default because the hermetic shards
+        # don't have GPG/cosign keys; consumers who override
+        # determinism-stages to include sign must provision keys
+        # themselves. We still preinstall cosign because (a) it's cheap,
+        # (b) consumers can opt into sign via determinism-stages without
+        # having to also extend the toolchain set, and (c) other action
+        # flows (release-time signing) consume it.
         # zig + cargo-zigbuild are only consumed by Linux cross-compile builds.
         # macOS / Windows compile natively for their per-shard target list, so
         # install-deps.sh would skip them anyway — but pre-filtering here keeps
