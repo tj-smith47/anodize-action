@@ -362,25 +362,15 @@ runs:
         # (b) consumers can opt into sign via determinism-stages without
         # having to also extend the toolchain set, and (c) other action
         # flows (release-time signing) consume it.
-        # zig + cargo-zigbuild are consumed by:
-        #   - Linux cross-compile builds (always, for non-native targets).
-        #   - Windows MSVC builds (v0.3.0 cycle 15, 2026-05-17): the build
-        #     stage routes `*-pc-windows-msvc` targets through
-        #     `cargo zigbuild` to get `lld-link` (reproducible by design)
-        #     in place of `link.exe` (six cycles of MSVC link-flag tuning
-        #     still drifted). See
-        #     `crates/stage-build/src/command.rs::detect_cross_strategy_for_target`
-        #     for the carve-out.
-        #   - macOS still compiles natively for its per-shard target list,
-        #     so the macOS shard skips zig/cargo-zigbuild.
-        case "$RUNNER_OS" in
-          Linux|Windows)
-            echo "deps=zig,cargo-zigbuild,upx,syft,cosign" >> "$GITHUB_OUTPUT"
-            ;;
-          *)
-            echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
-            ;;
-        esac
+        # zig + cargo-zigbuild are only consumed by Linux cross-compile builds.
+        # macOS / Windows compile natively for their per-shard target list, so
+        # install-deps.sh would skip them anyway — but pre-filtering here keeps
+        # the action log readable on those runners.
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          echo "deps=zig,cargo-zigbuild,upx,syft,cosign" >> "$GITHUB_OUTPUT"
+        else
+          echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Install dependencies
       if: inputs.install != '' || steps.auto-detect.outputs.deps != '' || steps.det-deps.outputs.deps != ''
