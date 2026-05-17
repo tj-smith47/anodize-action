@@ -186,11 +186,8 @@ inputs:
     default: '2'
     required: false
   determinism-stages:
-    description: >
-      Stages to validate (comma-separated). Default omits `sign` because
-      hermetic determinism shards typically lack GPG_FINGERPRINT /
-      COSIGN_KEY; override to include `sign` when keys are provisioned.
-    default: 'build,archive,sbom,checksum'
+    description: 'Stages to validate (comma-separated).'
+    default: 'build,archive,sbom,sign,checksum'
     required: false
   determinism-targets:
     description: >
