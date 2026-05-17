@@ -186,8 +186,14 @@ inputs:
     default: '2'
     required: false
   determinism-stages:
-    description: 'Stages to validate (comma-separated).'
-    default: 'build,archive,sbom,sign,checksum'
+    description: >
+      Stages to validate (comma-separated). When unset, defaults to the
+      stages configured-and-installable on the current RUNNER_OS:
+      Linux gets `build,source,upx,archive,nfpm,sbom,sign,checksum`;
+      macOS and Windows get `build,source,upx,archive,sbom,sign,checksum`
+      (no nfpm — apt is Linux-only, and apk/deb/rpm signing isn't
+      provisioned on the non-Linux shards). Explicit values override.
+    default: ''
     required: false
   determinism-targets:
     description: >
@@ -350,21 +356,16 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # The harness's default --stages=build,archive,sbom,checksum spawns
-        # a child `anodize release` that hits the sbom stage (needs syft).
-        # `sign` is excluded from the default because the hermetic shards
-        # don't have GPG/cosign keys; consumers who override
-        # determinism-stages to include sign must provision keys
-        # themselves. We still preinstall cosign because (a) it's cheap,
-        # (b) consumers can opt into sign via determinism-stages without
-        # having to also extend the toolchain set, and (c) other action
-        # flows (release-time signing) consume it.
-        # zig + cargo-zigbuild are only consumed by Linux cross-compile builds.
-        # macOS / Windows compile natively for their per-shard target list, so
-        # install-deps.sh would skip them anyway — but pre-filtering here keeps
-        # the action log readable on those runners.
+        # Tools needed by the harness's per-shard `determinism-stages`
+        # default. Linux adds nfpm because the Linux default stage list
+        # includes nfpm; the other runners' default list does not, so
+        # they skip the install. zig + cargo-zigbuild are Linux-only
+        # because cross-compile from non-Linux runners isn't supported
+        # by the matrix. cosign / syft are pre-installed even when
+        # sign / sbom would skip — both are cheap and the determinism
+        # default exercises both.
         if [ "$RUNNER_OS" = "Linux" ]; then
-          echo "deps=zig,cargo-zigbuild,upx,syft,cosign" >> "$GITHUB_OUTPUT"
+          echo "deps=zig,cargo-zigbuild,upx,nfpm,syft,cosign" >> "$GITHUB_OUTPUT"
         else
           echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
         fi
@@ -800,19 +801,29 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         TARGETS: ${{ steps.det-targets.outputs.csv }}
-        STAGES: ${{ inputs.determinism-stages }}
+        STAGES_INPUT: ${{ inputs.determinism-stages }}
         RUNS: ${{ inputs.determinism-runs }}
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        # Per-OS default stage list. Empty `inputs.determinism-stages`
+        # → expand to the OS-appropriate default; non-empty → caller
+        # override wins.
+        if [ -n "$STAGES_INPUT" ]; then
+          stages="$STAGES_INPUT"
+        elif [ "$RUNNER_OS" = "Linux" ]; then
+          stages="build,source,upx,archive,nfpm,sbom,sign,checksum"
+        else
+          stages="build,source,upx,archive,sbom,sign,checksum"
+        fi
         anodizer::section "anodizer check determinism"
         anodizer::kv targets "$TARGETS"
-        anodizer::kv stages "$STAGES"
+        anodizer::kv stages "$stages"
         anodizer::kv runs "$RUNS"
         # No retry loop here. The harness gates release-quality drift; a
         # retry would mask a flaky-but-real failure. Fail loudly on the
         # first run.
-        anodizer check determinism --stages="$STAGES" --runs="$RUNS" --targets="$TARGETS"
+        anodizer check determinism --stages="$stages" --runs="$RUNS" --targets="$TARGETS"
 
     # -------------------------------------------------------------------------
     # Run anodizer
