@@ -207,7 +207,11 @@ install_cosign() {
                 anodizer::err "cosign checksum entry for ${bin} not found (${version})"
                 exit 1
             fi
-            actual=$(sha256sum "${install_dir}/cosign.exe" | awk '{print $1}')
+            # `cd` into the install dir so sha256sum sees a bare filename;
+            # passing a Windows-style path (with backslashes) triggers
+            # sha256sum's GNU-coreutils escape format which prepends `\`
+            # to the hash and breaks string equality below.
+            actual=$(cd "$install_dir" && sha256sum cosign.exe | awk '{print $1}')
             if [ "$expected" != "$actual" ]; then
                 echo "::error::cosign SHA256 mismatch (expected ${expected}, got ${actual})"
                 anodizer::err "cosign SHA256 mismatch"
