@@ -188,7 +188,34 @@ install_cosign() {
             fi
             ;;
         macOS)   brew_install cosign COSIGN_VERSION ;;
-        Windows) choco_install cosign COSIGN_VERSION ;;
+        Windows)
+            # Chocolatey ships cosign 1.3.1, which pre-dates several
+            # flags anodizer's sign blocks rely on (`--bundle`,
+            # `--output-key-prefix`). Direct download from the
+            # sigstore release page gets us 2.x cleanly. SHA256
+            # verification mirrors the Linux path.
+            local version="${COSIGN_VERSION:-v2.4.1}"
+            local base="https://github.com/sigstore/cosign/releases/download/${version}"
+            local bin="cosign-windows-amd64.exe"
+            local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
+            mkdir -p "$install_dir"
+            curl -sSfL "${base}/${bin}" -o "${install_dir}/cosign.exe"
+            curl -sSfL "${base}/cosign_checksums.txt" -o "${install_dir}/cosign_checksums.txt"
+            expected=$(grep " ${bin}\$" "${install_dir}/cosign_checksums.txt" | awk '{print $1}')
+            if [ -z "$expected" ]; then
+                echo "::error::cosign checksum entry for ${bin} not found in cosign_checksums.txt (${version})"
+                anodizer::err "cosign checksum entry for ${bin} not found (${version})"
+                exit 1
+            fi
+            actual=$(sha256sum "${install_dir}/cosign.exe" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+                echo "::error::cosign SHA256 mismatch (expected ${expected}, got ${actual})"
+                anodizer::err "cosign SHA256 mismatch"
+                exit 1
+            fi
+            echo "${install_dir}" >> "$GITHUB_PATH"
+            anodizer::ok "cosign ${version} installed at ${install_dir}/cosign.exe"
+            ;;
     esac
 }
 
