@@ -153,8 +153,14 @@ install_cosign() {
             local base="https://github.com/sigstore/cosign/releases/download/${version}"
             local bin="cosign-linux-amd64"
             curl -sSfL "${base}/${bin}" -o /tmp/cosign
-            curl -sSfL "${base}/${bin}-keyless.pem" -o /tmp/cosign.pem
-            curl -sSfL "${base}/${bin}-keyless.sig" -o /tmp/cosign.sig
+            # Sigstore publishes the keyless .pem and .sig as base64-encoded
+            # files (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode
+            # before handing to cosign — its PEM parser does not strip
+            # base64, so a raw download fails verify-blob with a misleading
+            # "exactly one of: key reference (--key), certificate (--cert)..."
+            # error (the cert IS passed, but the file content can't be parsed).
+            curl -sSfL "${base}/${bin}-keyless.pem" | base64 -d > /tmp/cosign.pem
+            curl -sSfL "${base}/${bin}-keyless.sig" | base64 -d > /tmp/cosign.sig
             curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
             # SHA256 verification — bootstraps trust without requiring cosign-to-verify-cosign.
             expected=$(grep " ${bin}\$" /tmp/cosign_checksums.txt | awk '{print $1}')
