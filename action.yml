@@ -203,16 +203,21 @@ inputs:
     required: false
   preserve-dist:
     description: >
-      Forward `--preserve-dist=./preserved-dist` to the determinism
-      harness on a green run, then rename the per-shard manifests
-      (`context.json`, `artifacts.json`, `metadata.json`) with a
-      `-<shard>` suffix so a sharded matrix's `upload-artifact` +
-      `download-artifact merge-multiple: true` pipeline doesn't collide
-      on identically-named files. The downstream `release: --publish-only`
-      job consumes the merged tree directly without a recompile.
-      Ignored when `determinism: false`.
+      Have the determinism harness preserve its hermetic dist tree to
+      `./preserved-dist/` so a downstream `release: --publish-only` job
+      can publish directly from the byte-stable artifacts. Manifests
+      get a `-<shard-label>` suffix (`context-<label>.json`, etc.) so
+      sharded matrix uploads don't collide under `merge-multiple: true`.
+      Requires `determinism: 'true'` and `shard-label`.
     default: 'false'
     required: false
+  shard-label:
+    description: >
+      Per-shard suffix appended to preserved-dist manifests. The caller
+      names each shard explicitly; the action does not derive labels.
+      Required when `preserve-dist: 'true'`.
+    required: false
+    default: ''
 
 outputs:
   artifacts:
@@ -287,6 +292,26 @@ runs:
         echo "::error::determinism: true is mutually exclusive with args:; the action invokes \`anodizer check determinism\` directly"
         anodizer::err "determinism: true is mutually exclusive with args:"
         exit 1
+
+    - name: Validate preserve-dist inputs
+      if: inputs.preserve-dist == 'true'
+      shell: bash
+      env:
+        DETERMINISM: ${{ inputs.determinism }}
+        SHARD_LABEL: ${{ inputs.shard-label }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        if [ "$DETERMINISM" != "true" ]; then
+          echo "::error::preserve-dist: 'true' requires determinism: 'true'"
+          anodizer::err "preserve-dist requires determinism mode"
+          exit 1
+        fi
+        if [ -z "$SHARD_LABEL" ]; then
+          echo "::error::preserve-dist: 'true' requires shard-label to be set"
+          anodizer::err "preserve-dist requires shard-label input"
+          exit 1
+        fi
 
     # -------------------------------------------------------------------------
     # Rust toolchain (optional; prereq for from-source and cargo-zigbuild).
@@ -830,20 +855,13 @@ runs:
           stages="build,source,upx,archive,sbom,sign,checksum"
         fi
 
-        # When `preserve-dist: true`, the harness preserves the hermetic
-        # dist tree for the downstream `--publish-only` job to consume.
+        # `preserve-dist: true` emits a hermetic dist tree for the
+        # downstream `release: --publish-only` job. The harness
+        # auto-detects tagged HEAD and toggles snapshot mode itself —
+        # no GHA-specific `GITHUB_REF` sniffing needed here.
         extra_args=()
         if [ "$PRESERVE_DIST" = "true" ]; then
           extra_args+=(--preserve-dist=./preserved-dist)
-        fi
-
-        # On a tag-push run, drop `--snapshot` from the child release
-        # subprocess so produce-stages name artifacts with the actual
-        # release version (no `-SNAPSHOT-<sha>` suffix). The non-snapshot
-        # SDE source on a tag push is the tag commit's timestamp — same
-        # value the regular release path resolves.
-        if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
-          extra_args+=(--no-snapshot)
         fi
 
         anodizer::section "anodizer check determinism"
@@ -867,28 +885,18 @@ runs:
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
-        TARGETS: ${{ steps.det-targets.outputs.csv }}
+        SHARD_LABEL: ${{ inputs.shard-label }}
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
 
         # `actions/upload-artifact@v4` followed by `download-artifact@v4
         # merge-multiple: true` will collide on identically-named files
-        # across shards. Discriminate each shard's manifests with a
-        # `-<shard>` suffix.
-        #
-        # Shard label: lower-case `RUNNER_OS`, refined for single-target
-        # runs (e.g. `windows` becomes `windows-x86_64` when the shard
-        # was scoped to one Windows triple). Multi-target shards keep
-        # the bare OS label so manifests stay collision-free across
-        # the matrix.
-        shard="$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')"
-        triple_count=$(printf '%s' "$TARGETS" | awk -F',' '{ n=0; for (i=1;i<=NF;i++) if ($i!="") n++; print n }')
-        if [ "$triple_count" = "1" ]; then
-          # Use the triple's leading arch (e.g. `x86_64-pc-windows-msvc`
-          # → `windows-x86_64`).
-          arch="$(printf '%s' "$TARGETS" | cut -d',' -f1 | cut -d'-' -f1)"
-          shard="${shard}-${arch}"
+        # across shards. Discriminate each shard's manifests with the
+        # caller-provided `shard-label` suffix.
+        if [ -z "$SHARD_LABEL" ]; then
+          anodizer::err "preserve-dist requires shard-label input"
+          exit 1
         fi
 
         if [ ! -d preserved-dist ]; then
@@ -898,13 +906,13 @@ runs:
 
         for f in context artifacts metadata; do
           src="preserved-dist/${f}.json"
-          dst="preserved-dist/${f}-${shard}.json"
+          dst="preserved-dist/${f}-${SHARD_LABEL}.json"
           if [ -f "$src" ]; then
             mv "$src" "$dst"
             anodizer::verb renamed "$src -> $dst"
           fi
         done
-        anodizer::ok "preserved-dist manifests labelled for shard ${shard}"
+        anodizer::ok "preserved-dist manifests labelled for shard ${SHARD_LABEL}"
 
     # -------------------------------------------------------------------------
     # Run anodizer
