@@ -212,9 +212,13 @@ determinism-check:
 ```
 
 Per-shard target lists are auto-derived from `.anodizer.yaml` (only
-targets whose `os` matches the current runner are validated, mirroring
-how `build:` shards split work). The CSV is logged as a notice so a
-shard's scope is visible in the run log.
+targets whose `os` matches the current runner are validated). The CSV
+is logged as a notice so a shard's scope is visible in the run log.
+
+To feed a downstream `release --publish-only` job from the harness's
+byte-stable dist, set `preserve-dist: 'true'` and pass an explicit
+`shard-label` per matrix entry. The action renames each shard's
+manifests with that suffix so `merge-multiple` doesn't collide.
 
 Tune with:
 
@@ -312,6 +316,8 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 |-------|---------|-------------|
 | `upload-dist` | `false` | After running anodizer, upload `dist/` as a workflow artifact named `dist-$RUNNER_OS`. |
 | `download-dist` | `false` | Before running anodizer, download all `dist-*` artifacts and merge them into `dist/`. Fails if no split context files are found. |
+| `preserve-dist` | `false` | When `determinism: true`, preserve the harness's byte-stable dist tree to `./preserved-dist/` for downstream `release --publish-only` consumption. Requires `shard-label`. |
+| `shard-label` | | Per-shard suffix for preserved-dist manifests (`context-<shard-label>.json`, etc.). The caller (matrix) names each shard explicitly; required when `preserve-dist: 'true'`. |
 
 ### Key material
 
