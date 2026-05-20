@@ -189,11 +189,13 @@ inputs:
     description: >
       Stages to validate (comma-separated). When unset, defaults to the
       stages configured-and-installable on the current RUNNER_OS:
-      Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`;
+      Linux gets `build,source,upx,archive,nfpm,makeself,sbom,sign,checksum`;
       macOS and Windows get `build,source,upx,archive,sbom,sign,checksum`
-      (no nfpm/makeself/snapcraft — apt+snapcraft are Linux-only, and
-      apk/deb/rpm signing isn't provisioned on the non-Linux shards).
-      Explicit values override.
+      (no nfpm/makeself — apt is Linux-only and apk/deb/rpm signing
+      isn't provisioned on the non-Linux shards). Snapcraft is omitted
+      from harness defaults pending deterministic-pack setup (squashfs
+      mtimes vary without lxd/docker backend pinning); see anodizer's
+      `.claude/known-bugs.md` for the follow-up. Explicit values override.
     default: ''
     required: false
   determinism-targets:
@@ -403,7 +405,7 @@ runs:
         # sign / sbom would skip — both are cheap and the determinism
         # default exercises both.
         if [ "$RUNNER_OS" = "Linux" ]; then
-          echo "deps=zig,cargo-zigbuild,upx,nfpm,syft,cosign" >> "$GITHUB_OUTPUT"
+          echo "deps=zig,cargo-zigbuild,upx,nfpm,makeself,syft,cosign" >> "$GITHUB_OUTPUT"
         else
           echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
         fi
@@ -851,15 +853,18 @@ runs:
         if [ -n "$STAGES_INPUT" ]; then
           stages="$STAGES_INPUT"
         elif [ "$RUNNER_OS" = "Linux" ]; then
-          # makeself + snapcraft sit between nfpm and sbom in the
-          # canonical pipeline order (see
+          # makeself sits between nfpm and sbom in the canonical
+          # pipeline order (see
           # crates/cli/src/pipeline.rs::build_release_pipeline). A
-          # consumer with makeselfs:/snapcrafts: configured needs both
-          # stages in the harness run, otherwise the preserved-dist
-          # tree won't contain the Snap / self-extracting archive and
-          # `release --publish-only`'s SnapcraftPublishStage silently
-          # no-ops (no Snap artifact to upload).
-          stages="build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum"
+          # consumer with makeselfs: configured needs the stage in
+          # the harness run, otherwise the preserved-dist tree won't
+          # contain the self-extracting archive. Snapcraft is omitted:
+          # snapcraft 8 doesn't default to deterministic squashfs
+          # mtimes, so adding it to the harness without lxd/docker
+          # backend pinning would surface false drift on every run.
+          # Snap publish remains a silent no-op until that follow-up
+          # lands.
+          stages="build,source,upx,archive,nfpm,makeself,sbom,sign,checksum"
         else
           stages="build,source,upx,archive,sbom,sign,checksum"
         fi
