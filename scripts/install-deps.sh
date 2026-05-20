@@ -180,7 +180,14 @@ install_cosign() {
                 echo "::warning::cosign keyless signature verification skipped at user request (ANODIZER_ACTION_SKIP_COSIGN_VERIFY=1); SHA256-only validation was performed"
                 anodizer::warn "cosign keyless signature verification skipped by user (SHA256-only, not signature-verified)"
             else
-                if ! cosign verify-blob \
+                # Strip COSIGN_KEY / COSIGN_PUB_KEY from the verify-blob env: the
+                # caller (e.g. anodizer's release workflow) sets COSIGN_KEY at
+                # step level for the downstream signing pipeline, but cosign
+                # auto-binds COSIGN_KEY → --key. With --certificate also set,
+                # cosign's NOf(KeyRef, Sk, CertRef) check rejects the call with
+                # a misleading "exactly one of --key/--cert/--sk must be
+                # provided" error before the cert file is even parsed.
+                if ! env -u COSIGN_KEY -u COSIGN_PUB_KEY cosign verify-blob \
                     --certificate /tmp/cosign.pem \
                     --signature /tmp/cosign.sig \
                     --certificate-identity keyless@projectsigstore.iam.gserviceaccount.com \

@@ -225,3 +225,46 @@ STUB
     # Must NOT use the wrong GitHub Actions OIDC issuer.
     [[ "$invocation" != *"token.actions.githubusercontent.com"* ]]
 }
+
+# ── Test 5: COSIGN_KEY in caller env must be stripped from verify-blob ───────
+#
+# Regression guard: when the caller (anodizer's release workflow) sets
+# COSIGN_KEY at step level for the downstream sign stage, cosign's PEM
+# verify-blob would otherwise see both KeyRef (from env) and CertRef
+# (from --certificate flag) and bail with PubKeyParseError. The
+# `env -u COSIGN_KEY` prefix in install-deps.sh must strip the key
+# before cosign sees it.
+
+@test "cosign: COSIGN_KEY in caller env is stripped before verify-blob runs" {
+    env_capture_file="${_TEST_HOME}/cosign_env"
+    cat > "${FAKE_BIN}/cosign" <<STUB
+#!/usr/bin/env bash
+if [[ "\$*" == *"verify-blob"* ]]; then
+    env > "${env_capture_file}"
+fi
+exit 0
+STUB
+    chmod +x "${FAKE_BIN}/cosign"
+
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        NO_COLOR=1 \
+        RUNNER_OS="Linux" \
+        COSIGN_KEY="fake-key-reference" \
+        COSIGN_PUB_KEY="fake-pub-key" \
+        PATH="${FAKE_BIN}:${PATH}" \
+        bash -c "
+            source '${REPO_ROOT}/scripts/lib-colors.sh'
+            brew_install()  { :; }
+            choco_install() { :; }
+            ${_INSTALL_COSIGN_SRC}
+            install_cosign
+        "
+    [ "$status" -eq 0 ]
+
+    # verify-blob ran (captured env file exists)
+    [ -f "${env_capture_file}" ]
+    # COSIGN_KEY / COSIGN_PUB_KEY must NOT be present in the captured env
+    ! grep -q '^COSIGN_KEY=' "${env_capture_file}"
+    ! grep -q '^COSIGN_PUB_KEY=' "${env_capture_file}"
+}
