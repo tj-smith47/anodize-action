@@ -8,7 +8,15 @@ name: Update Major Tag (manual recovery)
 # trigger this from the Actions UI to rebuild it from current master
 # HEAD.
 #
-# To retarget v1 at an older release, first push a revert (or
+# IMPORTANT: GITHUB_TOKEN (which is what this workflow uses) cannot
+# create or non-fast-forward-update a tag ref to an arbitrary commit
+# that the running workflow is not tied to — both POST git/refs and
+# PATCH git/refs/<tag> return 403 "Resource not accessible by
+# integration". The action used here (richardsimko/update-tag@v1) only
+# works because GitHub allows the workflow's own GITHUB_SHA (= master
+# HEAD at workflow_dispatch time) to be the tag target.
+#
+# So: to retarget v1 at an older release, first push a revert (or
 # cherry-pick) of that release's tip to master, then trigger this
 # workflow. v1 will land at the new master HEAD.
 
@@ -41,11 +49,8 @@ jobs:
           echo "Will retarget tag $MAJOR to master HEAD."
 
       - name: Force-update major tag to master HEAD
-        uses: anothrNick/github-tag-action@1.75.0
+        uses: richardsimko/update-tag@v1
+        with:
+          tag_name: ${{ inputs.major }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUSTOM_TAG: ${{ inputs.major }}
-          FORCE_WITHOUT_CHANGES: 'true'
-          WITH_V: 'false'
-          DEFAULT_BUMP: none
-          DRY_RUN: 'false'
