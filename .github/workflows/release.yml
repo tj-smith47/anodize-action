@@ -43,8 +43,11 @@ jobs:
       # recovery, but the live path is this step.
       - name: Force-update major tag
         if: steps.semantic.outputs.new_release_published == 'true'
-        uses: richardsimko/update-tag@v1
-        with:
-          tag_name: v${{ steps.semantic.outputs.new_release_major_version }}
+        uses: anothrNick/github-tag-action@1.75.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUSTOM_TAG: v${{ steps.semantic.outputs.new_release_major_version }}
+          FORCE_WITHOUT_CHANGES: 'true'
+          WITH_V: 'false'
+          DEFAULT_BUMP: none
+          DRY_RUN: 'false'
