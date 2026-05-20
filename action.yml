@@ -189,10 +189,11 @@ inputs:
     description: >
       Stages to validate (comma-separated). When unset, defaults to the
       stages configured-and-installable on the current RUNNER_OS:
-      Linux gets `build,source,upx,archive,nfpm,sbom,sign,checksum`;
+      Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`;
       macOS and Windows get `build,source,upx,archive,sbom,sign,checksum`
-      (no nfpm — apt is Linux-only, and apk/deb/rpm signing isn't
-      provisioned on the non-Linux shards). Explicit values override.
+      (no nfpm/makeself/snapcraft — apt+snapcraft are Linux-only, and
+      apk/deb/rpm signing isn't provisioned on the non-Linux shards).
+      Explicit values override.
     default: ''
     required: false
   determinism-targets:
@@ -850,7 +851,15 @@ runs:
         if [ -n "$STAGES_INPUT" ]; then
           stages="$STAGES_INPUT"
         elif [ "$RUNNER_OS" = "Linux" ]; then
-          stages="build,source,upx,archive,nfpm,sbom,sign,checksum"
+          # makeself + snapcraft sit between nfpm and sbom in the
+          # canonical pipeline order (see
+          # crates/cli/src/pipeline.rs::build_release_pipeline). A
+          # consumer with makeselfs:/snapcrafts: configured needs both
+          # stages in the harness run, otherwise the preserved-dist
+          # tree won't contain the Snap / self-extracting archive and
+          # `release --publish-only`'s SnapcraftPublishStage silently
+          # no-ops (no Snap artifact to upload).
+          stages="build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum"
         else
           stages="build,source,upx,archive,sbom,sign,checksum"
         fi
@@ -954,8 +963,19 @@ runs:
           # build job and consumed by --merge), so its files must survive so
           # merge-mode retries can re-run idempotently.
           if [ -d "./dist" ]; then
-            # Remove top-level generated files (archives, manifests, etc).
-            find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
+            # Skip top-level cleanup when a preserved-dist context
+            # manifest is present at the dist root: the publish-only
+            # path consumes context.json / context-<shard>.json /
+            # artifacts*.json / the preserved archives, and expects
+            # them to survive between retries. Wiping them turns any
+            # transient anodizer failure into an unrecoverable
+            # workflow run.
+            if [ -f "./dist/context.json" ] || ls ./dist/context-*.json >/dev/null 2>&1; then
+              anodizer::warn "preserved-dist context manifests present at dist root; skipping retry cleanup to keep --publish-only inputs intact"
+            else
+              # Remove top-level generated files (archives, manifests, etc).
+              find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
+            fi
             # Remove depth-≥2 files only in subdirs that are NOT split inputs.
             for d in ./dist/*/; do
               [ -d "$d" ] || continue
