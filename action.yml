@@ -973,18 +973,22 @@ runs:
             # transient anodizer failure into an unrecoverable
             # workflow run.
             if [ -f "./dist/context.json" ] || ls ./dist/context-*.json >/dev/null 2>&1; then
-              anodizer::warn "preserved-dist context manifests present at dist root; skipping retry cleanup to keep --publish-only inputs intact"
+              anodizer::warn "preserved-dist context manifests present at dist root; skipping ALL retry cleanup to keep --publish-only inputs intact"
             else
               # Remove top-level generated files (archives, manifests, etc).
               find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
+              # Remove depth-≥2 files only in subdirs that are NOT split inputs.
+              # Hoisted under the same outer preserved-dist guard so a
+              # preserved tree's per-arch subdirs (e.g.
+              # dist/makeself/default/linux_amd64/anodizer) are not
+              # nuked between retry attempts.
+              for d in ./dist/*/; do
+                [ -d "$d" ] || continue
+                if [ ! -f "${d}context.json" ]; then
+                  find "$d" -type f -delete 2>/dev/null || true
+                fi
+              done
             fi
-            # Remove depth-≥2 files only in subdirs that are NOT split inputs.
-            for d in ./dist/*/; do
-              [ -d "$d" ] || continue
-              if [ ! -f "${d}context.json" ]; then
-                find "$d" -type f -delete 2>/dev/null || true
-              fi
-            done
           fi
           sleep 10
           attempt=$((attempt + 1))
@@ -1038,7 +1042,7 @@ runs:
     # -------------------------------------------------------------------------
     - name: Upload split artifacts
       if: inputs.upload-dist == 'true'
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: dist-${{ runner.os }}
         path: ${{ inputs.workdir }}/dist/
