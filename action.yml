@@ -623,6 +623,15 @@ runs:
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
         version="${TAG#v}"
+        install_dir="${RUNNER_TOOL_CACHE}/anodizer/${version}"
+
+        if [ -x "${install_dir}/${BIN}" ]; then
+          echo "${install_dir}" >> "$GITHUB_PATH"
+          anodizer::ok "anodizer ${TAG} already cached at ${install_dir}"
+          echo "::notice::anodizer ${TAG} already installed (cache hit)"
+          exit 0
+        fi
+
         archive="anodizer-${version}-${OS}-${ARCH}.${EXT}"
         url="https://github.com/tj-smith47/anodizer/releases/download/${TAG}/${archive}"
 
@@ -649,7 +658,6 @@ runs:
 
         anodizer::verb Extracting "${archive}"
         echo "::group::Extracting"
-        install_dir="${RUNNER_TOOL_CACHE}/anodizer/${version}"
         mkdir -p "$install_dir"
         if [ "$EXT" = "zip" ]; then
           unzip -q -o "${tmpdir}/${archive}" -d "$install_dir"
