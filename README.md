@@ -161,6 +161,32 @@ runner needs a platform-native binary:
     args: release --split --clean
 ```
 
+### Test an un-released branch of anodizer
+
+For integration testing a downstream project against an in-flight anodizer
+PR — or dogfooding a feature branch before it lands — use `from-branch`.
+The action shallow-clones `tj-smith47/anodizer` at the branch you name,
+builds it from source, and puts it on `PATH` for the rest of the job:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: tj-smith47/anodizer-action@v1
+  with:
+    from-branch: my-feature        # branch on tj-smith47/anodizer
+    args: release --snapshot --clean
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+- Input accepts a **branch name only** — the repository is hardcoded to
+  `tj-smith47/anodizer`. There is no `from-branch-repo` / `@ref` syntax.
+- The Rust toolchain is auto-installed; you do not need `install-rust: true`.
+- Cargo's `target/` directory is cached per branch via
+  [`Swatinem/rust-cache`](https://github.com/Swatinem/rust-cache), so the
+  second invocation of the same branch on a hot runner is fast.
+- Clones to `${RUNNER_TEMP}/anodizer-src` — your `workdir:` is untouched.
+- Mutually exclusive with `version:`, `from-artifact:`, and `from-source:`.
+
 ### Install only, drive anodizer yourself
 
 Useful for multi-crate loops, tagging, and ad-hoc subcommands:
@@ -262,11 +288,12 @@ exact tag instead:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.1.1`), the literal `latest` (newest stable release), or the literal `nightly` (newest release whose tag matches `vX.Y.Z-<sha>-nightly`). **No semver ranges** (`~> v2`) — pass an explicit tag or one of the aliases. Ignored when `from-artifact` or `from-source` is set. |
+| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.1.1`), the literal `latest` (newest stable release), or the literal `nightly` (newest release whose tag matches `vX.Y.Z-<sha>-nightly`). **No semver ranges** (`~> v2`) — pass an explicit tag or one of the aliases. Ignored when `from-artifact`, `from-source`, or `from-branch` is set. |
 | `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
 | `from-source` | `false` | Build anodizer from source in the workdir. Requires a Rust toolchain (`install-rust: true`). |
+| `from-branch` | | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Accepts a branch name only — the repo is hardcoded. Auto-installs the stable Rust toolchain; you don't need `install-rust: true`. Mutually exclusive with `version`, `from-artifact`, and `from-source`. |
 
 ### Dependency setup
 
