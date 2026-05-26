@@ -49,8 +49,10 @@ set -euo pipefail
 export FROM_BRANCH="${branch}"
 export RUNNER_TEMP="${_TEST_HOME}/runner-tmp"
 export GITHUB_OUTPUT="${_TEST_HOME}/github-output"
+export GITHUB_ENV="${_TEST_HOME}/github-env"
 mkdir -p "\${RUNNER_TEMP}"
 : > "\${GITHUB_OUTPUT}"
+: > "\${GITHUB_ENV}"
 
 # Stub git — record argv and create the destination directory.
 export PATH="${_TEST_HOME}/fake-bin:\${PATH}"
@@ -59,9 +61,13 @@ clone_dest="\${RUNNER_TEMP}/anodizer-src"
 repo_url="https://github.com/tj-smith47/anodizer.git"
 
 # Body mirrors the "Clone anodizer branch" step exactly.
+if [ -d "\${clone_dest}" ]; then
+  rm -rf "\${clone_dest}"
+fi
 git clone --depth 1 --branch "\${FROM_BRANCH}" --single-branch "\${repo_url}" "\${clone_dest}"
 
 echo "clone_dest=\${clone_dest}" >> "\${GITHUB_OUTPUT}"
+echo "ANODIZER_SRC_DIR=\${clone_dest}" >> "\${GITHUB_ENV}"
 BODY
 }
 
@@ -76,8 +82,10 @@ set -euo pipefail
 export FROM_BRANCH="${branch}"
 export RUNNER_TEMP="${_TEST_HOME}/runner-tmp"
 export GITHUB_OUTPUT="${_TEST_HOME}/github-output"
+export GITHUB_ENV="${_TEST_HOME}/github-env"
 mkdir -p "\${RUNNER_TEMP}"
 : > "\${GITHUB_OUTPUT}"
+: > "\${GITHUB_ENV}"
 
 # Stub git — exits 128 with an error message on stderr, mimicking
 # "Remote branch <name> not found in upstream origin".
@@ -86,9 +94,13 @@ export PATH="${_TEST_HOME}/fake-bin-fail:\${PATH}"
 clone_dest="\${RUNNER_TEMP}/anodizer-src"
 repo_url="https://github.com/tj-smith47/anodizer.git"
 
+if [ -d "\${clone_dest}" ]; then
+  rm -rf "\${clone_dest}"
+fi
 git clone --depth 1 --branch "\${FROM_BRANCH}" --single-branch "\${repo_url}" "\${clone_dest}"
 
 echo "clone_dest=\${clone_dest}" >> "\${GITHUB_OUTPUT}"
+echo "ANODIZER_SRC_DIR=\${clone_dest}" >> "\${GITHUB_ENV}"
 BODY
 }
 
@@ -130,6 +142,11 @@ STUB
     GITHUB_OUTPUT="${_TEST_HOME}/github-output"
     : > "$GITHUB_OUTPUT"
     export GITHUB_OUTPUT
+
+    # GITHUB_ENV — clone step writes ANODIZER_SRC_DIR here for the build step.
+    GITHUB_ENV="${_TEST_HOME}/github-env"
+    : > "$GITHUB_ENV"
+    export GITHUB_ENV
 }
 
 teardown() {
@@ -219,4 +236,30 @@ teardown() {
     run _run_clone_step_fail "no-such-branch"
     [ "$status" -ne 0 ]
     [[ "$output" == *"not found"* ]] || [[ "$output" == *"Remote branch"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Collision-guard + env-var routing tests
+# ---------------------------------------------------------------------------
+
+@test "clone step: stale clone_dest is wiped before clone" {
+    # Seed a stale clone directory with a sentinel file.
+    stale_dir="${_TEST_HOME}/runner-tmp/anodizer-src"
+    mkdir -p "${stale_dir}"
+    : > "${stale_dir}/stale-sentinel"
+    [ -f "${stale_dir}/stale-sentinel" ]
+
+    run _run_clone_step "my-feature"
+    [ "$status" -eq 0 ]
+    # Sentinel must be gone — guard ran rm -rf before clone.
+    [ ! -f "${stale_dir}/stale-sentinel" ]
+    # Destination still exists (recreated by the git stub).
+    [ -d "${stale_dir}" ]
+}
+
+@test "clone step: ANODIZER_SRC_DIR written to GITHUB_ENV" {
+    run _run_clone_step "my-feature"
+    [ "$status" -eq 0 ]
+    expected="${_TEST_HOME}/runner-tmp/anodizer-src"
+    grep -qx "ANODIZER_SRC_DIR=${expected}" "${GITHUB_ENV}"
 }
