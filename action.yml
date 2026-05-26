@@ -47,6 +47,15 @@ inputs:
       current runner needs a platform-native binary.
     default: 'false'
     required: false
+  from-branch:
+    description: >
+      Shallow-clone `tj-smith47/anodizer` at the given branch name and build
+      it from source. Accepts a branch name only (e.g. "my-feature", "main").
+      The repository is hardcoded to `tj-smith47/anodizer`; do not include an
+      owner, repo, or `@ref` prefix. Rust is auto-installed. Mutually exclusive
+      with `version`, `from-artifact`, and `from-source`.
+    default: ''
+    required: false
 
   # ---------------------------------------------------------------------------
   # Dependency setup
@@ -294,6 +303,38 @@ runs:
         anodizer::err "determinism: true is mutually exclusive with args:"
         exit 1
 
+    # -------------------------------------------------------------------------
+    # Install-path mutual-exclusion check.  Exactly one of version /
+    # from-artifact / from-source / from-branch may be active.  `version` is
+    # the default path (default: 'latest'), so we only flag it as "set" when
+    # the user explicitly combined it with one of the other paths.
+    # -------------------------------------------------------------------------
+    - name: Validate install-path inputs
+      if: >-
+        (inputs.from-branch != '' && inputs.from-source == 'true') ||
+        (inputs.from-branch != '' && inputs.from-artifact != '') ||
+        (inputs.from-branch != '' && inputs.version != 'latest' && inputs.version != '') ||
+        (inputs.from-source == 'true' && inputs.from-artifact != '') ||
+        (inputs.from-source == 'true' && inputs.version != 'latest' && inputs.version != '') ||
+        (inputs.from-artifact != '' && inputs.version != 'latest' && inputs.version != '')
+      shell: bash
+      env:
+        FROM_BRANCH: ${{ inputs.from-branch }}
+        FROM_SOURCE: ${{ inputs.from-source }}
+        FROM_ARTIFACT: ${{ inputs.from-artifact }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        active=()
+        [ -n "$FROM_BRANCH" ]                                             && active+=("from-branch: '$FROM_BRANCH'")
+        [ "$FROM_SOURCE" = "true" ]                                       && active+=("from-source: true")
+        [ -n "$FROM_ARTIFACT" ]                                           && active+=("from-artifact: '$FROM_ARTIFACT'")
+        [ -n "$VERSION" ] && [ "$VERSION" != "latest" ]                   && active+=("version: '$VERSION'")
+        echo "::error::only one install path may be active; got: ${active[*]}"
+        anodizer::err "only one install path may be active; got: ${active[*]}"
+        exit 1
+
     - name: Validate preserve-dist inputs
       if: inputs.preserve-dist == 'true'
       shell: bash
@@ -320,7 +361,7 @@ runs:
     # source so it tests the actual code under review, not a stale release.
     # -------------------------------------------------------------------------
     - name: Install Rust toolchain
-      if: inputs.install-rust == 'true' || inputs.determinism == 'true'
+      if: inputs.install-rust == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
     # -------------------------------------------------------------------------
@@ -331,11 +372,16 @@ runs:
     # determinism shard (different feature sets / build profiles otherwise).
     # -------------------------------------------------------------------------
     - name: Cache cargo target dir
-      if: inputs.determinism == 'true' || inputs.from-source == 'true'
+      if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
       uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
-        key: anodizer-action-${{ inputs.determinism == 'true' && 'determinism' || 'from-source' }}
-        workspaces: ${{ inputs.workdir }}
+        key: >-
+          anodizer-action-${{
+            inputs.determinism  == 'true' && 'determinism' ||
+            inputs.from-branch  != ''     && format('from-branch-{0}', inputs.from-branch) ||
+            'from-source'
+          }}
+        workspaces: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
 
     # -------------------------------------------------------------------------
     # Dependency installation
@@ -561,7 +607,7 @@ runs:
     # Installation — Path B: from GitHub release
     # -------------------------------------------------------------------------
     - name: Resolve version
-      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true'
+      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true' && inputs.from-branch == ''
       id: version
       shell: bash
       env:
@@ -611,7 +657,7 @@ runs:
         anodizer::verb Installing "anodizer ${tag}"
 
     - name: Download release
-      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true'
+      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true' && inputs.from-branch == ''
       shell: bash
       env:
         TAG: ${{ steps.version.outputs.tag }}
@@ -676,10 +722,34 @@ runs:
     # -------------------------------------------------------------------------
     # Installation — Path C: from source (bootstrap)
     # -------------------------------------------------------------------------
-    - name: Build anodizer from source
-      if: inputs.from-source == 'true' || inputs.determinism == 'true'
+
+    # Path D: shallow-clone tj-smith47/anodizer at the requested branch.
+    # After the clone, the from-source build step below takes over — it finds
+    # the cloned tree via BUILD_WORKDIR rather than inputs.workdir, so the
+    # user's checkout is never touched.
+    - name: Clone anodizer branch
+      if: inputs.from-branch != ''
+      id: clone-branch
       shell: bash
-      working-directory: ${{ inputs.workdir }}
+      env:
+        FROM_BRANCH: ${{ inputs.from-branch }}
+      run: |
+        set -euo pipefail
+        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+        clone_dest="${RUNNER_TEMP}/anodizer-src"
+        repo_url="https://github.com/tj-smith47/anodizer.git"
+        anodizer::verb Cloning "tj-smith47/anodizer@${FROM_BRANCH}"
+        echo "::group::Cloning tj-smith47/anodizer branch ${FROM_BRANCH}"
+        git clone --depth 1 --branch "$FROM_BRANCH" --single-branch "$repo_url" "$clone_dest"
+        echo "::endgroup::"
+        echo "clone_dest=${clone_dest}" >> "$GITHUB_OUTPUT"
+        anodizer::ok "cloned tj-smith47/anodizer@${FROM_BRANCH} to ${clone_dest}"
+
+    - name: Build anodizer from source
+      if: inputs.from-source == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
+      shell: bash
+      # When from-branch is set, build from the cloned tree (not the user's workdir).
+      working-directory: ${{ inputs.from-branch != '' && steps.clone-branch.outputs.clone_dest || inputs.workdir }}
       env:
         BIN: ${{ steps.platform.outputs.bin }}
       run: |
