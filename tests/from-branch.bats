@@ -66,6 +66,33 @@ BODY
 }
 
 # ---------------------------------------------------------------------------
+# Helper: run the clone-step shell body with a git stub that exits 128.
+# Models a non-existent remote branch.
+# ---------------------------------------------------------------------------
+_run_clone_step_fail() {
+    local branch="$1"
+    bash <<BODY
+set -euo pipefail
+export FROM_BRANCH="${branch}"
+export RUNNER_TEMP="${_TEST_HOME}/runner-tmp"
+export GITHUB_OUTPUT="${_TEST_HOME}/github-output"
+mkdir -p "\${RUNNER_TEMP}"
+: > "\${GITHUB_OUTPUT}"
+
+# Stub git — exits 128 with an error message on stderr, mimicking
+# "Remote branch <name> not found in upstream origin".
+export PATH="${_TEST_HOME}/fake-bin-fail:\${PATH}"
+
+clone_dest="\${RUNNER_TEMP}/anodizer-src"
+repo_url="https://github.com/tj-smith47/anodizer.git"
+
+git clone --depth 1 --branch "\${FROM_BRANCH}" --single-branch "\${repo_url}" "\${clone_dest}"
+
+echo "clone_dest=\${clone_dest}" >> "\${GITHUB_OUTPUT}"
+BODY
+}
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -88,6 +115,16 @@ for arg; do dest="\$arg"; done
 exit 0
 STUB
     chmod +x "${FAKE_BIN}/git"
+
+    # Stub git (fail variant): exits 128 with a "Remote branch not found" message.
+    FAKE_BIN_FAIL="${_TEST_HOME}/fake-bin-fail"
+    mkdir -p "$FAKE_BIN_FAIL"
+    cat > "${FAKE_BIN_FAIL}/git" <<STUB
+#!/usr/bin/env bash
+echo "error: Remote branch \$5 not found in upstream origin" >&2
+exit 128
+STUB
+    chmod +x "${FAKE_BIN_FAIL}/git"
 
     # GITHUB_OUTPUT
     GITHUB_OUTPUT="${_TEST_HOME}/github-output"
@@ -157,9 +194,6 @@ teardown() {
 }
 
 @test "clone step: clone_dest written to GITHUB_OUTPUT" {
-    GITHUB_OUTPUT="${_TEST_HOME}/github-output"
-    export GITHUB_OUTPUT
-
     run _run_clone_step "my-feature"
     [ "$status" -eq 0 ]
     grep -q 'clone_dest=' "${GITHUB_OUTPUT}"
@@ -168,11 +202,21 @@ teardown() {
 @test "clone step: destination is under RUNNER_TEMP/anodizer-src" {
     run _run_clone_step "my-feature"
     [ "$status" -eq 0 ]
-    grep -q 'anodizer-src' "${GITHUB_OUTPUT}"
+    grep -q "clone_dest=.*/anodizer-src$" "${GITHUB_OUTPUT}"
 }
 
 @test "clone step: branch name passed through verbatim" {
     run _run_clone_step "feature/some-slash"
     [ "$status" -eq 0 ]
     grep -qx 'feature/some-slash' "${CLONE_ARGS_FILE}"
+}
+
+# ---------------------------------------------------------------------------
+# Failure-path test — non-existent branch
+# ---------------------------------------------------------------------------
+
+@test "clone step: git failure propagates non-zero exit and error message" {
+    run _run_clone_step_fail "no-such-branch"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not found"* ]] || [[ "$output" == *"Remote branch"* ]]
 }
