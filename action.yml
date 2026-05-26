@@ -384,6 +384,19 @@ runs:
           }}
         workspaces: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
 
+    # rust-cache covers Cargo.lock-stable runs; sccache covers Cargo.lock
+    # churn and the determinism harness's per-run fresh worktrees (where
+    # target/ is wiped between the two runs). Layered, not replacing.
+    - name: Set up sccache
+      if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
+      uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.9
+    - name: Enable sccache wrapper
+      if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
     # -------------------------------------------------------------------------
     # Dependency installation
     # -------------------------------------------------------------------------
