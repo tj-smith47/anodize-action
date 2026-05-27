@@ -255,6 +255,13 @@ outputs:
       Produced from `.anodizer.yaml` when `install-only: true`. Each entry has
       `os`, `target`, and `artifact` fields.
     value: ${{ steps.split-matrix.outputs.matrix }}
+  crates:
+    description: >
+      JSON array of crate names that `anodizer tag` produced tags for in this
+      run. Empty array `[]` when nothing was tagged. Use as
+      `fromJson(steps.<id>.outputs.crates)` to drive downstream matrix
+      strategies.
+    value: ${{ steps.outputs.outputs.crates }}
 
 runs:
   using: 'composite'
@@ -1097,6 +1104,7 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         ANODIZER_ARGS: ${{ inputs.args }}
+        ANODIZER_STDOUT_LOG: ${{ runner.temp }}/anodizer-stdout.log
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
@@ -1109,12 +1117,16 @@ runs:
         # but the cost of two extra 10s waits is low vs. a flaky release.
         max_retries=3
         attempt=1
+        # Stdout is teed to ANODIZER_STDOUT_LOG so the outputs step can parse
+        # anodizer-output markers (e.g. crates=[...]) without losing log
+        # visibility in the GHA UI.
+        : > "$ANODIZER_STDOUT_LOG"
         while [ $attempt -le $max_retries ]; do
           # shellcheck disable=SC2086
           # ANODIZER_ARGS is intentionally unquoted — users pass multiple flags
           # separated by whitespace via `inputs.args`, and we rely on word
           # splitting to forward them as distinct argv entries.
-          if anodizer $ANODIZER_ARGS; then
+          if anodizer $ANODIZER_ARGS 2>&1 | tee -a "$ANODIZER_STDOUT_LOG"; then
             break
           fi
           if [ $attempt -eq $max_retries ]; then
@@ -1165,6 +1177,8 @@ runs:
       id: outputs
       shell: bash
       working-directory: ${{ inputs.workdir }}
+      env:
+        ANODIZER_STDOUT_LOG: ${{ runner.temp }}/anodizer-stdout.log
       run: |
         set -euo pipefail
         dist="dist"
@@ -1199,6 +1213,16 @@ runs:
           url=$(jq -r '.release_url // empty' "${dist}/metadata.json" 2>/dev/null || echo "")
           echo "release-url=${url}" >> "$GITHUB_OUTPUT"
         fi
+
+        # Parse crates from the stdout log written by the run step. Last
+        # occurrence wins so re-invocations inside the retry loop replace any
+        # earlier partial emission.
+        crates="[]"
+        if [ -f "$ANODIZER_STDOUT_LOG" ]; then
+          last=$(grep -oP '(?<=^anodizer-output crates=)\[.*\]' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
+          [ -n "$last" ] && crates="$last"
+        fi
+        echo "crates=${crates}" >> "$GITHUB_OUTPUT"
 
     # -------------------------------------------------------------------------
     # Upload split artifacts (for split build jobs)
