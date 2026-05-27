@@ -383,6 +383,7 @@ runs:
       env:
         DETERMINISM: ${{ inputs.determinism }}
         FROM_BRANCH: ${{ inputs.from-branch }}
+        WORKSPACE_DIR: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
       run: |
         set -euo pipefail
         if [ "$DETERMINISM" = "true" ]; then
@@ -396,6 +397,14 @@ runs:
           suffix=from-source
         fi
         printf 'suffix=%s\n' "$suffix" >> "$GITHUB_OUTPUT"
+        # Swatinem/rust-cache validates the `workspaces:` path exists before
+        # restoring — on a cache-miss first run of from-branch, the clone
+        # step that creates this dir runs LATER, so we pre-create an empty
+        # dir to keep the cache action happy. A subsequent clone into the
+        # same path is fine (git clone targets a non-existent or empty dir).
+        if [ -n "$WORKSPACE_DIR" ] && [ ! -d "$WORKSPACE_DIR" ]; then
+          mkdir -p "$WORKSPACE_DIR"
+        fi
 
     - name: Cache cargo target dir
       if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
