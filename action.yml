@@ -1117,16 +1117,24 @@ runs:
         # but the cost of two extra 10s waits is low vs. a flaky release.
         max_retries=3
         attempt=1
-        # Stdout is teed to ANODIZER_STDOUT_LOG so the outputs step can parse
-        # anodizer-output markers (e.g. crates=[...]) without losing log
-        # visibility in the GHA UI.
+        # Stdout (only) is teed to ANODIZER_STDOUT_LOG so the outputs step
+        # can parse anodizer-output markers (e.g. crates=[...]) without
+        # losing log visibility in the GHA UI. Stderr is intentionally not
+        # redirected — the spec defines the marker channel as stdout, and
+        # mixing stderr in would let an error-line that looked like a marker
+        # contaminate the output.
         : > "$ANODIZER_STDOUT_LOG"
         while [ $attempt -le $max_retries ]; do
           # shellcheck disable=SC2086
           # ANODIZER_ARGS is intentionally unquoted — users pass multiple flags
           # separated by whitespace via `inputs.args`, and we rely on word
           # splitting to forward them as distinct argv entries.
-          if anodizer $ANODIZER_ARGS 2>&1 | tee -a "$ANODIZER_STDOUT_LOG"; then
+          # Tee stdout only (not stderr) so the captured log matches the
+          # spec's "parse marker out of stdout" contract — a stderr line
+          # that happened to match the marker pattern must NOT be treated
+          # as authoritative output. Stderr still surfaces in the GHA UI
+          # through its own (untouched) file descriptor.
+          if anodizer $ANODIZER_ARGS | tee -a "$ANODIZER_STDOUT_LOG"; then
             break
           fi
           if [ $attempt -eq $max_retries ]; then
