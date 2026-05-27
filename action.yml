@@ -372,16 +372,36 @@ runs:
     # disambiguated per mode so a from-source consumer doesn't collide with a
     # determinism shard (different feature sets / build profiles otherwise).
     # -------------------------------------------------------------------------
+    # GHA expression syntax has no `replace()` function (only `format`, `join`,
+    # `contains`, etc.) so a branch name with `/` can't be sanitized inline in
+    # the cache key. Compute the slug here so it's a single shell-side
+    # `tr` instead.
+    - name: Compute cache key suffix
+      if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
+      id: cache-key
+      shell: bash
+      env:
+        DETERMINISM: ${{ inputs.determinism }}
+        FROM_BRANCH: ${{ inputs.from-branch }}
+      run: |
+        set -euo pipefail
+        if [ "$DETERMINISM" = "true" ]; then
+          suffix=determinism
+        elif [ -n "$FROM_BRANCH" ]; then
+          # Slug branch name: replace `/`, whitespace, and other path-unsafe
+          # characters with `-` so the cache key is a single line.
+          slug=$(printf '%s' "$FROM_BRANCH" | tr '/ ' '--')
+          suffix="from-branch-${slug}"
+        else
+          suffix=from-source
+        fi
+        printf 'suffix=%s\n' "$suffix" >> "$GITHUB_OUTPUT"
+
     - name: Cache cargo target dir
       if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
       uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
-        key: >-
-          anodizer-action-${{
-            inputs.determinism  == 'true' && 'determinism' ||
-            inputs.from-branch  != ''     && format('from-branch-{0}', replace(inputs.from-branch, '/', '-')) ||
-            'from-source'
-          }}
+        key: anodizer-action-${{ steps.cache-key.outputs.suffix }}
         workspaces: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
 
     # rust-cache covers Cargo.lock-stable runs; sccache covers Cargo.lock
