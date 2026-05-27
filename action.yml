@@ -419,12 +419,29 @@ runs:
     - name: Set up sccache
       if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
       uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.9
-    - name: Enable sccache wrapper
+    - name: Enable sccache wrapper (with health probe)
       if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
       shell: bash
       run: |
-        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        # Probe the sccache GHA backend before committing to it. The Azure
+        # Storage that backs `actions/cache` has periodic regional outages
+        # (`<h2>Our services aren't available right now</h2>` HTML body),
+        # and when that happens `sccache --start-server` fails on first
+        # invocation, which makes every `rustc` call exit 101 — a transient
+        # CI infra outage masquerading as a build failure. If the probe
+        # fails, fall back to bare `rustc` so the build proceeds (slower,
+        # but green) and the next sccache run gets a fresh chance.
+        export SCCACHE_GHA_ENABLED=true
+        if sccache --start-server >/dev/null 2>&1 && sccache --show-stats >/dev/null 2>&1; then
+          echo "::notice::sccache backend reachable; wrapping rustc"
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "::warning::sccache backend unreachable (GHA cache outage?); building without wrapper"
+          # Leave RUSTC_WRAPPER unset so rustc runs directly. SCCACHE_GHA_ENABLED
+          # going unset prevents the wrapper from being re-armed by the cache
+          # action restore step.
+        fi
 
     # -------------------------------------------------------------------------
     # Dependency installation
