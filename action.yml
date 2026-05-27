@@ -822,6 +822,7 @@ runs:
       working-directory: ${{ env.ANODIZER_SRC_DIR || inputs.workdir }}
       env:
         BIN: ${{ steps.platform.outputs.bin }}
+        FROM_BRANCH: ${{ inputs.from-branch }}
       run: |
         set -euo pipefail
         source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
@@ -829,6 +830,20 @@ runs:
           echo "::error::Rust is required; set install-rust: true (or use from-branch which auto-installs Rust)"
           anodizer::err "Rust is required; set install-rust: true"
           exit 1
+        fi
+        # Hermetic build subprocess for from-branch: this path clones a
+        # remote and builds once with no cache reuse, so any inherited
+        # RUSTC_WRAPPER (e.g. a consumer workflow's `env: RUSTC_WRAPPER:
+        # sccache` block) is pure overhead AND exposes the build to GHA
+        # cache backend outages (`<h2>Our services aren't available right
+        # now</h2>`). The earlier "Enable sccache wrapper" step already
+        # skips arming the wrapper for from-branch; sanitize here too so
+        # an inherited value from the caller's workflow env doesn't slip
+        # through. determinism + from-source paths keep whatever wrapper
+        # the consumer set — those builds benefit from cache reuse.
+        if [ -n "$FROM_BRANCH" ]; then
+          unset RUSTC_WRAPPER
+          unset SCCACHE_GHA_ENABLED
         fi
         anodizer::verb Building "anodizer from source"
         echo "::group::Building anodizer from source"
