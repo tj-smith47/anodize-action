@@ -262,6 +262,13 @@ outputs:
       `fromJson(steps.<id>.outputs.crates)` to drive downstream matrix
       strategies.
     value: ${{ steps.outputs.outputs.crates }}
+  versions:
+    description: >
+      JSON object mapping crate name to bumped version, from `anodizer tag`.
+      Empty `{}` when nothing was tagged. Consume with
+      `fromJson(steps.<id>.outputs.versions).<crate>` or bracket-form for
+      hyphenated crate names: `fromJson(steps.<id>.outputs.versions)['my-crate']`.
+    value: ${{ steps.outputs.outputs.versions }}
 
 runs:
   using: 'composite'
@@ -1129,11 +1136,6 @@ runs:
           # ANODIZER_ARGS is intentionally unquoted — users pass multiple flags
           # separated by whitespace via `inputs.args`, and we rely on word
           # splitting to forward them as distinct argv entries.
-          # Tee stdout only (not stderr) so the captured log matches the
-          # spec's "parse marker out of stdout" contract — a stderr line
-          # that happened to match the marker pattern must NOT be treated
-          # as authoritative output. Stderr still surfaces in the GHA UI
-          # through its own (untouched) file descriptor.
           if anodizer $ANODIZER_ARGS | tee -a "$ANODIZER_STDOUT_LOG"; then
             break
           fi
@@ -1222,15 +1224,28 @@ runs:
           echo "release-url=${url}" >> "$GITHUB_OUTPUT"
         fi
 
-        # Parse crates from the stdout log written by the run step. Last
-        # occurrence wins so re-invocations inside the retry loop replace any
-        # earlier partial emission.
+        # Parse crates and versions from the stdout log written by the run step.
+        # Last occurrence wins so re-invocations inside the retry loop replace
+        # any earlier partial emission. Values are validated with jq before
+        # acceptance — an invalid JSON value would cause fromJson() callers to
+        # fail silently, which is harder to diagnose than a safe default.
         crates="[]"
         if [ -f "$ANODIZER_STDOUT_LOG" ]; then
           last=$(grep -oP '(?<=^anodizer-output crates=)\[.*\]' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
-          [ -n "$last" ] && crates="$last"
+          if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
+            crates="$last"
+          fi
         fi
         echo "crates=${crates}" >> "$GITHUB_OUTPUT"
+
+        versions="{}"
+        if [ -f "$ANODIZER_STDOUT_LOG" ]; then
+          last=$(grep -oP '(?<=^anodizer-output versions=)\{.*\}' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
+          if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
+            versions="$last"
+          fi
+        fi
+        echo "versions=${versions}" >> "$GITHUB_OUTPUT"
 
     # -------------------------------------------------------------------------
     # Upload split artifacts (for split build jobs)
