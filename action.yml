@@ -1,9 +1,9 @@
-name: 'Anodizer Action'
-description: 'GitHub Action for Anodizer — a Rust-native release automation tool'
-author: 'tj-smith47'
+name: "Anodizer Action"
+description: "GitHub Action for Anodizer — a Rust-native release automation tool"
+author: "tj-smith47"
 branding:
-  color: 'orange'
-  icon: 'package'
+  color: "orange"
+  icon: "package"
 
 inputs:
   # ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ inputs:
       supported — pass an explicit tag, "latest", "nightly", or use
       `from-artifact` / `from-source`. Ignored when `from-artifact` or
       `from-source` is set.
-    default: 'latest'
+    default: "latest"
     required: false
   from-artifact:
     description: >
@@ -37,7 +37,7 @@ inputs:
     description: >
       Workflow filename to search when `artifact-run-id` is "auto"
       (e.g. "ci.yml"). Ignored otherwise.
-    default: 'ci.yml'
+    default: "ci.yml"
     required: false
   from-source:
     description: >
@@ -45,7 +45,7 @@ inputs:
       Requires a Rust toolchain — combine with `install-rust: true` if needed.
       Useful when `from-artifact` is only available for one platform and the
       current runner needs a platform-native binary.
-    default: 'false'
+    default: "false"
     required: false
   from-branch:
     description: >
@@ -55,7 +55,7 @@ inputs:
       owner prefix, repo name, or commit SHA — branch names only. Rust is
       auto-installed. Mutually exclusive
       with `version`, `from-artifact`, and `from-source`.
-    default: ''
+    default: ""
     required: false
 
   # ---------------------------------------------------------------------------
@@ -78,11 +78,11 @@ inputs:
       nsis, create-dmg, flatpak-builder, upx, zig+cargo-zigbuild for
       cross-compilation, alejandra when the nix publisher requests it as the
       formatter).
-    default: 'false'
+    default: "false"
     required: false
   install-rust:
-    description: 'Install the stable Rust toolchain (dtolnay/rust-toolchain).'
-    default: 'false'
+    description: "Install the stable Rust toolchain (dtolnay/rust-toolchain)."
+    default: "false"
     required: false
 
   # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ inputs:
       Resolve the triggering tag to a crate name using `anodizer resolve-tag`.
       Set to "true" on tag-triggered release workflows. Populates the
       `workspace`, `crate-path`, and `has-builds` outputs.
-    default: 'false'
+    default: "false"
     required: false
 
   # ---------------------------------------------------------------------------
@@ -105,10 +105,10 @@ inputs:
       logs in, and sets up QEMU + buildx for multi-platform builds.
     required: false
   docker-username:
-    description: 'Registry username (defaults to github.actor via GITHUB_ACTOR env).'
+    description: "Registry username (defaults to github.actor via GITHUB_ACTOR env)."
     required: false
   docker-password:
-    description: 'Registry password or token (e.g. secrets.GITHUB_TOKEN).'
+    description: "Registry password or token (e.g. secrets.GITHUB_TOKEN)."
     required: false
 
   # ---------------------------------------------------------------------------
@@ -118,13 +118,13 @@ inputs:
     description: >
       Upload dist/ as a workflow artifact after running anodizer. Set to "true"
       in split build jobs. The artifact name defaults to "dist-$RUNNER_OS".
-    default: 'false'
+    default: "false"
     required: false
   download-dist:
     description: >
       Download and merge dist-* artifacts before running anodizer. Set to "true"
       in merge jobs. Merges all artifacts matching "dist-*" into dist/.
-    default: 'false'
+    default: "false"
     required: false
 
   # ---------------------------------------------------------------------------
@@ -168,12 +168,12 @@ inputs:
       secrets via the `env:` block (e.g. `GITHUB_TOKEN`, `COSIGN_PASSWORD`).
     required: false
   workdir:
-    description: 'Working directory (below repository root).'
-    default: '.'
+    description: "Working directory (below repository root)."
+    default: "."
     required: false
   install-only:
-    description: 'Only install anodizer without running it.'
-    default: 'false'
+    description: "Only install anodizer without running it."
+    default: "false"
     required: false
 
   # ---------------------------------------------------------------------------
@@ -189,11 +189,11 @@ inputs:
       invokes the harness. Intended to be the entire body of a per-OS
       harness shard on a 3-OS matrix [ubuntu-latest, macos-latest,
       windows-latest]. Mutually exclusive with `args`.
-    default: 'false'
+    default: "false"
     required: false
   determinism-runs:
-    description: 'N for `anodizer check determinism --runs=N`.'
-    default: '2'
+    description: "N for `anodizer check determinism --runs=N`."
+    default: "2"
     required: false
   determinism-stages:
     description: >
@@ -204,7 +204,7 @@ inputs:
       (no nfpm/makeself/snapcraft — apt is Linux-only and apk/deb/rpm
       signing isn't provisioned on the non-Linux shards). Explicit
       values override.
-    default: ''
+    default: ""
     required: false
   determinism-targets:
     description: >
@@ -220,7 +220,7 @@ inputs:
       `fromJson(needs.tag.outputs.crates)`) so each shard's preserved
       dist lands under its own `<crate>/` subdir for collision-free
       merge in the downstream publish job.
-    default: ''
+    default: ""
     required: false
   preserve-dist:
     description: >
@@ -230,7 +230,7 @@ inputs:
       get a `-<shard-label>` suffix (`context-<label>.json`, etc.) so
       sharded matrix uploads don't collide under `merge-multiple: true`.
       Requires `determinism: 'true'` and `shard-label`.
-    default: 'false'
+    default: "false"
     required: false
   shard-label:
     description: >
@@ -238,26 +238,26 @@ inputs:
       names each shard explicitly; the action does not derive labels.
       Required when `preserve-dist: 'true'`.
     required: false
-    default: ''
+    default: ""
 
 outputs:
   artifacts:
-    description: 'Build result artifacts JSON (contents of dist/artifacts.json).'
+    description: "Build result artifacts JSON (contents of dist/artifacts.json)."
     value: ${{ steps.outputs.outputs.artifacts }}
   metadata:
-    description: 'Build result metadata JSON (contents of dist/metadata.json).'
+    description: "Build result metadata JSON (contents of dist/metadata.json)."
     value: ${{ steps.outputs.outputs.metadata }}
   release-url:
-    description: 'URL of the created GitHub release (extracted from metadata.json).'
+    description: "URL of the created GitHub release (extracted from metadata.json)."
     value: ${{ steps.outputs.outputs.release-url }}
   workspace:
-    description: 'Crate name resolved from the triggering tag (requires resolve-workspace: true).'
+    description: "Crate name resolved from the triggering tag (requires resolve-workspace: true)."
     value: ${{ steps.resolve-workspace.outputs.crate }}
   crate-path:
-    description: 'Path to the resolved crate directory (requires resolve-workspace: true).'
+    description: "Path to the resolved crate directory (requires resolve-workspace: true)."
     value: ${{ steps.resolve-workspace.outputs.path }}
   has-builds:
-    description: 'Whether the resolved crate has binary builds configured (requires resolve-workspace: true).'
+    description: "Whether the resolved crate has binary builds configured (requires resolve-workspace: true)."
     value: ${{ steps.resolve-workspace.outputs.has-builds }}
   split-matrix:
     description: >
@@ -281,7 +281,7 @@ outputs:
     value: ${{ steps.outputs.outputs.versions }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
     # -------------------------------------------------------------------------
     # Platform detection
@@ -1184,6 +1184,7 @@ runs:
           fi
           if [ $attempt -eq $max_retries ]; then
             anodizer::err "anodizer failed after ${max_retries} attempts"
+            test -f "$ANODIZER_STDOUT_LOG" && cat "$ANODIZER_STDOUT_LOG"
             exit 1
           fi
           anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
