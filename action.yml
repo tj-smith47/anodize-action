@@ -289,51 +289,16 @@ runs:
     - name: Determine platform
       id: platform
       shell: bash
-      run: |
-        set -euo pipefail
-        case "$RUNNER_OS" in
-          Linux)   os=linux ;;
-          macOS)   os=darwin ;;
-          Windows) os=windows ;;
-          *)       echo "::error::Unsupported OS: $RUNNER_OS"; exit 1 ;;
-        esac
-        case "$RUNNER_ARCH" in
-          X64)   arch=amd64 ;;
-          ARM64) arch=arm64 ;;
-          *)     echo "::error::Unsupported arch: $RUNNER_ARCH"; exit 1 ;;
-        esac
-        echo "os=$os" >> "$GITHUB_OUTPUT"
-        echo "arch=$arch" >> "$GITHUB_OUTPUT"
-        if [ "$os" = "windows" ]; then
-          echo "bin=anodizer.exe" >> "$GITHUB_OUTPUT"
-          echo "ext=zip" >> "$GITHUB_OUTPUT"
-        else
-          echo "bin=anodizer" >> "$GITHUB_OUTPUT"
-          echo "ext=tar.gz" >> "$GITHUB_OUTPUT"
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/platform/detect.sh"
 
     # -------------------------------------------------------------------------
-    # Determinism-mode mutual-exclusion check — `args` is forbidden in
-    # determinism mode because the action drives the harness invocation
-    # itself (the harness already wraps `anodizer release ...` via
-    # `anodizer check determinism`).
+    # Input validation
     # -------------------------------------------------------------------------
     - name: Validate determinism inputs
       if: inputs.determinism == 'true' && inputs.args != ''
       shell: bash
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        echo "::error::determinism: true is mutually exclusive with args:; the action invokes \`anodizer check determinism\` directly"
-        anodizer::err "determinism: true is mutually exclusive with args:"
-        exit 1
+      run: "${GITHUB_ACTION_PATH}/scripts/validate/determinism-inputs.sh"
 
-    # -------------------------------------------------------------------------
-    # Install-path mutual-exclusion check.  Exactly one of version /
-    # from-artifact / from-source / from-branch may be active.  `version` is
-    # the default path (default: 'latest'), so we only flag it as "set" when
-    # the user explicitly combined it with one of the other paths.
-    # -------------------------------------------------------------------------
     - name: Validate install-path inputs
       if: >-
         (inputs.from-branch != '' && inputs.from-source == 'true') ||
@@ -348,17 +313,7 @@ runs:
         FROM_SOURCE: ${{ inputs.from-source }}
         FROM_ARTIFACT: ${{ inputs.from-artifact }}
         VERSION: ${{ inputs.version }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        active=()
-        [ -n "$FROM_BRANCH" ]                                             && active+=("from-branch: '$FROM_BRANCH'")
-        [ "$FROM_SOURCE" = "true" ]                                       && active+=("from-source: true")
-        [ -n "$FROM_ARTIFACT" ]                                           && active+=("from-artifact: '$FROM_ARTIFACT'")
-        [ -n "$VERSION" ] && [ "$VERSION" != "latest" ]                   && active+=("version: '$VERSION'")
-        echo "::error::only one install path may be active; got: ${active[*]}"
-        anodizer::err "only one install path may be active; got: ${active[*]}"
-        exit 1
+      run: "${GITHUB_ACTION_PATH}/scripts/validate/install-path.sh"
 
     - name: Validate preserve-dist inputs
       if: inputs.preserve-dist == 'true'
@@ -366,40 +321,23 @@ runs:
       env:
         DETERMINISM: ${{ inputs.determinism }}
         SHARD_LABEL: ${{ inputs.shard-label }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        if [ "$DETERMINISM" != "true" ]; then
-          echo "::error::preserve-dist: 'true' requires determinism: 'true'"
-          anodizer::err "preserve-dist requires determinism mode"
-          exit 1
-        fi
-        if [ -z "$SHARD_LABEL" ]; then
-          echo "::error::preserve-dist: 'true' requires shard-label to be set"
-          anodizer::err "preserve-dist requires shard-label input"
-          exit 1
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/validate/preserve-dist.sh"
 
     # -------------------------------------------------------------------------
-    # Rust toolchain (optional; prereq for from-source and cargo-zigbuild).
-    # Determinism mode auto-enables this — the harness builds anodizer from
-    # source so it tests the actual code under review, not a stale release.
+    # Rust toolchain — prereq for from-source, from-branch, cargo-zigbuild,
+    # and the determinism harness (which builds anodizer from source so it
+    # tests the actual code under review, not a stale release).
     # -------------------------------------------------------------------------
     - name: Install Rust toolchain
       if: inputs.install-rust == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
     # -------------------------------------------------------------------------
-    # Cargo target-dir cache (from-source / determinism paths only).
-    # Without this, every determinism shard cold-builds anodizer from scratch,
-    # which dominates shard wall-time on cache-cold runners. The cache key is
-    # disambiguated per mode so a from-source consumer doesn't collide with a
-    # determinism shard (different feature sets / build profiles otherwise).
+    # Cargo build cache (from-source / determinism / from-branch paths).
+    # rust-cache covers Cargo.lock-stable runs; sccache covers Cargo.lock
+    # churn and the determinism harness's per-run fresh worktrees (where
+    # target/ is wiped between runs). Layered, not replacing.
     # -------------------------------------------------------------------------
-    # GHA expression syntax has no `replace()` function (only `format`, `join`,
-    # `contains`, etc.) so a branch name with `/` can't be sanitized inline in
-    # the cache key. Compute the slug here so it's a single shell-side
-    # `tr` instead.
     - name: Compute cache key suffix
       if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
       id: cache-key
@@ -408,27 +346,7 @@ runs:
         DETERMINISM: ${{ inputs.determinism }}
         FROM_BRANCH: ${{ inputs.from-branch }}
         WORKSPACE_DIR: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
-      run: |
-        set -euo pipefail
-        if [ "$DETERMINISM" = "true" ]; then
-          suffix=determinism
-        elif [ -n "$FROM_BRANCH" ]; then
-          # Slug branch name: replace `/`, whitespace, and other path-unsafe
-          # characters with `-` so the cache key is a single line.
-          slug=$(printf '%s' "$FROM_BRANCH" | tr '/ ' '--')
-          suffix="from-branch-${slug}"
-        else
-          suffix=from-source
-        fi
-        printf 'suffix=%s\n' "$suffix" >> "$GITHUB_OUTPUT"
-        # Swatinem/rust-cache validates the `workspaces:` path exists before
-        # restoring — on a cache-miss first run of from-branch, the clone
-        # step that creates this dir runs LATER, so we pre-create an empty
-        # dir to keep the cache action happy. A subsequent clone into the
-        # same path is fine (git clone targets a non-existent or empty dir).
-        if [ -n "$WORKSPACE_DIR" ] && [ ! -d "$WORKSPACE_DIR" ]; then
-          mkdir -p "$WORKSPACE_DIR"
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/rust/cache-key.sh"
 
     - name: Cache cargo target dir
       if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
@@ -437,39 +355,19 @@ runs:
         key: anodizer-action-${{ steps.cache-key.outputs.suffix }}
         workspaces: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
 
-    # rust-cache covers Cargo.lock-stable runs; sccache covers Cargo.lock
-    # churn and the determinism harness's per-run fresh worktrees (where
-    # target/ is wiped between the two runs). Layered, not replacing.
-    # sccache is wrapped around rustc for `determinism` and `from-source`
-    # paths only. `from-branch` clones a remote and builds it once per CI
-    # run with no chance of reuse, so the wrapper is pure overhead and
-    # exposes the build to Azure Storage outages (`<h2>Our services aren't
-    # available right now</h2>` — every `rustc` call exits 101). Drop the
-    # wrapper for from-branch; the build runs against bare rustc.
     - name: Set up sccache
       if: inputs.determinism == 'true' || inputs.from-source == 'true'
       uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.9
+
+    # sccache is armed only for determinism / from-source. from-branch clones
+    # a remote and builds it once per CI run with no chance of reuse, so the
+    # wrapper is pure overhead AND exposes the build to Azure Storage outages
+    # ("Our services aren't available right now") — every rustc call would
+    # exit 101.
     - name: Enable sccache wrapper (with health probe)
       if: inputs.determinism == 'true' || inputs.from-source == 'true'
       shell: bash
-      run: |
-        # Probe the sccache GHA backend before committing to it. Earlier
-        # variants of this probe used `--start-server` + `--show-stats`,
-        # both of which return success even when the upstream cache is
-        # 503ing — the actual rustc invocation surfaces the failure later.
-        # Exercise a real cache-bound call (`sccache rustc -vV` is exactly
-        # what cargo does to probe the compiler) and only enable the
-        # wrapper if THAT survives. On failure, build with bare rustc —
-        # slower, but green.
-        export SCCACHE_GHA_ENABLED=true
-        if sccache "$(rustup which rustc)" -vV >/dev/null 2>&1; then
-          echo "::notice::sccache backend reachable; wrapping rustc"
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-        else
-          echo "::warning::sccache backend unreachable (likely GHA cache outage); building without wrapper"
-          # Leave RUSTC_WRAPPER unset so rustc runs directly.
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/rust/sccache-probe.sh"
 
     # -------------------------------------------------------------------------
     # Dependency installation
@@ -479,68 +377,13 @@ runs:
       id: auto-detect
       shell: bash
       working-directory: ${{ inputs.workdir }}
-      run: |
-        set -euo pipefail
-        deps=()
-        cfg=""
-        for candidate in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
-          if [ -f "$candidate" ]; then
-            cfg="$candidate"
-            break
-          fi
-        done
-        if [ -z "$cfg" ]; then
-          echo "::warning::auto-install: no anodizer config found, skipping"
-          echo "deps=" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        # Match top-level keys that signal dependency needs
-        grep -qE '^nfpm:|^  - name: anodizer-stage-nfpm' "$cfg" && deps+=("nfpm") || true
-        grep -qE '^makeselfs:' "$cfg" && deps+=("makeself") || true
-        grep -qE '^snapcrafts:' "$cfg" && deps+=("snapcraft") || true
-        grep -qE '^srpm:' "$cfg" && deps+=("rpmbuild") || true
-        grep -qE '^binary_signs:|^docker_signs:' "$cfg" && deps+=("cosign") || true
-        grep -qE '^sboms:' "$cfg" && deps+=("syft") || true
-        grep -qE '^upx:' "$cfg" && deps+=("upx") || true
-        grep -qE '^nsis:' "$cfg" && deps+=("nsis") || true
-        grep -qE '^dmgs:' "$cfg" && deps+=("create-dmg") || true
-        grep -qE '^flatpaks:' "$cfg" && deps+=("flatpak") || true
-        # alejandra is only needed when the nix publisher opts into it as
-        # the formatter (the alternative is `nixfmt`, which we don't ship
-        # an auto-installer for yet).
-        grep -qE '^[[:space:]]+formatter:[[:space:]]*alejandra[[:space:]]*$' "$cfg" && deps+=("alejandra") || true
-        # pkgs/msis can't be cross-built: warn when config asks for them on the wrong runner.
-        if grep -qE '^pkgs:' "$cfg" && [ "${RUNNER_OS:-}" != "macOS" ]; then
-          echo "::warning::auto-install: pkgs: requires macOS runner (got ${RUNNER_OS:-unset}); skipping"
-        fi
-        if grep -qE '^msis:' "$cfg" && [ "${RUNNER_OS:-}" != "Windows" ]; then
-          echo "::warning::auto-install: msis: requires Windows runner (got ${RUNNER_OS:-unset}); skipping"
-        fi
-        # Cross-compilation needs zig + cargo-zigbuild
-        grep -qE '^[[:space:]]*cross:[[:space:]]*(auto|zigbuild)[[:space:]]*$' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
-        joined=$(IFS=','; echo "${deps[*]}")
-        echo "::notice::auto-install detected: ${joined:-none}"
-        echo "deps=$joined" >> "$GITHUB_OUTPUT"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/auto-detect-deps.sh"
 
     - name: Emit determinism dependency set
       if: inputs.determinism == 'true'
       id: det-deps
       shell: bash
-      run: |
-        set -euo pipefail
-        # Tools needed by the harness's per-shard `determinism-stages`
-        # default. Linux adds nfpm because the Linux default stage list
-        # includes nfpm; the other runners' default list does not, so
-        # they skip the install. zig + cargo-zigbuild are Linux-only
-        # because cross-compile from non-Linux runners isn't supported
-        # by the matrix. cosign / syft are pre-installed even when
-        # sign / sbom would skip — both are cheap and the determinism
-        # default exercises both.
-        if [ "$RUNNER_OS" = "Linux" ]; then
-          echo "deps=zig,cargo-zigbuild,upx,nfpm,makeself,snapcraft,syft,cosign" >> "$GITHUB_OUTPUT"
-        else
-          echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/install/determinism-deps.sh"
 
     - name: Install dependencies
       if: inputs.install != '' || steps.auto-detect.outputs.deps != '' || steps.det-deps.outputs.deps != ''
@@ -549,7 +392,7 @@ runs:
         EXPLICIT_INSTALL: ${{ inputs.install }}
         AUTO_INSTALL: ${{ steps.auto-detect.outputs.deps }}
         DETERMINISM_INSTALL: ${{ steps.det-deps.outputs.deps }}
-      run: "${GITHUB_ACTION_PATH}/scripts/install-deps.sh"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/deps.sh"
 
     # -------------------------------------------------------------------------
     # Key material
@@ -559,35 +402,7 @@ runs:
       shell: bash
       env:
         GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # Defence-in-depth: mask each line of the key in case auto-masking was
-        # lost crossing a reusable-workflow boundary.
-        while IFS= read -r line; do
-          [ -n "$line" ] && echo "::add-mask::$line"
-        done <<< "$GPG_PRIVATE_KEY"
-        # Import into the keyring (consumed by archive/checksum `signs:` blocks
-        # via `--local-user $GPG_FINGERPRINT`).
-        echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-        # Also write the key to a file for nfpm package signing. rpmsign /
-        # dpkg-sig / abuild-sign read the secret key directly off disk rather
-        # than going through gpg-agent, so anodizer's `nfpm.signature.key_file`
-        # needs a path. Same key material as the keyring import above.
-        gpg_key_file="${RUNNER_TEMP}/anodizer-signing.asc"
-        printf '%s' "$GPG_PRIVATE_KEY" > "$gpg_key_file"
-        chmod 600 "$gpg_key_file"
-        echo "GPG_KEY_PATH=${gpg_key_file}" >> "$GITHUB_ENV"
-        # Allow non-interactive passphrase (rpmsign / gpg need this in CI).
-        mkdir -p "${HOME}/.gnupg"
-        chmod 700 "${HOME}/.gnupg"
-        grep -qxF 'allow-loopback-pinentry' "${HOME}/.gnupg/gpg-agent.conf" 2>/dev/null \
-          || echo 'allow-loopback-pinentry' >> "${HOME}/.gnupg/gpg-agent.conf"
-        grep -qxF 'pinentry-mode loopback' "${HOME}/.gnupg/gpg.conf" 2>/dev/null \
-          || echo 'pinentry-mode loopback' >> "${HOME}/.gnupg/gpg.conf"
-        gpgconf --kill gpg-agent || true
-        echo "::notice::GPG private key imported"
-        anodizer::ok "GPG private key imported (keyring + GPG_KEY_PATH for nfpm)"
+      run: "${GITHUB_ACTION_PATH}/scripts/keys/gpg.sh"
 
     - name: Provision apk signing keys
       if: inputs.apk-private-key != ''
@@ -595,36 +410,7 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         APK_PRIVATE_KEY_INPUT: ${{ inputs.apk-private-key }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # Defence-in-depth: mask each line in case auto-masking was lost
-        # crossing a reusable-workflow boundary.
-        while IFS= read -r line; do
-          [ -n "$line" ] && echo "::add-mask::$line"
-        done <<< "$APK_PRIVATE_KEY_INPUT"
-        # apk-tools uses RSA-PSS, not OpenPGP, so nfpm's apk packager needs
-        # a raw PEM RSA private key (not the GPG-armored block deb/rpm
-        # consume). Write to $RUNNER_TEMP so the file is cleaned at job end.
-        privfile="${RUNNER_TEMP}/anodizer-apk.rsa"
-        pubfile="${RUNNER_TEMP}/anodizer-apk.rsa.pub"
-        install -m 0600 /dev/null "$privfile"
-        printf '%s\n' "$APK_PRIVATE_KEY_INPUT" > "$privfile"
-        # Derive the matching public key so the release pipeline can attach
-        # it as an asset. apk verifiers install the pub key to
-        # /etc/apk/keys/ before `apk add`-ing a signed package.
-        openssl rsa -in "$privfile" -pubout -out "$pubfile" 2>/dev/null
-        chmod 0644 "$pubfile"
-        # Drop the pub key into dist/ so anodizer's release.extra_files glob
-        # can pick it up alongside the signed apk(s). dist/ may not exist yet
-        # in single-shot release jobs; create it. In --merge jobs dist/ has
-        # already been populated by actions/download-artifact.
-        mkdir -p ./dist
-        cp "$pubfile" "./dist/${GITHUB_REPOSITORY##*/}-apk-signing-key.rsa.pub"
-        echo "APK_PRIVATE_KEY_PATH=${privfile}" >> "$GITHUB_ENV"
-        echo "APK_PUBLIC_KEY_PATH=${pubfile}" >> "$GITHUB_ENV"
-        echo "::notice::apk signing keys written"
-        anodizer::ok "apk signing keys written (APK_PRIVATE_KEY_PATH for nfpm; pub key staged in dist/)"
+      run: "${GITHUB_ACTION_PATH}/scripts/keys/apk.sh"
 
     - name: Write cosign key
       if: inputs.cosign-key != ''
@@ -632,18 +418,7 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         COSIGN_KEY_CONTENTS: ${{ inputs.cosign-key }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # Defence-in-depth: mask each line of the key in case auto-masking was
-        # lost crossing a reusable-workflow boundary.
-        while IFS= read -r line; do
-          [ -n "$line" ] && echo "::add-mask::$line"
-        done <<< "$COSIGN_KEY_CONTENTS"
-        printf '%s' "$COSIGN_KEY_CONTENTS" > cosign.key
-        chmod 600 cosign.key
-        echo "::notice::Cosign key written to cosign.key"
-        anodizer::ok "cosign key written to cosign.key"
+      run: "${GITHUB_ACTION_PATH}/scripts/keys/cosign.sh"
 
     # -------------------------------------------------------------------------
     # Installation — Path A: from workflow artifact
@@ -659,13 +434,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
         REPO: ${{ github.repository }}
         COMMIT_SHA: ${{ github.sha }}
-      run: |
-        set -euo pipefail
-        if [ "$ARTIFACT_RUN_ID" = "auto" ]; then
-          "${GITHUB_ACTION_PATH}/scripts/resolve-artifact-run.sh"
-        else
-          echo "run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/install/resolve-artifact-id.sh"
 
     - name: Download artifact
       if: inputs.from-artifact != ''
@@ -681,15 +450,7 @@ runs:
       shell: bash
       env:
         BIN: ${{ steps.platform.outputs.bin }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        install_dir="${RUNNER_TOOL_CACHE}/anodizer/artifact"
-        chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
-        echo "${install_dir}" >> "$GITHUB_PATH"
-        echo "::notice::anodizer installed from artifact to ${install_dir}"
-        anodizer::verb Installed "anodizer from artifact"
-        anodizer::detail "${install_dir}/${BIN}"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/artifact.sh"
 
     # -------------------------------------------------------------------------
     # Installation — Path B: from GitHub release
@@ -701,48 +462,7 @@ runs:
       env:
         INPUT_VERSION: ${{ inputs.version }}
         GH_TOKEN: ${{ github.token }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        if [ "$INPUT_VERSION" = "latest" ]; then
-          tag=$(gh api repos/tj-smith47/anodizer/releases/latest --jq '.tag_name' 2>/dev/null || echo "")
-          if [ -z "$tag" ]; then
-            echo "::error::Could not resolve latest anodizer release"
-            anodizer::err "could not resolve latest anodizer release"
-            exit 1
-          fi
-        elif [ "$INPUT_VERSION" = "nightly" ]; then
-          # Mirrors goreleaser-action ≥ v7.2.0 immutable-nightly resolution:
-          # list releases (newest first), pick the first non-draft tag whose
-          # name matches `*-nightly`. Anodizer's nightly tag format is
-          # `vX.Y.Z-<sha>-nightly`, so this jq pattern is exact.
-          tag=$(gh api 'repos/tj-smith47/anodizer/releases?per_page=30' \
-            --jq '[.[] | select(.draft == false) | .tag_name | select(test("-nightly$"))] | .[0] // empty' \
-            2>/dev/null || echo "")
-          if [ -z "$tag" ]; then
-            echo "::error::Could not resolve nightly anodizer release (no published tag matches '*-nightly')"
-            anodizer::err "could not resolve nightly anodizer release"
-            exit 1
-          fi
-        else
-          if [[ "$INPUT_VERSION" =~ ^(~\>|\^|\>=|\<=|\>|\<) ]]; then
-            echo "::error::version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1'), 'latest', or 'nightly'"
-            anodizer::err "version: '$INPUT_VERSION' is not supported — pass an exact tag (e.g. 'v0.1.1'), 'latest', or 'nightly'"
-            exit 1
-          fi
-          tag="$INPUT_VERSION"
-          if [[ ! "$tag" =~ ^v ]]; then
-            tag="v$tag"
-          fi
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+].+)?$ ]]; then
-            echo "::error::version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
-            anodizer::err "version: '$INPUT_VERSION' is not a valid semver tag (expected 'vMAJOR.MINOR.PATCH')"
-            exit 1
-          fi
-        fi
-        echo "tag=$tag" >> "$GITHUB_OUTPUT"
-        echo "::notice::Installing anodizer $tag"
-        anodizer::verb Installing "anodizer ${tag}"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/resolve-version.sh"
 
     - name: Download release
       if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true' && inputs.from-branch == ''
@@ -753,134 +473,32 @@ runs:
         ARCH: ${{ steps.platform.outputs.arch }}
         EXT: ${{ steps.platform.outputs.ext }}
         BIN: ${{ steps.platform.outputs.bin }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        version="${TAG#v}"
-        install_dir="${RUNNER_TOOL_CACHE}/anodizer/${version}"
-
-        if [ -x "${install_dir}/${BIN}" ]; then
-          echo "${install_dir}" >> "$GITHUB_PATH"
-          anodizer::ok "anodizer ${TAG} already cached at ${install_dir}"
-          echo "::notice::anodizer ${TAG} already installed (cache hit)"
-          exit 0
-        fi
-
-        archive="anodizer-${version}-${OS}-${ARCH}.${EXT}"
-        url="https://github.com/tj-smith47/anodizer/releases/download/${TAG}/${archive}"
-
-        anodizer::verb Downloading "${archive}"
-        anodizer::detail "${url}"
-        echo "::group::Downloading $url"
-        tmpdir=$(mktemp -d)
-        downloaded=false
-        for attempt in 1 2 3; do
-          if curl -fsSL "$url" -o "${tmpdir}/${archive}"; then
-            downloaded=true
-            break
-          fi
-          echo "::warning::Download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
-          anodizer::warn "download attempt ${attempt}/3 failed, retrying in ${attempt}s..."
-          sleep "$attempt"
-        done
-        if [ "$downloaded" != "true" ]; then
-          echo "::error::Failed to download anodizer ${TAG} from ${url} after 3 attempts"
-          anodizer::err "failed to download anodizer ${TAG} after 3 attempts"
-          exit 1
-        fi
-        echo "::endgroup::"
-
-        anodizer::verb Extracting "${archive}"
-        echo "::group::Extracting"
-        mkdir -p "$install_dir"
-        if [ "$EXT" = "zip" ]; then
-          unzip -q -o "${tmpdir}/${archive}" -d "$install_dir"
-        else
-          tar -xzf "${tmpdir}/${archive}" -C "$install_dir"
-        fi
-        rm -rf "$tmpdir"
-        echo "::endgroup::"
-
-        chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
-        echo "${install_dir}" >> "$GITHUB_PATH"
-        echo "::notice::anodizer ${TAG} installed to ${install_dir}"
-        anodizer::ok "anodizer ${TAG} installed"
-        anodizer::detail "${install_dir}/${BIN}"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/release.sh"
 
     # -------------------------------------------------------------------------
     # Installation — Path C: from source (bootstrap)
+    # Installation — Path D: clone branch of tj-smith47/anodizer, then build
+    #
+    # After the clone, the from-source build step takes over and finds the
+    # cloned tree via $ANODIZER_SRC_DIR (env-written by the clone step)
+    # rather than inputs.workdir, so the user's checkout is never touched.
     # -------------------------------------------------------------------------
-
-    # Path D: shallow-clone tj-smith47/anodizer at the requested branch.
-    # After the clone, the from-source build step below takes over — it finds
-    # the cloned tree via BUILD_WORKDIR rather than inputs.workdir, so the
-    # user's checkout is never touched.
     - name: Clone anodizer branch
       if: inputs.from-branch != ''
       id: clone-branch
       shell: bash
       env:
         FROM_BRANCH: ${{ inputs.from-branch }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        clone_dest="${RUNNER_TEMP}/anodizer-src"
-        repo_url="https://github.com/tj-smith47/anodizer.git"
-        if [ -d "$clone_dest" ]; then
-          anodizer::verb Removing "stale clone at ${clone_dest}"
-          rm -rf "$clone_dest"
-        fi
-        anodizer::verb Cloning "tj-smith47/anodizer@${FROM_BRANCH}"
-        echo "::group::Cloning tj-smith47/anodizer branch ${FROM_BRANCH}"
-        git clone --depth 1 --branch "$FROM_BRANCH" --single-branch "$repo_url" "$clone_dest"
-        echo "::endgroup::"
-        echo "clone_dest=${clone_dest}" >> "$GITHUB_OUTPUT"
-        echo "ANODIZER_SRC_DIR=${clone_dest}" >> "$GITHUB_ENV"
-        anodizer::ok "cloned tj-smith47/anodizer@${FROM_BRANCH} to ${clone_dest}"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/from-branch.sh"
 
     - name: Build anodizer from source
       if: inputs.from-source == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
       shell: bash
-      # ANODIZER_SRC_DIR is set by the clone step when from-branch is active;
-      # falls back to the user's workdir for from-source / determinism paths.
       working-directory: ${{ env.ANODIZER_SRC_DIR || inputs.workdir }}
       env:
         BIN: ${{ steps.platform.outputs.bin }}
         FROM_BRANCH: ${{ inputs.from-branch }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        if ! command -v cargo > /dev/null 2>&1; then
-          echo "::error::Rust is required; set install-rust: true (or use from-branch which auto-installs Rust)"
-          anodizer::err "Rust is required; set install-rust: true"
-          exit 1
-        fi
-        # Hermetic build subprocess for from-branch: this path clones a
-        # remote and builds once with no cache reuse, so any inherited
-        # RUSTC_WRAPPER (e.g. a consumer workflow's `env: RUSTC_WRAPPER:
-        # sccache` block) is pure overhead AND exposes the build to GHA
-        # cache backend outages (`<h2>Our services aren't available right
-        # now</h2>`). The earlier "Enable sccache wrapper" step already
-        # skips arming the wrapper for from-branch; sanitize here too so
-        # an inherited value from the caller's workflow env doesn't slip
-        # through. determinism + from-source paths keep whatever wrapper
-        # the consumer set — those builds benefit from cache reuse.
-        if [ -n "$FROM_BRANCH" ]; then
-          unset RUSTC_WRAPPER
-          unset SCCACHE_GHA_ENABLED
-        fi
-        anodizer::verb Building "anodizer from source"
-        echo "::group::Building anodizer from source"
-        cargo build --release -p anodizer
-        install_dir="${RUNNER_TOOL_CACHE}/anodizer/source"
-        mkdir -p "$install_dir"
-        cp "target/release/${BIN}" "${install_dir}/${BIN}"
-        chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
-        echo "${install_dir}" >> "$GITHUB_PATH"
-        echo "::notice::anodizer built from source and installed to ${install_dir}"
-        echo "::endgroup::"
-        anodizer::ok "anodizer built from source"
-        anodizer::detail "${install_dir}/${BIN}"
+      run: "${GITHUB_ACTION_PATH}/scripts/install/from-source.sh"
 
     # -------------------------------------------------------------------------
     # Workspace resolution (monorepo tag → crate)
@@ -892,30 +510,7 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         TAG: ${{ github.ref_name }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        if ! command -v anodizer > /dev/null 2>&1; then
-          echo "::error::resolve-workspace requires anodizer to be installed"
-          anodizer::err "resolve-workspace requires anodizer to be installed"
-          exit 1
-        fi
-        output=$(anodizer resolve-tag "$TAG")
-        crate=$(echo "$output" | grep '^crate=' | cut -d= -f2)
-        path=$(echo "$output" | grep '^path=' | cut -d= -f2)
-        has_builds=$(echo "$output" | grep '^has-builds=' | cut -d= -f2)
-        if [ -z "$crate" ]; then
-          echo "::error::No crate matches tag '$TAG'"
-          anodizer::err "no crate matches tag '$TAG'"
-          exit 1
-        fi
-        echo "crate=$crate" >> "$GITHUB_OUTPUT"
-        echo "path=$path" >> "$GITHUB_OUTPUT"
-        echo "has-builds=$has_builds" >> "$GITHUB_OUTPUT"
-        echo "::notice::Tag '$TAG' → crate '$crate' (path=$path, has-builds=$has_builds)"
-        anodizer::verb Resolved "'$TAG' → $crate"
-        anodizer::kv path "$path"
-        anodizer::kv has-builds "$has_builds"
+      run: "${GITHUB_ACTION_PATH}/scripts/workspace/resolve-tag.sh"
 
     # -------------------------------------------------------------------------
     # Docker setup (login + QEMU + buildx)
@@ -937,7 +532,7 @@ runs:
       uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
     # -------------------------------------------------------------------------
-    # Download split artifacts (for merge jobs)
+    # Split artifact handling
     # -------------------------------------------------------------------------
     - name: Download split artifacts
       if: inputs.download-dist == 'true'
@@ -951,39 +546,14 @@ runs:
       if: inputs.download-dist == 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        count=$(find dist -name context.json -type f 2>/dev/null | wc -l)
-        if [ "$count" -eq 0 ]; then
-          echo "::error::No split context files found in dist/"
-          anodizer::err "no split context files found in dist/"
-          exit 1
-        fi
-        anodizer::ok "found $count split context(s)"
+      run: "${GITHUB_ACTION_PATH}/scripts/workspace/verify-split.sh"
 
-    # -------------------------------------------------------------------------
-    # Split matrix output — for users building a fan-out from config
-    # -------------------------------------------------------------------------
     - name: Produce split matrix
       if: inputs.install-only == 'true'
       id: split-matrix
       shell: bash
       working-directory: ${{ inputs.workdir }}
-      run: |
-        set -euo pipefail
-        # Produce a JSON matrix of { os, target, artifact } derived from
-        # anodizer's configured build targets. Only runs when install-only.
-        if ! command -v anodizer > /dev/null 2>&1; then
-          echo "matrix=" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        if targets=$(anodizer targets --json 2>/dev/null); then
-          echo "matrix=$targets" >> "$GITHUB_OUTPUT"
-          echo "::notice::split-matrix output populated from anodizer targets --json"
-        else
-          echo "matrix=" >> "$GITHUB_OUTPUT"
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/workspace/split-matrix.sh"
 
     # -------------------------------------------------------------------------
     # Determinism harness — runs after the from-source build (so `anodizer`
@@ -998,27 +568,14 @@ runs:
       env:
         RUNNER_OS: ${{ runner.os }}
         OVERRIDE: ${{ inputs.determinism-targets }}
-      run: "${GITHUB_ACTION_PATH}/scripts/determinism-resolve-targets.sh"
+      run: "${GITHUB_ACTION_PATH}/scripts/determinism/resolve-targets.sh"
 
     - name: Install determinism target triples
       if: inputs.determinism == 'true'
       shell: bash
       env:
         TARGETS: ${{ steps.det-targets.outputs.csv }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # The from-source build only installed the host triple. The harness
-        # rebuilds anodizer per configured target inside its hermetic worktree,
-        # so each shard needs its per-OS target list rustup-target-added.
-        IFS=',' read -ra triples <<< "$TARGETS"
-        for t in "${triples[@]}"; do
-          t=$(printf '%s' "$t" | xargs)
-          [ -z "$t" ] && continue
-          anodizer::verb Adding "rust target $t"
-          rustup target add "$t"
-        done
-        anodizer::ok "rust targets installed: ${TARGETS}"
+      run: "${GITHUB_ACTION_PATH}/scripts/determinism/install-targets.sh"
 
     - name: Run determinism harness
       if: inputs.determinism == 'true'
@@ -1030,60 +587,7 @@ runs:
         RUNS: ${{ inputs.determinism-runs }}
         PRESERVE_DIST: ${{ inputs.preserve-dist }}
         CRATE: ${{ inputs.determinism-crate }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # Per-OS default stage list. Empty `inputs.determinism-stages`
-        # → expand to the OS-appropriate default; non-empty → caller
-        # override wins.
-        if [ -n "$STAGES_INPUT" ]; then
-          stages="$STAGES_INPUT"
-        elif [ "$RUNNER_OS" = "Linux" ]; then
-          # makeself sits between nfpm and sbom in the canonical
-          # pipeline order (see
-          # crates/cli/src/pipeline.rs::build_release_pipeline). A
-          # consumer with makeselfs: configured needs the stage in
-          # the harness run, otherwise the preserved-dist tree won't
-          # contain the self-extracting archive. Snapcraft packs a
-          # pre-assembled prime directory (no build env / lxd) and
-          # honors SOURCE_DATE_EPOCH for squashfs mtime determinism;
-          # the *.snap allowlist in core/src/determinism.rs covers
-          # any residual drift.
-          stages="build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum"
-        else
-          stages="build,source,upx,archive,sbom,sign,checksum"
-        fi
-
-        # `preserve-dist: true` emits a hermetic dist tree for the
-        # downstream `release: --publish-only` job. The harness
-        # auto-detects tagged HEAD and toggles snapshot mode itself —
-        # no GHA-specific `GITHUB_REF` sniffing needed here.
-        extra_args=()
-        if [ "$PRESERVE_DIST" = "true" ]; then
-          extra_args+=(--preserve-dist=./preserved-dist)
-        fi
-        if [ -n "$CRATE" ]; then
-          extra_args+=(--crate="$CRATE")
-        fi
-
-        anodizer::section "anodizer check determinism"
-        anodizer::kv targets "$TARGETS"
-        anodizer::kv stages "$stages"
-        anodizer::kv runs "$RUNS"
-        if [ "$PRESERVE_DIST" = "true" ]; then
-          anodizer::kv preserve-dist ./preserved-dist
-        fi
-        if [ -n "$CRATE" ]; then
-          anodizer::kv crate "$CRATE"
-        fi
-        # No retry loop here. The harness gates release-quality drift; a
-        # retry would mask a flaky-but-real failure. Fail loudly on the
-        # first run.
-        anodizer check determinism \
-          --stages="$stages" \
-          --runs="$RUNS" \
-          --targets="$TARGETS" \
-          "${extra_args[@]}"
+      run: "${GITHUB_ACTION_PATH}/scripts/determinism/run-harness.sh"
 
     - name: Rename preserved-dist manifests per shard
       if: inputs.determinism == 'true' && inputs.preserve-dist == 'true' && success()
@@ -1091,59 +595,7 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         SHARD_LABEL: ${{ inputs.shard-label }}
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-
-        # `actions/upload-artifact@v4` followed by `download-artifact@v4
-        # merge-multiple: true` will collide on identically-named files
-        # across shards. Discriminate each shard's manifests with the
-        # caller-provided `shard-label` suffix.
-        if [ -z "$SHARD_LABEL" ]; then
-          anodizer::err "preserve-dist requires shard-label input"
-          exit 1
-        fi
-
-        if [ ! -d preserved-dist ]; then
-          anodizer::warn "preserved-dist/ missing — nothing to rename"
-          exit 0
-        fi
-
-        renamed=0
-
-        # Flat layout: manifests at preserved-dist/<f>.json.
-        for f in context artifacts metadata; do
-          src="preserved-dist/${f}.json"
-          dst="preserved-dist/${f}-${SHARD_LABEL}.json"
-          if [ -f "$src" ]; then
-            mv "$src" "$dst"
-            anodizer::verb renamed "$src -> $dst"
-            renamed=$((renamed + 1))
-          fi
-        done
-
-        # Per-crate layout: anodize check determinism --crate <name> writes
-        # preserved-dist/<crate>/<f>.json. Rename inside each subdir so
-        # `download-artifact merge-multiple: true` doesn't collide when N
-        # shards' dist-<crate>-<shard> artifacts merge back into dist/<crate>/.
-        for subdir in preserved-dist/*/; do
-          [ -d "$subdir" ] || continue
-          for f in context artifacts metadata; do
-            src="${subdir}${f}.json"
-            dst="${subdir}${f}-${SHARD_LABEL}.json"
-            if [ -f "$src" ]; then
-              mv "$src" "$dst"
-              anodizer::verb renamed "$src -> $dst"
-              renamed=$((renamed + 1))
-            fi
-          done
-        done
-
-        if [ "$renamed" -eq 0 ]; then
-          anodizer::warn "no manifest files found to rename (neither flat nor per-crate layout under preserved-dist/)"
-        else
-          anodizer::ok "preserved-dist manifests labelled for shard ${SHARD_LABEL} (${renamed} file(s))"
-        fi
+      run: "${GITHUB_ACTION_PATH}/scripts/determinism/rename-preserved-dist.sh"
 
     # -------------------------------------------------------------------------
     # Run anodizer
@@ -1155,74 +607,7 @@ runs:
       env:
         ANODIZER_ARGS: ${{ inputs.args }}
         ANODIZER_STDOUT_LOG: ${{ runner.temp }}/anodizer-stdout.log
-      run: |
-        set -euo pipefail
-        source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
-        # Don't echo ANODIZER_ARGS — users pass tokens/flags via `inputs.args`
-        # and GitHub Actions only auto-masks secrets registered with `::add-mask::`.
-        anodizer::section "anodizer"
-        # Retry up to 3 times for transient failures (registry rate limits,
-        # network timeouts, Docker push auth expiry). Deterministic failures
-        # (config errors, compile failures) will fail identically each time
-        # but the cost of two extra 10s waits is low vs. a flaky release.
-        max_retries=3
-        attempt=1
-        # Stdout (only) is teed to ANODIZER_STDOUT_LOG so the outputs step
-        # can parse anodizer-output markers (e.g. crates=[...]) without
-        # losing log visibility in the GHA UI. Stderr is intentionally not
-        # redirected — the spec defines the marker channel as stdout, and
-        # mixing stderr in would let an error-line that looked like a marker
-        # contaminate the output.
-        : > "$ANODIZER_STDOUT_LOG"
-        while [ $attempt -le $max_retries ]; do
-          # shellcheck disable=SC2086
-          # ANODIZER_ARGS is intentionally unquoted — users pass multiple flags
-          # separated by whitespace via `inputs.args`, and we rely on word
-          # splitting to forward them as distinct argv entries.
-          if anodizer $ANODIZER_ARGS 2>stderr.log | tee -a "$ANODIZER_STDOUT_LOG"; then
-            break
-          fi
-          if [ $attempt -eq $max_retries ]; then
-            anodizer::err "anodizer failed after ${max_retries} attempts"
-            test -f "$ANODIZER_STDOUT_LOG" && cat "$ANODIZER_STDOUT_LOG"
-            test -f stderr.log && cat stderr.log
-            exit 1
-          fi
-          anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
-          # Clean generated artifacts between retries to prevent "already exists"
-          # collisions.  Preserve split-build subdirectories entirely — any
-          # directory holding a `context.json` is a split input (produced by a
-          # build job and consumed by --merge), so its files must survive so
-          # merge-mode retries can re-run idempotently.
-          if [ -d "./dist" ]; then
-            # Skip top-level cleanup when a preserved-dist context
-            # manifest is present at the dist root: the publish-only
-            # path consumes context.json / context-<shard>.json /
-            # artifacts*.json / the preserved archives, and expects
-            # them to survive between retries. Wiping them turns any
-            # transient anodizer failure into an unrecoverable
-            # workflow run.
-            if [ -f "./dist/context.json" ] || ls ./dist/context-*.json >/dev/null 2>&1; then
-              anodizer::warn "preserved-dist context manifests present at dist root; skipping ALL retry cleanup to keep --publish-only inputs intact"
-            else
-              # Remove top-level generated files (archives, manifests, etc).
-              find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
-              # Remove depth-≥2 files only in subdirs that are NOT split inputs.
-              # Hoisted under the same outer preserved-dist guard so a
-              # preserved tree's per-arch subdirs (e.g.
-              # dist/makeself/default/linux_amd64/anodizer) are not
-              # nuked between retry attempts.
-              for d in ./dist/*/; do
-                [ -d "$d" ] || continue
-                if [ ! -f "${d}context.json" ]; then
-                  find "$d" -type f -delete 2>/dev/null || true
-                fi
-              done
-            fi
-          fi
-          sleep 10
-          attempt=$((attempt + 1))
-        done
+      run: "${GITHUB_ACTION_PATH}/scripts/run/anodizer.sh"
 
     # -------------------------------------------------------------------------
     # Outputs
@@ -1234,63 +619,7 @@ runs:
       working-directory: ${{ inputs.workdir }}
       env:
         ANODIZER_STDOUT_LOG: ${{ runner.temp }}/anodizer-stdout.log
-      run: |
-        set -euo pipefail
-        dist="dist"
-        for cfg in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
-          if [ -f "$cfg" ]; then
-            d=$(grep -E '^dist:' "$cfg" | head -1 | sed 's/^dist:\s*//' | tr -d '"' | tr -d "'")
-            [ -n "$d" ] && dist="$d"
-            break
-          fi
-        done
-
-        # Use a brace-grouped block so the closing delimiter always lands on
-        # its own line, even if the JSON file has no trailing newline.
-        if [ -f "${dist}/artifacts.json" ]; then
-          {
-            echo "artifacts<<ANODIZER_EOF"
-            cat "${dist}/artifacts.json"
-            echo ""
-            echo "ANODIZER_EOF"
-          } >> "$GITHUB_OUTPUT"
-        fi
-
-        if [ -f "${dist}/metadata.json" ]; then
-          {
-            echo "metadata<<ANODIZER_EOF"
-            cat "${dist}/metadata.json"
-            echo ""
-            echo "ANODIZER_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          # Extract release URL if present
-          url=$(jq -r '.release_url // empty' "${dist}/metadata.json" 2>/dev/null || echo "")
-          echo "release-url=${url}" >> "$GITHUB_OUTPUT"
-        fi
-
-        # Parse crates and versions from the stdout log written by the run step.
-        # Last occurrence wins so re-invocations inside the retry loop replace
-        # any earlier partial emission. Values are validated with jq before
-        # acceptance — an invalid JSON value would cause fromJson() callers to
-        # fail silently, which is harder to diagnose than a safe default.
-        crates="[]"
-        if [ -f "$ANODIZER_STDOUT_LOG" ]; then
-          last=$(grep -oP '(?<=^anodizer-output crates=)\[.*\]' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
-          if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
-            crates="$last"
-          fi
-        fi
-        echo "crates=${crates}" >> "$GITHUB_OUTPUT"
-
-        versions="{}"
-        if [ -f "$ANODIZER_STDOUT_LOG" ]; then
-          last=$(grep -oP '(?<=^anodizer-output versions=)\{.*\}' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
-          if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
-            versions="$last"
-          fi
-        fi
-        echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+      run: "${GITHUB_ACTION_PATH}/scripts/run/outputs.sh"
 
     # -------------------------------------------------------------------------
     # Upload split artifacts (for split build jobs)

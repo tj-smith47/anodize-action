@@ -1,28 +1,20 @@
 #!/usr/bin/env bash
-# determinism-resolve-targets.sh — derive the per-shard target CSV for the
-# determinism harness.
+# Derive the per-shard target CSV for the determinism harness by filtering
+# `anodizer targets --json` (matrix-style `{"include": [...]}`) to entries
+# whose `os` field matches RUNNER_OS's runner label.
 #
 # Inputs (env):
-#   RUNNER_OS   — Linux | macOS | Windows (set automatically by GitHub Actions)
+#   RUNNER_OS   — Linux | macOS | Windows (set by GitHub Actions)
 #   OVERRIDE    — optional explicit target CSV; bypasses derivation when set
-#   ANODIZE_BIN — optional `anodizer` invocation (defaults to `anodizer`). Tests
-#                 stub this to feed a fixture JSON without spawning the real
-#                 binary.
+#   ANODIZE_BIN — optional `anodizer` invocation (defaults to `anodizer`).
+#                 Tests stub this to feed fixture JSON.
 #
 # Outputs:
-#   `csv=<comma-joined-triples>` appended to $GITHUB_OUTPUT (when set).
-#   The same CSV is also printed to stdout so callers without a
-#   GITHUB_OUTPUT (e.g. tests) can capture it.
+#   `csv=<comma-joined-triples>` appended to $GITHUB_OUTPUT (when set), and
+#   the same CSV printed to stdout for callers without $GITHUB_OUTPUT.
 #
-# Exits non-zero with a clear error when:
-#   - RUNNER_OS is unsupported,
-#   - the targets JSON is missing/empty for the runner,
-#   - jq cannot parse the output.
-#
-# Filters `anodizer targets --json` (which emits a GitHub-Actions matrix-style
-# `{"include": [{"os": "ubuntu-latest", "target": "...", "artifact": "..."}]}`)
-# by mapping RUNNER_OS to its runner label.
-
+# Exits non-zero on unsupported RUNNER_OS, missing/empty targets for the
+# runner, or jq parse failure.
 set -euo pipefail
 
 : "${RUNNER_OS:?RUNNER_OS is required}"

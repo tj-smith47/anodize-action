@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# install-deps.sh — install anodizer pipeline dependencies.
+# Install anodizer pipeline dependencies via the platform-native package manager.
 #
-# Accepts a comma-separated list from the $EXPLICIT_INSTALL env var, merges
-# with $AUTO_INSTALL (from the auto-detect step), dedupes, and installs
-# each requested dep via the platform-native package manager.
+# Merges $EXPLICIT_INSTALL, $AUTO_INSTALL, and $DETERMINISM_INSTALL (comma-
+# separated lists), dedupes, and installs each requested dep.
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra.
-#
-# Called from action.yml; expects $GITHUB_ACTION_PATH to point at the
-# action root so we can source scripts/lib-colors.sh.
 set -euo pipefail
 
-# shellcheck source=./lib-colors.sh
-source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+# shellcheck source=../lib/colors.sh
+source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
 
 : "${RUNNER_OS:?RUNNER_OS is required}"
 EXPLICIT_INSTALL="${EXPLICIT_INSTALL:-}"

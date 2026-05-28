@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
-# lib-colors.sh — cargo-style verbs + goreleaser-style section markers.
+# Cargo-style verbs + goreleaser-style section markers for composite-action
+# log output.
 #
-# Source this from any composite-action step that wants colored output:
-#
-#   source "${GITHUB_ACTION_PATH}/scripts/lib-colors.sh"
+# Usage:
+#   source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
 #   anodizer::verb Installing "anodizer from ${URL}"
 #   anodizer::step "downloading archive"
-#   anodizer::ok "anodizer installed to ${install_dir}"
+#   anodizer::ok   "anodizer installed to ${install_dir}"
 #
-# GitHub Actions runners preserve ANSI escapes in log output and render them
-# with color in the web UI. Color is disabled automatically when NO_COLOR is
-# set or when stdout is not a TTY (matches cargo's CLI conventions). Use
-# workflow commands (::group::, ::notice::, ::warning::, ::error::) for
-# anything that should produce a PR annotation — those are GH-native and
-# color-safe on their own.
+# GitHub Actions renders ANSI in the web UI; color is disabled when
+# NO_COLOR is set or stdout is not a TTY. For PR annotations use the
+# native workflow commands (::group::, ::notice::, ::warning::,
+# ::error::) — those format independently of this lib.
 
 # Only enable colors when output is interactive or when explicitly forced
 # via ANODIZER_COLOR=always. CI=true (GitHub Actions) still gets color

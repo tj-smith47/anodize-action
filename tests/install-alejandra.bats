@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # install-alejandra.bats — unit tests for the alejandra installer in
-# scripts/install-deps.sh.
+# scripts/install/deps.sh.
 #
 # Stubs curl, sha256sum, sudo, and install so no network or root is needed.
 # Covers four behaviours:
@@ -73,7 +73,7 @@ STUB
         capture                          {print}
         /^install_alejandra\(\)/         {in_fn=1}
         in_fn && /^}$/                   {exit}
-    ' "${REPO_ROOT}/scripts/install-deps.sh")"
+    ' "${REPO_ROOT}/scripts/install/deps.sh")"
 }
 
 teardown() {
@@ -90,7 +90,7 @@ teardown() {
         RUNNER_ARCH="X64" \
         PATH="${FAKE_BIN}:${PATH}" \
         bash -c "
-            source '${REPO_ROOT}/scripts/lib-colors.sh'
+            source '${REPO_ROOT}/scripts/lib/colors.sh'
             brew_install() { :; }
             skip_unsupported_os() { :; }
             ${_INSTALL_ALEJANDRA_SRC}
@@ -110,7 +110,7 @@ teardown() {
         ALEJANDRA_VERSION="9.9.9" \
         PATH="${FAKE_BIN}:${PATH}" \
         bash -c "
-            source '${REPO_ROOT}/scripts/lib-colors.sh'
+            source '${REPO_ROOT}/scripts/lib/colors.sh'
             brew_install() { :; }
             skip_unsupported_os() { :; }
             ${_INSTALL_ALEJANDRA_SRC}
@@ -134,7 +134,7 @@ teardown() {
         ALEJANDRA_SHA256="deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
         PATH="${FAKE_BIN}:${PATH}" \
         bash -c "
-            source '${REPO_ROOT}/scripts/lib-colors.sh'
+            source '${REPO_ROOT}/scripts/lib/colors.sh'
             brew_install() { :; }
             skip_unsupported_os() { :; }
             ${_INSTALL_ALEJANDRA_SRC}
@@ -155,7 +155,7 @@ teardown() {
         SKIP_FLAG_FILE="${skip_called_file}" \
         PATH="${FAKE_BIN}:${PATH}" \
         bash -c "
-            source '${REPO_ROOT}/scripts/lib-colors.sh'
+            source '${REPO_ROOT}/scripts/lib/colors.sh'
             brew_install() { :; }
             skip_unsupported_os() { touch \"\${SKIP_FLAG_FILE}\"; }
             ${_INSTALL_ALEJANDRA_SRC}
