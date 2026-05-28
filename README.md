@@ -382,6 +382,81 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | `crate-path` | Path to the resolved crate directory (requires `resolve-workspace: true`) |
 | `has-builds` | Whether the resolved crate has binary builds configured (requires `resolve-workspace: true`) |
 | `split-matrix` | JSON matrix for `strategy.matrix` covering configured build targets (requires `install-only: true`) |
+| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used. Empty array (`[]`) when nothing changed. |
+| `versions` | JSON object mapping crate name to new version (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used. |
+
+## Workspace orchestration
+
+`anodizer tag` (without `--crate`) detects which crates in the workspace have changed since their last tag, bumps their versions, creates all per-crate tags in one bump commit, and pushes everything atomically. Two step outputs carry the result into downstream jobs:
+
+| Output | Shape | Purpose |
+|--------|-------|---------|
+| `crates` | `["core","bin-a","bin-b"]` | Gate downstream jobs; drive a determinism matrix |
+| `versions` | `{"core":"1.2.0","bin-a":"0.5.1"}` | Display, release-note generation, or conditional logic |
+
+Skip all downstream jobs when nothing changed:
+
+```yaml
+jobs:
+  tag:
+    outputs:
+      crates: ${{ steps.t.outputs.crates }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - uses: tj-smith47/anodizer-action@v1
+        id: t
+        with:
+          args: tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+  determinism-check:
+    needs: tag
+    if: needs.tag.outputs.crates != '[]'
+    strategy:
+      matrix:
+        crate: ${{ fromJson(needs.tag.outputs.crates) }}
+        shard: [linux, macos, windows-x86_64, windows-aarch64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          determinism: true
+          preserve-dist: "true"
+          shard-label: ${{ matrix.crate }}-${{ matrix.shard }}
+          determinism-crate: ${{ matrix.crate }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    needs: [tag, determinism-check]
+    if: needs.tag.outputs.crates != '[]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          auto-install: true
+          download-dist: true
+          args: release --publish-only
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+```
+
+The `determinism-crate` input scopes the harness to one crate per matrix entry, so each shard validates only the targets that belong to that crate. `release --publish-only` consumes all preserved-dist subdirs and publishes in topological order.
+
+For the full decision tree (single-crate, lockstep workspace, per-crate workspace, hybrid groupings, split-CI governance) and copy-pasteable YAML for every strategy, see the [Release Workflow Strategies](https://tj-smith47.github.io/anodizer/docs/ci/release-workflows/) page in the anodize docs.
 
 ## Retry behavior
 
