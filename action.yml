@@ -1179,12 +1179,13 @@ runs:
           # ANODIZER_ARGS is intentionally unquoted — users pass multiple flags
           # separated by whitespace via `inputs.args`, and we rely on word
           # splitting to forward them as distinct argv entries.
-          if anodizer $ANODIZER_ARGS | tee -a "$ANODIZER_STDOUT_LOG"; then
+          if anodizer $ANODIZER_ARGS 2>stderr.log | tee -a "$ANODIZER_STDOUT_LOG"; then
             break
           fi
           if [ $attempt -eq $max_retries ]; then
             anodizer::err "anodizer failed after ${max_retries} attempts"
             test -f "$ANODIZER_STDOUT_LOG" && cat "$ANODIZER_STDOUT_LOG"
+            test -f stderr.log && cat stderr.log
             exit 1
           fi
           anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
