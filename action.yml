@@ -1092,15 +1092,41 @@ runs:
           exit 0
         fi
 
+        renamed=0
+
+        # Flat layout: manifests at preserved-dist/<f>.json.
         for f in context artifacts metadata; do
           src="preserved-dist/${f}.json"
           dst="preserved-dist/${f}-${SHARD_LABEL}.json"
           if [ -f "$src" ]; then
             mv "$src" "$dst"
             anodizer::verb renamed "$src -> $dst"
+            renamed=$((renamed + 1))
           fi
         done
-        anodizer::ok "preserved-dist manifests labelled for shard ${SHARD_LABEL}"
+
+        # Per-crate layout: anodize check determinism --crate <name> writes
+        # preserved-dist/<crate>/<f>.json. Rename inside each subdir so
+        # `download-artifact merge-multiple: true` doesn't collide when N
+        # shards' dist-<crate>-<shard> artifacts merge back into dist/<crate>/.
+        for subdir in preserved-dist/*/; do
+          [ -d "$subdir" ] || continue
+          for f in context artifacts metadata; do
+            src="${subdir}${f}.json"
+            dst="${subdir}${f}-${SHARD_LABEL}.json"
+            if [ -f "$src" ]; then
+              mv "$src" "$dst"
+              anodizer::verb renamed "$src -> $dst"
+              renamed=$((renamed + 1))
+            fi
+          done
+        done
+
+        if [ "$renamed" -eq 0 ]; then
+          anodizer::warn "no manifest files found to rename (neither flat nor per-crate layout under preserved-dist/)"
+        else
+          anodizer::ok "preserved-dist manifests labelled for shard ${SHARD_LABEL} (${renamed} file(s))"
+        fi
 
     # -------------------------------------------------------------------------
     # Run anodizer
