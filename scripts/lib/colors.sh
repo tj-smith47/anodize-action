@@ -64,7 +64,7 @@ fi
 anodizer::verb() {
     local verb="$1"
     shift
-    printf "%s%12s%s %s\n" "${_ANODIZER_BOLD_GREEN}" "${verb}" "${_ANODIZER_RESET}" "$*"
+    printf "%s%12s%s %s\n" "${_ANODIZER_BOLD_GREEN}" "${verb}" "${_ANODIZER_RESET}" "$*" >&2
 }
 
 # Goreleaser-style bullet for a sub-step inside a larger stage.
