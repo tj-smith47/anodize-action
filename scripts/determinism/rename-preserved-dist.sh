@@ -10,12 +10,9 @@
 # per-crate layout written by `anodizer check determinism --crate <name>`
 # (preserved-dist/<crate>/<f>.json).
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
-if [ -z "$SHARD_LABEL" ]; then
-    anodizer::err "preserve-dist requires shard-label input"
-    exit 1
-fi
+[ -n "$SHARD_LABEL" ] || gha_fail "preserve-dist requires shard-label input"
 
 if [ ! -d preserved-dist ]; then
     anodizer::warn "preserved-dist/ missing — nothing to rename"
@@ -24,27 +21,25 @@ fi
 
 renamed=0
 
-for f in context artifacts metadata; do
-    src="preserved-dist/${f}.json"
-    dst="preserved-dist/${f}-${SHARD_LABEL}.json"
-    if [ -f "$src" ]; then
-        mv "$src" "$dst"
-        anodizer::verb renamed "$src -> $dst"
-        renamed=$((renamed + 1))
-    fi
-done
-
-for subdir in preserved-dist/*/; do
-    [ -d "$subdir" ] || continue
+# Rename `{context,artifacts,metadata}.json` inside `dir` (trailing-slash
+# included). Each successful rename bumps the shared `renamed` counter.
+rename_manifests_in() {
+    local dir="$1" f src dst
     for f in context artifacts metadata; do
-        src="${subdir}${f}.json"
-        dst="${subdir}${f}-${SHARD_LABEL}.json"
+        src="${dir}${f}.json"
+        dst="${dir}${f}-${SHARD_LABEL}.json"
         if [ -f "$src" ]; then
             mv "$src" "$dst"
             anodizer::verb renamed "$src -> $dst"
             renamed=$((renamed + 1))
         fi
     done
+}
+
+rename_manifests_in "preserved-dist/"
+for subdir in preserved-dist/*/; do
+    [ -d "$subdir" ] || continue
+    rename_manifests_in "$subdir"
 done
 
 if [ "$renamed" -eq 0 ]; then

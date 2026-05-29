@@ -10,7 +10,7 @@
 # The pinentry-loopback config is required for rpmsign / gpg to accept
 # the passphrase from $GPG_PASSPHRASE non-interactively under CI.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 source "${GITHUB_ACTION_PATH}/scripts/lib/mask-secret.sh"
 
 anodizer::mask_lines "$GPG_PRIVATE_KEY"
@@ -20,7 +20,7 @@ echo "$GPG_PRIVATE_KEY" | gpg --batch --import
 gpg_key_file="${RUNNER_TEMP}/anodizer-signing.asc"
 printf '%s' "$GPG_PRIVATE_KEY" > "$gpg_key_file"
 chmod 600 "$gpg_key_file"
-echo "GPG_KEY_PATH=${gpg_key_file}" >> "$GITHUB_ENV"
+gha_set_env GPG_KEY_PATH "$gpg_key_file"
 
 mkdir -p "${HOME}/.gnupg"
 chmod 700 "${HOME}/.gnupg"
@@ -30,5 +30,5 @@ grep -qxF 'pinentry-mode loopback' "${HOME}/.gnupg/gpg.conf" 2>/dev/null \
     || echo 'pinentry-mode loopback' >> "${HOME}/.gnupg/gpg.conf"
 gpgconf --kill gpg-agent || true
 
-echo "::notice::GPG private key imported"
+gha_notice "GPG private key imported"
 anodizer::ok "GPG private key imported (keyring + GPG_KEY_PATH for nfpm)"

@@ -15,7 +15,7 @@
 # No retry loop here. The harness gates release-quality drift; a retry
 # would mask a flaky-but-real failure. Fail loudly on the first run.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 if [ -n "$STAGES_INPUT" ]; then
     stages="$STAGES_INPUT"

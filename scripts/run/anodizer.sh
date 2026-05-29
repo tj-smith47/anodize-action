@@ -24,73 +24,86 @@
 # so mixing stderr into the captured file would let an error line that
 # resembles a marker contaminate the parsed output.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
-anodizer::section "anodizer"
+# Predicate: is dist/ holding context manifests we must preserve across a
+# retry? `context.json` (or `context-<shard>.json`) at root or in any
+# first-level subdir signals a split-build input / per-crate preserved-dist
+# tree consumed by `release --merge` / `release --publish-only`; wiping
+# it would turn a transient failure into an unrecoverable one.
+has_preserved_context() {
+    [ -d "./dist" ] || return 1
+    [ -f "./dist/context.json" ] && return 0
+    ls ./dist/context-*.json >/dev/null 2>&1 && return 0
+    local d
+    for d in ./dist/*/; do
+        [ -d "$d" ] || continue
+        ls "${d}context"*.json >/dev/null 2>&1 && return 0
+    done
+    return 1
+}
 
-# Detect --publish-only / --rollback-only — both are stateful and must
-# run exactly once. case-glob matches the flag anywhere in the arg list.
-case " $ANODIZER_ARGS " in
-    *" --publish-only "*|*" --rollback-only "*)
-        max_retries=1
-        anodizer::verb retry "disabled for stateful mode (--publish-only / --rollback-only)"
-        ;;
-    *)
-        max_retries=3
-        ;;
-esac
+# Wipe generated artifacts between retries to prevent "already exists"
+# collisions, scoped to one level deep so unrelated subdirs survive.
+cleanup_dist() {
+    [ -d "./dist" ] || return 0
+    find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
+    local d
+    for d in ./dist/*/; do
+        [ -d "$d" ] || continue
+        find "$d" -type f -delete 2>/dev/null || true
+    done
+}
 
-attempt=1
-: > "$ANODIZER_STDOUT_LOG"
-while [ $attempt -le $max_retries ]; do
+resolve_max_retries() {
+    # Stateful modes must run exactly once. case-glob matches the flag
+    # anywhere in the arg list.
+    case " $ANODIZER_ARGS " in
+        *" --publish-only "*|*" --rollback-only "*)
+            anodizer::verb retry "disabled for stateful mode (--publish-only / --rollback-only)"
+            echo 1
+            ;;
+        *) echo 3 ;;
+    esac
+}
+
+run_attempt() {
     # shellcheck disable=SC2086
     # ANODIZER_ARGS is intentionally unquoted: users pass multiple flags
     # separated by whitespace via `inputs.args` and rely on word splitting
     # to forward them as distinct argv entries.
-    if anodizer $ANODIZER_ARGS | tee -a "$ANODIZER_STDOUT_LOG"; then
-        break
-    fi
-    if [ $attempt -eq $max_retries ]; then
-        if [ $max_retries -eq 1 ]; then
-            anodizer::err "anodizer failed (no retry for stateful modes)"
-        else
-            anodizer::err "anodizer failed after ${max_retries} attempts"
-        fi
-        exit 1
-    fi
-    anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
+    anodizer $ANODIZER_ARGS | tee -a "$ANODIZER_STDOUT_LOG"
+}
 
-    # Clean generated artifacts between retries to prevent "already exists"
-    # collisions. Any subdir of dist/ that holds a context manifest
-    # (`context.json` or `context-<shard>.json`) is a split-build input or
-    # per-crate preserved-dist tree consumed by `release --merge` /
-    # `release --publish-only` — wiping it turns a transient failure into
-    # an unrecoverable one. When any such marker is present at the root
-    # or in any first-level subdir, skip cleanup entirely.
-    if [ -d "./dist" ]; then
-        preserved=false
-        if [ -f "./dist/context.json" ] || ls ./dist/context-*.json >/dev/null 2>&1; then
-            preserved=true
-        else
-            for d in ./dist/*/; do
-                [ -d "$d" ] || continue
-                if ls "${d}context"*.json >/dev/null 2>&1; then
-                    preserved=true
-                    break
-                fi
-            done
-        fi
+main() {
+    anodizer::section "anodizer"
 
-        if [ "$preserved" = "true" ]; then
+    local max_retries attempt=1
+    max_retries=$(resolve_max_retries)
+    : > "$ANODIZER_STDOUT_LOG"
+
+    while [ $attempt -le $max_retries ]; do
+        if run_attempt; then
+            return 0
+        fi
+        if [ $attempt -eq $max_retries ]; then
+            if [ $max_retries -eq 1 ]; then
+                anodizer::err "anodizer failed (no retry for stateful modes)"
+            else
+                anodizer::err "anodizer failed after ${max_retries} attempts"
+            fi
+            exit 1
+        fi
+        anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
+
+        if has_preserved_context; then
             anodizer::warn "preserved-dist context manifests present (root or per-crate subdir); skipping ALL retry cleanup to keep --publish-only inputs intact"
         else
-            find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
-            for d in ./dist/*/; do
-                [ -d "$d" ] || continue
-                find "$d" -type f -delete 2>/dev/null || true
-            done
+            cleanup_dist
         fi
-    fi
-    sleep 10
-    attempt=$((attempt + 1))
-done
+        sleep 10
+        attempt=$((attempt + 1))
+    done
+}
+
+main "$@"

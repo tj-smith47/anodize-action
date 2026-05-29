@@ -10,51 +10,55 @@
 #     before acceptance — an invalid JSON value would fail silently in
 #     downstream `fromJson()` callers.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
-dist="dist"
-for cfg in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
-    if [ -f "$cfg" ]; then
-        d=$(grep -E '^dist:' "$cfg" | head -1 | sed 's/^dist:\s*//' | tr -d '"' | tr -d "'")
-        [ -n "$d" ] && dist="$d"
-        break
-    fi
-done
-
-if [ -f "${dist}/artifacts.json" ]; then
+# Heredoc-frame a file into a multi-line step output. Caller passes the
+# output key and the file path.
+emit_file_output() {
+    local key="$1" file="$2"
     {
-        echo "artifacts<<ANODIZER_EOF"
-        cat "${dist}/artifacts.json"
+        echo "${key}<<ANODIZER_EOF"
+        cat "$file"
         echo ""
         echo "ANODIZER_EOF"
     } >> "$GITHUB_OUTPUT"
-fi
+}
+
+# Extract the last `anodizer-output <key>=<value>` marker matching `pattern`
+# from the captured stdout log; emit `<key>=<value>` (or default) as a step
+# output. Last-wins overwrites retry-loop partials; jq -e rejects malformed
+# JSON before it can break downstream `fromJson()`.
+emit_marker_output() {
+    local key="$1" default="$2" pattern="$3" value="$default" last
+    if [ -f "$ANODIZER_STDOUT_LOG" ]; then
+        last=$(grep -oP "(?<=^anodizer-output ${key}=)${pattern}" "$ANODIZER_STDOUT_LOG" | tail -1 || true)
+        if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
+            value="$last"
+        fi
+    fi
+    gha_set_output "$key" "$value"
+}
+
+resolve_dist_dir() {
+    local cfg d
+    for cfg in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
+        [ -f "$cfg" ] || continue
+        d=$(grep -E '^dist:' "$cfg" | head -1 | sed 's/^dist:\s*//' | tr -d '"' | tr -d "'")
+        [ -n "$d" ] && { echo "$d"; return; }
+        break
+    done
+    echo "dist"
+}
+
+dist=$(resolve_dist_dir)
+
+[ -f "${dist}/artifacts.json" ] && emit_file_output artifacts "${dist}/artifacts.json"
 
 if [ -f "${dist}/metadata.json" ]; then
-    {
-        echo "metadata<<ANODIZER_EOF"
-        cat "${dist}/metadata.json"
-        echo ""
-        echo "ANODIZER_EOF"
-    } >> "$GITHUB_OUTPUT"
-
+    emit_file_output metadata "${dist}/metadata.json"
     url=$(jq -r '.release_url // empty' "${dist}/metadata.json" 2>/dev/null || echo "")
-    echo "release-url=${url}" >> "$GITHUB_OUTPUT"
+    gha_set_output release-url "$url"
 fi
 
-crates="[]"
-if [ -f "$ANODIZER_STDOUT_LOG" ]; then
-    last=$(grep -oP '(?<=^anodizer-output crates=)\[.*\]' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
-    if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
-        crates="$last"
-    fi
-fi
-echo "crates=${crates}" >> "$GITHUB_OUTPUT"
-
-versions="{}"
-if [ -f "$ANODIZER_STDOUT_LOG" ]; then
-    last=$(grep -oP '(?<=^anodizer-output versions=)\{.*\}' "$ANODIZER_STDOUT_LOG" | tail -1 || true)
-    if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then
-        versions="$last"
-    fi
-fi
-echo "versions=${versions}" >> "$GITHUB_OUTPUT"
+emit_marker_output crates   "[]" '\[.*\]'
+emit_marker_output versions "{}" '\{.*\}'

@@ -5,7 +5,7 @@
 # `version` defaults to 'latest', so it only counts as user-set when
 # explicitly overridden.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 active=()
 [ -n "$FROM_BRANCH" ]                                             && active+=("from-branch: '$FROM_BRANCH'")
@@ -13,6 +13,4 @@ active=()
 [ -n "$FROM_ARTIFACT" ]                                           && active+=("from-artifact: '$FROM_ARTIFACT'")
 [ -n "$VERSION" ] && [ "$VERSION" != "latest" ]                   && active+=("version: '$VERSION'")
 
-echo "::error::only one install path may be active; got: ${active[*]}"
-anodizer::err "only one install path may be active; got: ${active[*]}"
-exit 1
+gha_fail "only one install path may be active; got: ${active[*]}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # determinism-targets-resolve.bats — unit tests for
-# scripts/determinism-resolve-targets.sh.
+# scripts/determinism/resolve-targets.sh.
 #
 # Stubs `anodizer targets --json` via the ANODIZE_BIN env hook so the script
 # never spawns a real binary. Covers RUNNER_OS → target-CSV derivation,
@@ -9,7 +9,7 @@
 
 load test_helper
 
-SCRIPT="${REPO_ROOT}/scripts/determinism-resolve-targets.sh"
+SCRIPT="${REPO_ROOT}/scripts/determinism/resolve-targets.sh"
 
 # A representative `anodizer targets --json` payload. Mirrors the real shape
 # (matrix-style {"include": [...]} with os = runner labels).

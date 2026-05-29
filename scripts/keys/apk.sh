@@ -11,7 +11,7 @@
 # verifiers install that file under /etc/apk/keys/ before `apk add`-ing
 # a signed package.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 source "${GITHUB_ACTION_PATH}/scripts/lib/mask-secret.sh"
 
 anodizer::mask_lines "$APK_PRIVATE_KEY_INPUT"
@@ -28,7 +28,7 @@ chmod 0644 "$pubfile"
 mkdir -p ./dist
 cp "$pubfile" "./dist/${GITHUB_REPOSITORY##*/}-apk-signing-key.rsa.pub"
 
-echo "APK_PRIVATE_KEY_PATH=${privfile}" >> "$GITHUB_ENV"
-echo "APK_PUBLIC_KEY_PATH=${pubfile}" >> "$GITHUB_ENV"
-echo "::notice::apk signing keys written"
+gha_set_env APK_PRIVATE_KEY_PATH "$privfile"
+gha_set_env APK_PUBLIC_KEY_PATH "$pubfile"
+gha_notice "apk signing keys written"
 anodizer::ok "apk signing keys written (APK_PRIVATE_KEY_PATH for nfpm; pub key staged in dist/)"

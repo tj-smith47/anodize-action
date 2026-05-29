@@ -28,7 +28,7 @@
 # Writes `run_id=<id>` to $GITHUB_OUTPUT on success.
 set -euo pipefail
 
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 : "${ARTIFACT_WORKFLOW:?ARTIFACT_WORKFLOW is required}"
 : "${FROM_ARTIFACT:?FROM_ARTIFACT is required}"
@@ -36,19 +36,13 @@ source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
 : "${COMMIT_SHA:?COMMIT_SHA is required}"
 : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
 
-anodizer::section "Resolving ${ARTIFACT_WORKFLOW} artifact"
-anodizer::kv commit "${COMMIT_SHA}"
-anodizer::kv artifact "${FROM_ARTIFACT}"
-
-echo "::group::Resolving $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
-
-# Dereference once up front so annotated tag SHAs work too.
-deref_sha=$(git rev-parse "${COMMIT_SHA}^{commit}" 2>/dev/null || echo "$COMMIT_SHA")
-
+# Query the actions API for the first run on `sha` matching `status_filter`
+# (a jq predicate on the run object). Echos run id or empty string. The two
+# SHAs (raw tag SHA + dereferenced commit SHA) are tried in order so
+# annotated-tag SHAs also resolve.
 find_run() {
-    local status_filter="$1"
-    local sha id
-    for sha in "$COMMIT_SHA" "$deref_sha"; do
+    local status_filter="$1" sha1="$2" sha2="${3:-}" sha id
+    for sha in "$sha1" "$sha2"; do
         [ -z "$sha" ] && continue
         id=$(gh api "repos/${REPO}/actions/workflows/${ARTIFACT_WORKFLOW}/runs" \
             --jq "[.workflow_runs[] | select(.head_sha==\"${sha}\" and ${status_filter})][0].id" \
@@ -62,73 +56,85 @@ find_run() {
 }
 
 run_has_artifact() {
-    local id="$1"
-    local count
+    local id="$1" count
     count=$(gh api "repos/${REPO}/actions/runs/${id}/artifacts" \
         --jq "[.artifacts[] | select(.name==\"${FROM_ARTIFACT}\")] | length" \
         2>/dev/null || echo "0")
     [ "$count" != "0" ]
 }
 
-run_id=$(find_run '.conclusion=="success"')
+# Phase 1 — exact-SHA fast path.
+resolve_fast() {
+    find_run '.conclusion=="success"' "$COMMIT_SHA" "$deref_sha"
+}
 
-# Parent walk — when the tagged commit is a version_sync commit (e.g. "chore:
-# bump crates/foo to 1.2.3"), CI never ran on that SHA; walk up to 5 parents.
-if [ -z "$run_id" ]; then
-    echo "::notice::No CI run for exact SHA; checking parent commits"
+# Phase 2 — walk up to 5 parents looking for a successful run.
+resolve_parents() {
+    local depth parent_sha id
+    gha_notice "No CI run for exact SHA; checking parent commits"
     for depth in 1 2 3 4 5; do
         parent_sha=$(git rev-parse "${deref_sha}~${depth}" 2>/dev/null || echo "")
         [ -z "$parent_sha" ] && break
-        orig_commit="$COMMIT_SHA"; orig_deref="$deref_sha"
-        COMMIT_SHA="$parent_sha"; deref_sha="$parent_sha"
-        run_id=$(find_run '.conclusion=="success"')
-        COMMIT_SHA="$orig_commit"; deref_sha="$orig_deref"
-        if [ -n "$run_id" ]; then
-            echo "::notice::Found CI run ${run_id} at parent ~${depth} (${parent_sha})"
-            break
+        id=$(find_run '.conclusion=="success"' "$parent_sha" "")
+        if [ -n "$id" ]; then
+            gha_notice "Found CI run ${id} at parent ~${depth} (${parent_sha})"
+            echo "$id"
+            return 0
         fi
     done
-fi
+    echo ""
+}
 
-if [ -z "$run_id" ]; then
-    # 20 attempts × mostly 30s ≈ 9 min max wait (generous for CI overlap).
-    max_attempts=20
-    sleep_secs=5
-    attempt=1
+# Phase 3 — exponential-backoff poll. Accepts an in-progress run once its
+# artifact appears (the snapshot job uploads well before the tag job).
+# 20 attempts × mostly 30s ≈ 9 min max wait (generous for CI overlap).
+resolve_polling() {
+    local max_attempts=20 sleep_secs=5 attempt=1 next id failed in_progress
     while [ $attempt -le $max_attempts ]; do
-        run_id=$(find_run '.conclusion=="success"')
-        if [ -n "$run_id" ]; then
-            break
+        id=$(find_run '.conclusion=="success"' "$COMMIT_SHA" "$deref_sha")
+        if [ -n "$id" ]; then
+            echo "$id"
+            return 0
         fi
 
-        failed=$(find_run '(.conclusion=="failure" or .conclusion=="cancelled")')
-        if [ -n "$failed" ]; then
-            echo "::error::${ARTIFACT_WORKFLOW} run ${failed} for ${COMMIT_SHA} failed or was cancelled"
-            exit 1
-        fi
+        failed=$(find_run '(.conclusion=="failure" or .conclusion=="cancelled")' "$COMMIT_SHA" "$deref_sha")
+        [ -n "$failed" ] \
+            && gha_fail "${ARTIFACT_WORKFLOW} run ${failed} for ${COMMIT_SHA} failed or was cancelled"
 
-        in_progress=$(find_run '(.status=="in_progress" or .status=="queued") and (.conclusion==null or .conclusion=="")')
+        in_progress=$(find_run '(.status=="in_progress" or .status=="queued") and (.conclusion==null or .conclusion=="")' "$COMMIT_SHA" "$deref_sha")
         if [ -n "$in_progress" ] && run_has_artifact "$in_progress"; then
-            run_id="$in_progress"
-            echo "::notice::Accepting in-progress run $run_id (artifact $FROM_ARTIFACT already uploaded)"
-            break
+            gha_notice "Accepting in-progress run $in_progress (artifact $FROM_ARTIFACT already uploaded)"
+            echo "$in_progress"
+            return 0
         fi
 
-        echo "::notice::Waiting for ${ARTIFACT_WORKFLOW} run on ${COMMIT_SHA} (attempt ${attempt}/${max_attempts}, next check in ${sleep_secs}s)"
+        gha_notice "Waiting for ${ARTIFACT_WORKFLOW} run on ${COMMIT_SHA} (attempt ${attempt}/${max_attempts}, next check in ${sleep_secs}s)"
         sleep "$sleep_secs"
         attempt=$((attempt + 1))
         next=$((sleep_secs * 2))
         sleep_secs=$((next > 30 ? 30 : next))
     done
-fi
+    echo ""
+}
+
+anodizer::section "Resolving ${ARTIFACT_WORKFLOW} artifact"
+anodizer::kv commit "${COMMIT_SHA}"
+anodizer::kv artifact "${FROM_ARTIFACT}"
+
+gha_group_begin "Resolving $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
+
+# Dereference once up front so annotated tag SHAs work too.
+deref_sha=$(git rev-parse "${COMMIT_SHA}^{commit}" 2>/dev/null || echo "$COMMIT_SHA")
+
+run_id=$(resolve_fast)
+[ -z "$run_id" ] && run_id=$(resolve_parents)
+[ -z "$run_id" ] && run_id=$(resolve_polling)
 
 if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-    echo "::error::Could not find a successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
-    anodizer::err "no successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
-    exit 1
+    gha_fail "Could not find a successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
 fi
 
-echo "::notice::Resolved artifact-run-id=auto to run ${run_id}"
-echo "::endgroup::"
+gha_notice "Resolved artifact-run-id=auto to run ${run_id}"
+gha_group_end
 anodizer::ok "resolved to run ${run_id}"
-echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+gha_set_output run_id "$run_id"

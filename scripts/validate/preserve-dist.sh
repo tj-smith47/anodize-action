@@ -5,15 +5,7 @@
 # files (context.json, artifacts.json, ...) when N matrix shards merge
 # their artifacts via `download-artifact merge-multiple: true`.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
-if [ "$DETERMINISM" != "true" ]; then
-    echo "::error::preserve-dist: 'true' requires determinism: 'true'"
-    anodizer::err "preserve-dist requires determinism mode"
-    exit 1
-fi
-if [ -z "$SHARD_LABEL" ]; then
-    echo "::error::preserve-dist: 'true' requires shard-label to be set"
-    anodizer::err "preserve-dist requires shard-label input"
-    exit 1
-fi
+[ "$DETERMINISM" = "true" ] || gha_fail "preserve-dist: 'true' requires determinism: 'true'"
+[ -n "$SHARD_LABEL" ]       || gha_fail "preserve-dist: 'true' requires shard-label to be set"

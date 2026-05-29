@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 # Cargo-style verbs + goreleaser-style section markers for composite-action
 # log output.
 #

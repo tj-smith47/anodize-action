@@ -12,6 +12,7 @@
 # cache action happy; a subsequent `git clone` into the same empty dir is
 # fine.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 if [ "$DETERMINISM" = "true" ]; then
     suffix=determinism
@@ -23,7 +24,7 @@ elif [ -n "$FROM_BRANCH" ]; then
 else
     suffix=from-source
 fi
-printf 'suffix=%s\n' "$suffix" >> "$GITHUB_OUTPUT"
+gha_set_output suffix "$suffix"
 
 if [ -n "$WORKSPACE_DIR" ] && [ ! -d "$WORKSPACE_DIR" ]; then
     mkdir -p "$WORKSPACE_DIR"

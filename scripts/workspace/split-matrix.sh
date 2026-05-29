@@ -3,15 +3,16 @@
 # configured build targets, for consumers that fan out build jobs from
 # `.anodizer.yaml`.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 if ! command -v anodizer > /dev/null 2>&1; then
-    echo "matrix=" >> "$GITHUB_OUTPUT"
+    gha_set_output matrix ""
     exit 0
 fi
 
 if targets=$(anodizer targets --json 2>/dev/null); then
-    echo "matrix=$targets" >> "$GITHUB_OUTPUT"
-    echo "::notice::split-matrix output populated from anodizer targets --json"
+    gha_set_output matrix "$targets"
+    gha_notice "split-matrix output populated from anodizer targets --json"
 else
-    echo "matrix=" >> "$GITHUB_OUTPUT"
+    gha_set_output matrix ""
 fi

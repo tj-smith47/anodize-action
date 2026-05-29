@@ -2,6 +2,7 @@
 # Parse .anodizer.yaml in the workdir and emit `deps=<csv>` listing the
 # build/pipeline dependencies the configured stages need.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 deps=()
 cfg=""
@@ -12,8 +13,8 @@ for candidate in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
     fi
 done
 if [ -z "$cfg" ]; then
-    echo "::warning::auto-install: no anodizer config found, skipping"
-    echo "deps=" >> "$GITHUB_OUTPUT"
+    gha_warning "auto-install: no anodizer config found, skipping"
+    gha_set_output deps ""
     exit 0
 fi
 
@@ -34,14 +35,14 @@ grep -qE '^[[:space:]]+formatter:[[:space:]]*alejandra[[:space:]]*$' "$cfg" && d
 # pkgs/msis can't be cross-built — warn (don't fail) when config asks for
 # them on the wrong runner; the build will fail later with a better error.
 if grep -qE '^pkgs:' "$cfg" && [ "${RUNNER_OS:-}" != "macOS" ]; then
-    echo "::warning::auto-install: pkgs: requires macOS runner (got ${RUNNER_OS:-unset}); skipping"
+    gha_warning "auto-install: pkgs: requires macOS runner (got ${RUNNER_OS:-unset}); skipping"
 fi
 if grep -qE '^msis:' "$cfg" && [ "${RUNNER_OS:-}" != "Windows" ]; then
-    echo "::warning::auto-install: msis: requires Windows runner (got ${RUNNER_OS:-unset}); skipping"
+    gha_warning "auto-install: msis: requires Windows runner (got ${RUNNER_OS:-unset}); skipping"
 fi
 
 grep -qE '^[[:space:]]*cross:[[:space:]]*(auto|zigbuild)[[:space:]]*$' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
 
 joined=$(IFS=','; echo "${deps[*]}")
-echo "::notice::auto-install detected: ${joined:-none}"
-echo "deps=$joined" >> "$GITHUB_OUTPUT"
+gha_notice "auto-install detected: ${joined:-none}"
+gha_set_output deps "$joined"

@@ -2,7 +2,7 @@
 # Shallow-clone tj-smith47/anodizer at $FROM_BRANCH into $RUNNER_TEMP/anodizer-src
 # and emit ANODIZER_SRC_DIR for the subsequent from-source build step.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 clone_dest="${RUNNER_TEMP}/anodizer-src"
 repo_url="https://github.com/tj-smith47/anodizer.git"
@@ -13,10 +13,10 @@ if [ -d "$clone_dest" ]; then
 fi
 
 anodizer::verb Cloning "tj-smith47/anodizer@${FROM_BRANCH}"
-echo "::group::Cloning tj-smith47/anodizer branch ${FROM_BRANCH}"
+gha_group_begin "Cloning tj-smith47/anodizer branch ${FROM_BRANCH}"
 git clone --depth 1 --branch "$FROM_BRANCH" --single-branch "$repo_url" "$clone_dest"
-echo "::endgroup::"
+gha_group_end
 
-echo "clone_dest=${clone_dest}" >> "$GITHUB_OUTPUT"
-echo "ANODIZER_SRC_DIR=${clone_dest}" >> "$GITHUB_ENV"
+gha_set_output clone_dest "$clone_dest"
+gha_set_env ANODIZER_SRC_DIR "$clone_dest"
 anodizer::ok "cloned tj-smith47/anodizer@${FROM_BRANCH} to ${clone_dest}"

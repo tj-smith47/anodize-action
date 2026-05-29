@@ -16,6 +16,7 @@
 # Exits non-zero on unsupported RUNNER_OS, missing/empty targets for the
 # runner, or jq parse failure.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 : "${RUNNER_OS:?RUNNER_OS is required}"
 OVERRIDE="${OVERRIDE:-}"
@@ -23,14 +24,12 @@ ANODIZE_BIN="${ANODIZE_BIN:-anodizer}"
 
 emit_csv() {
     local csv="$1"
-    if [ -n "${GITHUB_OUTPUT:-}" ]; then
-        echo "csv=$csv" >> "$GITHUB_OUTPUT"
-    fi
+    [ -n "${GITHUB_OUTPUT:-}" ] && gha_set_output csv "$csv"
     printf '%s\n' "$csv"
 }
 
 if [ -n "$OVERRIDE" ]; then
-    echo "::notice::Determinism targets (override): $OVERRIDE"
+    gha_notice "Determinism targets (override): $OVERRIDE"
     emit_csv "$OVERRIDE"
     exit 0
 fi
@@ -39,18 +38,13 @@ case "$RUNNER_OS" in
     Linux)   want=ubuntu-latest ;;
     macOS)   want=macos-latest ;;
     Windows) want=windows-latest ;;
-    *)
-        echo "::error::Unsupported RUNNER_OS for determinism: $RUNNER_OS"
-        exit 1
-        ;;
+    *)       gha_fail "Unsupported RUNNER_OS for determinism: $RUNNER_OS" ;;
 esac
 
 # `anodizer targets --json` emits `{"include": [{"os":..., "target":..., ...}]}`.
 # Filter to entries whose `os` matches the runner label for this shard.
-if ! json=$($ANODIZE_BIN targets --json 2>/dev/null); then
-    echo "::error::\`$ANODIZE_BIN targets --json\` failed; is anodizer installed and is .anodizer.yaml present?"
-    exit 1
-fi
+json=$($ANODIZE_BIN targets --json 2>/dev/null) \
+    || gha_fail "\`$ANODIZE_BIN targets --json\` failed; is anodizer installed and is .anodizer.yaml present?"
 
 csv=$(printf '%s' "$json" \
     | jq -r --arg w "$want" '
@@ -61,10 +55,8 @@ csv=$(printf '%s' "$json" \
         | join(",")
     ')
 
-if [ -z "$csv" ]; then
-    echo "::error::No targets match RUNNER_OS=$RUNNER_OS (looked for os=$want in \`anodizer targets --json\`)"
-    exit 1
-fi
+[ -n "$csv" ] \
+    || gha_fail "No targets match RUNNER_OS=$RUNNER_OS (looked for os=$want in \`anodizer targets --json\`)"
 
-echo "::notice::Determinism targets: $csv"
+gha_notice "Determinism targets: $csv"
 emit_csv "$csv"

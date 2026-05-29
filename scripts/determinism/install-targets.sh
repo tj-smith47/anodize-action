@@ -5,7 +5,7 @@
 # harness rebuilds anodizer per configured target inside its hermetic
 # worktree, so each shard's per-OS target list must be added.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 IFS=',' read -ra triples <<< "$TARGETS"
 for t in "${triples[@]}"; do

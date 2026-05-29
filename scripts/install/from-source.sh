@@ -11,13 +11,10 @@
 # determinism + from-source paths keep whatever wrapper the consumer set
 # — those builds benefit from cache reuse.
 set -euo pipefail
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
-if ! command -v cargo > /dev/null 2>&1; then
-    echo "::error::Rust is required; set install-rust: true (or use from-branch which auto-installs Rust)"
-    anodizer::err "Rust is required; set install-rust: true"
-    exit 1
-fi
+command -v cargo > /dev/null 2>&1 \
+    || gha_fail "Rust is required; set install-rust: true (or use from-branch which auto-installs Rust)"
 
 if [ -n "$FROM_BRANCH" ]; then
     unset RUSTC_WRAPPER
@@ -25,14 +22,14 @@ if [ -n "$FROM_BRANCH" ]; then
 fi
 
 anodizer::verb Building "anodizer from source"
-echo "::group::Building anodizer from source"
+gha_group_begin "Building anodizer from source"
 cargo build --release -p anodizer
 install_dir="${RUNNER_TOOL_CACHE}/anodizer/source"
 mkdir -p "$install_dir"
 cp "target/release/${BIN}" "${install_dir}/${BIN}"
 chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
-echo "${install_dir}" >> "$GITHUB_PATH"
-echo "::notice::anodizer built from source and installed to ${install_dir}"
-echo "::endgroup::"
+gha_add_path "$install_dir"
+gha_notice "anodizer built from source and installed to ${install_dir}"
+gha_group_end
 anodizer::ok "anodizer built from source"
 anodizer::detail "${install_dir}/${BIN}"

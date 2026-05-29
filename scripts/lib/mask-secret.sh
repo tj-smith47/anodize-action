@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 # Emit `::add-mask::` for each non-empty line of a secret value.
 #
 # Defence-in-depth against auto-masking loss across reusable-workflow

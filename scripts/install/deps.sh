@@ -8,50 +8,61 @@
 # cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra.
 set -euo pipefail
 
-# shellcheck source=../lib/colors.sh
-source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
+# shellcheck source=../lib/gha.sh
+source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 : "${RUNNER_OS:?RUNNER_OS is required}"
 EXPLICIT_INSTALL="${EXPLICIT_INSTALL:-}"
 AUTO_INSTALL="${AUTO_INSTALL:-}"
 DETERMINISM_INSTALL="${DETERMINISM_INSTALL:-}"
 
-# Merge order: explicit (user) → auto-detect (.anodizer.yaml) → determinism
-# (action-derived). Dedupe pass below collapses overlaps.
-combined="${EXPLICIT_INSTALL}"
-for extra in "$AUTO_INSTALL" "$DETERMINISM_INSTALL"; do
-    [ -z "$extra" ] && continue
-    if [ -n "$combined" ]; then
-        combined="${combined},${extra}"
-    else
-        combined="$extra"
-    fi
-done
+# Pinned defaults must be updated together — sha256 is keyed to version.
+# Override with ALEJANDRA_VERSION + ALEJANDRA_SHA256 (both required) when
+# pulling a different release.
+ALEJANDRA_DEFAULT_VERSION="4.0.0"
+ALEJANDRA_DEFAULT_SHA_AMD64="a23b9d47cba945805c6169541046de890e94e07a5aa416c86dee15bca2da6216"
+ALEJANDRA_DEFAULT_SHA_ARM64="a30b0d54ee3f0d6633d0398b50258408d2cc31646a9c8c4ba3ee4ebf2cebd8c8"
 
-# Dedupe (POSIX-safe; macOS ships bash 3.2 — no associative arrays).
-IFS=',' read -ra RAW <<< "$combined"
 DEPS=()
-seen_list=""
-for dep in "${RAW[@]}"; do
-    dep=$(echo "$dep" | xargs)
-    [ -z "$dep" ] && continue
-    case ",${seen_list}," in
-        *",${dep},"*) ;;
-        *)
-            DEPS+=("$dep")
-            seen_list="${seen_list:+${seen_list},}${dep}"
-            ;;
-    esac
-done
 
-if [ "${#DEPS[@]}" -eq 0 ]; then
-    anodizer::detail "no dependencies requested"
-    exit 0
-fi
+# ── input merge + dedupe ─────────────────────────────────────────────
 
-anodizer::section "Dependency installation (${#DEPS[@]})"
+merge_dep_inputs() {
+    local combined="${EXPLICIT_INSTALL}" extra
+    # Merge order: explicit (user) → auto-detect (.anodizer.yaml) →
+    # determinism (action-derived). Dedupe collapses overlaps.
+    for extra in "$AUTO_INSTALL" "$DETERMINISM_INSTALL"; do
+        [ -z "$extra" ] && continue
+        if [ -n "$combined" ]; then
+            combined="${combined},${extra}"
+        else
+            combined="$extra"
+        fi
+    done
+    echo "$combined"
+}
 
-# Batch apt installs for efficiency (one apt-get install call instead of N)
+dedupe_deps() {
+    # POSIX-safe linear scan (macOS ships bash 3.2 — no associative arrays).
+    local combined="$1" dep seen_list=""
+    local -a raw
+    IFS=',' read -ra raw <<< "$combined"
+    DEPS=()
+    for dep in "${raw[@]}"; do
+        dep=$(echo "$dep" | xargs)
+        [ -z "$dep" ] && continue
+        case ",${seen_list}," in
+            *",${dep},"*) ;;
+            *)
+                DEPS+=("$dep")
+                seen_list="${seen_list:+${seen_list},}${dep}"
+                ;;
+        esac
+    done
+}
+
+# ── apt batching ─────────────────────────────────────────────────────
+
 APT_PKGS=()
 APT_NAMES=()
 apt_queue() {
@@ -62,10 +73,9 @@ apt_queue() {
 apt_flush() {
     [ "${#APT_PKGS[@]}" -eq 0 ] && return
     anodizer::verb Installing "apt batch: ${APT_NAMES[*]}"
-    if ! sudo apt-get install -yq "${APT_PKGS[@]}"; then
-        anodizer::err "apt batch install failed for: ${APT_NAMES[*]}"
-        exit 1
-    fi
+    sudo apt-get install -yq "${APT_PKGS[@]}" \
+        || gha_fail "apt batch install failed for: ${APT_NAMES[*]}"
+    local name
     for name in "${APT_NAMES[@]}"; do
         anodizer::ok "${name} installed"
     done
@@ -73,19 +83,18 @@ apt_flush() {
     APT_NAMES=()
 }
 
+# ── shared installer helpers ─────────────────────────────────────────
+
 skip_unsupported_os() {
     local tool="$1"
     local reason="${2:-not natively supported on ${RUNNER_OS}}"
-    echo "::warning::${tool} is ${reason}; skipping"
+    gha_warning "${tool} is ${reason}; skipping"
     anodizer::warn "${tool} is ${reason}; skipping"
 }
 
-# brew_install <formula> <version_env_var>
-# If the named env var is set and non-empty, pins the formula to `formula@VERSION`.
+# If `$<var>` is set, pin the brew formula to `<formula>@<version>`.
 brew_install() {
-    local formula="$1"
-    local var="$2"
-    local version="${!var:-}"
+    local formula="$1" var="$2" version="${!2:-}"
     if [ -n "$version" ]; then
         brew install "${formula}@${version}"
     else
@@ -93,12 +102,9 @@ brew_install() {
     fi
 }
 
-# choco_install <package> <version_env_var>
-# If the named env var is set and non-empty, passes --version=VERSION to choco.
+# If `$<var>` is set, pass `--version=<version>` to choco.
 choco_install() {
-    local pkg="$1"
-    local var="$2"
-    local version="${!var:-}"
+    local pkg="$1" var="$2" version="${!2:-}"
     if [ -n "$version" ]; then
         choco install "$pkg" -y --no-progress --version="$version"
     else
@@ -106,10 +112,22 @@ choco_install() {
     fi
 }
 
+# Look up `$2`'s SHA256 in a `<sha>  <filename>` checksums file (`$1`).
+# Echoes the SHA; bails (with location detail) when the filename is absent.
+sha_from_checksums() {
+    local file="$1" name="$2" sha
+    sha=$(grep " ${name}\$" "$file" | awk '{print $1}')
+    [ -n "$sha" ] || gha_fail "checksum entry for ${name} not found in $(basename "$file")"
+    echo "$sha"
+}
+
+# ── per-dep installers ───────────────────────────────────────────────
+
 install_nfpm() {
     case "$RUNNER_OS" in
         Linux)
-            echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list > /dev/null
+            echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' \
+                | sudo tee /etc/apt/sources.list.d/goreleaser.list > /dev/null
             sudo apt-get update -q
             sudo apt-get install -yq nfpm
             ;;
@@ -142,93 +160,85 @@ install_rpmbuild() {
     esac
 }
 
+cosign_install_linux() {
+    local version="${COSIGN_VERSION:-v2.4.1}"
+    local base="https://github.com/sigstore/cosign/releases/download/${version}"
+    local bin="cosign-linux-amd64"
+    curl -sSfL "${base}/${bin}" -o /tmp/cosign
+    # Sigstore publishes the keyless .pem and .sig as base64-encoded files
+    # (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode before
+    # handing to cosign — its PEM parser does not strip base64, so a raw
+    # download fails verify-blob with a misleading "exactly one of: key
+    # reference (--key), certificate (--cert)..." error (the cert IS
+    # passed, but the file content can't be parsed).
+    curl -sSfL "${base}/${bin}-keyless.pem" | base64 -d > /tmp/cosign.pem
+    curl -sSfL "${base}/${bin}-keyless.sig" | base64 -d > /tmp/cosign.sig
+    curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
+
+    # SHA256 first — bootstraps trust without requiring cosign-to-verify-cosign.
+    local expected
+    expected=$(sha_from_checksums /tmp/cosign_checksums.txt "$bin")
+    echo "${expected}  /tmp/cosign" | sha256sum -c -
+    sudo install /tmp/cosign /usr/local/bin/cosign
+
+    # Then keyless signature. Cosign releases are signed by the GCP service
+    # account keyless@projectsigstore.iam.gserviceaccount.com via Google
+    # OIDC (not GitHub Actions OIDC). See
+    # https://docs.sigstore.dev/cosign/system_config/installation/
+    if [ "${ANODIZER_ACTION_SKIP_COSIGN_VERIFY:-}" = "1" ]; then
+        gha_warning "cosign keyless signature verification skipped at user request (ANODIZER_ACTION_SKIP_COSIGN_VERIFY=1); SHA256-only validation was performed"
+        anodizer::warn "cosign keyless signature verification skipped by user (SHA256-only, not signature-verified)"
+        return
+    fi
+    # Strip COSIGN_KEY / COSIGN_PUB_KEY from the verify-blob env: the
+    # caller (e.g. anodizer's release workflow) sets COSIGN_KEY at step
+    # level for the downstream signing pipeline, but cosign auto-binds
+    # COSIGN_KEY → --key. With --certificate also set, cosign's NOf(KeyRef,
+    # Sk, CertRef) check rejects the call with a misleading "exactly one
+    # of --key/--cert/--sk must be provided" error before the cert file
+    # is even parsed.
+    env -u COSIGN_KEY -u COSIGN_PUB_KEY cosign verify-blob \
+        --certificate /tmp/cosign.pem \
+        --signature /tmp/cosign.sig \
+        --certificate-identity keyless@projectsigstore.iam.gserviceaccount.com \
+        --certificate-oidc-issuer https://accounts.google.com \
+        /tmp/cosign \
+        || gha_fail "cosign keyless signature verification FAILED — refusing to install unverified binary"
+    anodizer::ok "cosign keyless signature verified"
+}
+
+cosign_install_windows() {
+    # Chocolatey ships cosign 1.3.1, which pre-dates several flags
+    # anodizer's sign blocks rely on (`--bundle`, `--output-key-prefix`).
+    # Direct download from the sigstore release page gets us 2.x cleanly.
+    # SHA256 verification mirrors the Linux path.
+    local version="${COSIGN_VERSION:-v2.4.1}"
+    local base="https://github.com/sigstore/cosign/releases/download/${version}"
+    local bin="cosign-windows-amd64.exe"
+    local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
+    mkdir -p "$install_dir"
+    curl -sSfL "${base}/${bin}" -o "${install_dir}/cosign.exe"
+    curl -sSfL "${base}/cosign_checksums.txt" -o "${install_dir}/cosign_checksums.txt"
+
+    local expected actual
+    expected=$(sha_from_checksums "${install_dir}/cosign_checksums.txt" "$bin")
+    # `cd` into the install dir so sha256sum sees a bare filename; passing
+    # a Windows-style path (with backslashes) triggers sha256sum's
+    # GNU-coreutils escape format which prepends `\` to the hash and
+    # breaks string equality below.
+    actual=$(cd "$install_dir" && sha256sum cosign.exe | awk '{print $1}')
+    [ "$expected" = "$actual" ] \
+        || gha_fail "cosign SHA256 mismatch (expected ${expected}, got ${actual})"
+
+    gha_add_path "$install_dir"
+    anodizer::ok "cosign ${version} installed at ${install_dir}/cosign.exe"
+}
+
 install_cosign() {
     case "$RUNNER_OS" in
-        Linux)
-            local version="${COSIGN_VERSION:-v2.4.1}"
-            local base="https://github.com/sigstore/cosign/releases/download/${version}"
-            local bin="cosign-linux-amd64"
-            curl -sSfL "${base}/${bin}" -o /tmp/cosign
-            # Sigstore publishes the keyless .pem and .sig as base64-encoded
-            # files (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode
-            # before handing to cosign — its PEM parser does not strip
-            # base64, so a raw download fails verify-blob with a misleading
-            # "exactly one of: key reference (--key), certificate (--cert)..."
-            # error (the cert IS passed, but the file content can't be parsed).
-            curl -sSfL "${base}/${bin}-keyless.pem" | base64 -d > /tmp/cosign.pem
-            curl -sSfL "${base}/${bin}-keyless.sig" | base64 -d > /tmp/cosign.sig
-            curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
-            # SHA256 verification — bootstraps trust without requiring cosign-to-verify-cosign.
-            expected=$(grep " ${bin}\$" /tmp/cosign_checksums.txt | awk '{print $1}')
-            if [ -z "$expected" ]; then
-                echo "::error::cosign checksum entry for ${bin} not found in cosign_checksums.txt (${version})"
-                anodizer::err "cosign checksum entry for ${bin} not found (${version})"
-                exit 1
-            fi
-            echo "${expected}  /tmp/cosign" | sha256sum -c -
-            sudo install /tmp/cosign /usr/local/bin/cosign
-            # Keyless signature verification.
-            # Cosign releases are signed by the GCP service account
-            # keyless@projectsigstore.iam.gserviceaccount.com via Google OIDC
-            # (not GitHub Actions OIDC).  See:
-            # https://docs.sigstore.dev/cosign/system_config/installation/
-            if [ "${ANODIZER_ACTION_SKIP_COSIGN_VERIFY:-}" = "1" ]; then
-                echo "::warning::cosign keyless signature verification skipped at user request (ANODIZER_ACTION_SKIP_COSIGN_VERIFY=1); SHA256-only validation was performed"
-                anodizer::warn "cosign keyless signature verification skipped by user (SHA256-only, not signature-verified)"
-            else
-                # Strip COSIGN_KEY / COSIGN_PUB_KEY from the verify-blob env: the
-                # caller (e.g. anodizer's release workflow) sets COSIGN_KEY at
-                # step level for the downstream signing pipeline, but cosign
-                # auto-binds COSIGN_KEY → --key. With --certificate also set,
-                # cosign's NOf(KeyRef, Sk, CertRef) check rejects the call with
-                # a misleading "exactly one of --key/--cert/--sk must be
-                # provided" error before the cert file is even parsed.
-                if ! env -u COSIGN_KEY -u COSIGN_PUB_KEY cosign verify-blob \
-                    --certificate /tmp/cosign.pem \
-                    --signature /tmp/cosign.sig \
-                    --certificate-identity keyless@projectsigstore.iam.gserviceaccount.com \
-                    --certificate-oidc-issuer https://accounts.google.com \
-                    /tmp/cosign; then
-                    echo "::error::cosign keyless signature verification FAILED — refusing to install unverified binary"
-                    anodizer::err "cosign keyless signature verification FAILED — refusing to install unverified binary"
-                    exit 1
-                fi
-                anodizer::ok "cosign keyless signature verified"
-            fi
-            ;;
+        Linux)   cosign_install_linux ;;
         macOS)   brew_install cosign COSIGN_VERSION ;;
-        Windows)
-            # Chocolatey ships cosign 1.3.1, which pre-dates several
-            # flags anodizer's sign blocks rely on (`--bundle`,
-            # `--output-key-prefix`). Direct download from the
-            # sigstore release page gets us 2.x cleanly. SHA256
-            # verification mirrors the Linux path.
-            local version="${COSIGN_VERSION:-v2.4.1}"
-            local base="https://github.com/sigstore/cosign/releases/download/${version}"
-            local bin="cosign-windows-amd64.exe"
-            local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
-            mkdir -p "$install_dir"
-            curl -sSfL "${base}/${bin}" -o "${install_dir}/cosign.exe"
-            curl -sSfL "${base}/cosign_checksums.txt" -o "${install_dir}/cosign_checksums.txt"
-            expected=$(grep " ${bin}\$" "${install_dir}/cosign_checksums.txt" | awk '{print $1}')
-            if [ -z "$expected" ]; then
-                echo "::error::cosign checksum entry for ${bin} not found in cosign_checksums.txt (${version})"
-                anodizer::err "cosign checksum entry for ${bin} not found (${version})"
-                exit 1
-            fi
-            # `cd` into the install dir so sha256sum sees a bare filename;
-            # passing a Windows-style path (with backslashes) triggers
-            # sha256sum's GNU-coreutils escape format which prepends `\`
-            # to the hash and breaks string equality below.
-            actual=$(cd "$install_dir" && sha256sum cosign.exe | awk '{print $1}')
-            if [ "$expected" != "$actual" ]; then
-                echo "::error::cosign SHA256 mismatch (expected ${expected}, got ${actual})"
-                anodizer::err "cosign SHA256 mismatch"
-                exit 1
-            fi
-            echo "${install_dir}" >> "$GITHUB_PATH"
-            anodizer::ok "cosign ${version} installed at ${install_dir}/cosign.exe"
-            ;;
+        Windows) cosign_install_windows ;;
     esac
 }
 
@@ -254,11 +264,7 @@ install_zig() {
             case "$RUNNER_ARCH" in
                 X64)   arch=x86_64 ;;
                 ARM64) arch=aarch64 ;;
-                *)
-                    echo "::error::Unsupported Linux arch for zig: $RUNNER_ARCH"
-                    anodizer::err "Unsupported Linux arch for zig: $RUNNER_ARCH"
-                    exit 1
-                    ;;
+                *)     gha_fail "Unsupported Linux arch for zig: $RUNNER_ARCH" ;;
             esac
             local tarball="zig-linux-${arch}-${version}.tar.xz"
             local base="https://ziglang.org/download/${version}"
@@ -269,11 +275,8 @@ install_zig() {
             expected=$(curl -sSfL "https://ziglang.org/download/index.json" \
                 | jq -r --arg v "$version" --arg k "${arch}-linux" \
                     '.[$v][$k].shasum // empty')
-            if [ -z "$expected" ]; then
-                echo "::error::zig sha256 missing from index.json for ${version}/${arch}-linux"
-                anodizer::err "zig sha256 missing from index.json for ${version}/${arch}-linux"
-                exit 1
-            fi
+            [ -n "$expected" ] \
+                || gha_fail "zig sha256 missing from index.json for ${version}/${arch}-linux"
             echo "${expected}  /tmp/zig.tar.xz" | sha256sum -c -
             sudo mkdir -p /opt/zig
             sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
@@ -285,11 +288,8 @@ install_zig() {
 }
 
 install_cargo_zigbuild() {
-    if ! command -v cargo > /dev/null 2>&1; then
-        echo "::error::cargo-zigbuild requires Rust; set install-rust: true"
-        anodizer::err "cargo-zigbuild requires Rust; set install-rust: true"
-        exit 1
-    fi
+    command -v cargo > /dev/null 2>&1 \
+        || gha_fail "cargo-zigbuild requires Rust; set install-rust: true"
     cargo install --locked cargo-zigbuild
 }
 
@@ -323,13 +323,6 @@ install_flatpak() {
     esac
 }
 
-# Pinned defaults below MUST be updated together — sha256 is keyed to version.
-# Override with ALEJANDRA_VERSION + ALEJANDRA_SHA256 (both required) when
-# pulling a different release.
-ALEJANDRA_DEFAULT_VERSION="4.0.0"
-ALEJANDRA_DEFAULT_SHA_AMD64="a23b9d47cba945805c6169541046de890e94e07a5aa416c86dee15bca2da6216"
-ALEJANDRA_DEFAULT_SHA_ARM64="a30b0d54ee3f0d6633d0398b50258408d2cc31646a9c8c4ba3ee4ebf2cebd8c8"
-
 install_alejandra() {
     case "$RUNNER_OS" in
         Linux)
@@ -338,21 +331,15 @@ install_alejandra() {
             case "$RUNNER_ARCH" in
                 X64)   arch=x86_64;  sha="$ALEJANDRA_DEFAULT_SHA_AMD64" ;;
                 ARM64) arch=aarch64; sha="$ALEJANDRA_DEFAULT_SHA_ARM64" ;;
-                *)
-                    echo "::error::Unsupported Linux arch for alejandra: $RUNNER_ARCH"
-                    anodizer::err "Unsupported Linux arch for alejandra: $RUNNER_ARCH"
-                    exit 1
-                    ;;
+                *)     gha_fail "Unsupported Linux arch for alejandra: $RUNNER_ARCH" ;;
             esac
             if [ "$version" != "$ALEJANDRA_DEFAULT_VERSION" ]; then
-                # Upstream publishes no checksums file, so a version override
-                # MUST come with its own sha — refusing unverified installs.
+                # Upstream publishes no checksums file, so a version
+                # override MUST come with its own sha — refusing
+                # unverified installs.
                 local override_sha="${ALEJANDRA_SHA256:-}"
-                if [ -z "$override_sha" ]; then
-                    echo "::error::ALEJANDRA_VERSION=$version requires ALEJANDRA_SHA256 (upstream publishes no checksums file)"
-                    anodizer::err "ALEJANDRA_VERSION=$version requires ALEJANDRA_SHA256"
-                    exit 1
-                fi
+                [ -n "$override_sha" ] \
+                    || gha_fail "ALEJANDRA_VERSION=$version requires ALEJANDRA_SHA256 (upstream publishes no checksums file)"
                 sha="$override_sha"
             fi
             local bin="alejandra-${arch}-unknown-linux-musl"
@@ -366,33 +353,53 @@ install_alejandra() {
     esac
 }
 
-for dep in "${DEPS[@]}"; do
-    anodizer::verb Installing "${dep}"
-    pre_queue=${#APT_PKGS[@]}
-    case "$dep" in
-        nfpm)           install_nfpm ;;
-        makeself)       install_makeself ;;
-        snapcraft)      install_snapcraft ;;
-        rpmbuild)       install_rpmbuild ;;
-        cosign)         install_cosign ;;
-        syft)           install_syft ;;
-        zig)            install_zig ;;
-        cargo-zigbuild) install_cargo_zigbuild ;;
-        upx)            install_upx ;;
-        nsis)           install_nsis ;;
-        create-dmg)     install_create_dmg ;;
-        flatpak)        install_flatpak ;;
-        alejandra)      install_alejandra ;;
-        *)
-            echo "::error::Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra)"
-            anodizer::err "unknown dependency: $dep"
-            exit 1
-            ;;
-    esac
-    # Only print "installed" for deps that ran immediately (not apt-queued).
-    [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && anodizer::ok "${dep} installed"
-done
+# ── dispatch ─────────────────────────────────────────────────────────
 
-# Flush any batched apt packages (makeself, rpm, upx queued above).
-# apt_flush prints its own success messages per package.
-apt_flush
+dispatch_install() {
+    local dep pre_queue
+    for dep in "${DEPS[@]}"; do
+        anodizer::verb Installing "${dep}"
+        pre_queue=${#APT_PKGS[@]}
+        case "$dep" in
+            nfpm)           install_nfpm ;;
+            makeself)       install_makeself ;;
+            snapcraft)      install_snapcraft ;;
+            rpmbuild)       install_rpmbuild ;;
+            cosign)         install_cosign ;;
+            syft)           install_syft ;;
+            zig)            install_zig ;;
+            cargo-zigbuild) install_cargo_zigbuild ;;
+            upx)            install_upx ;;
+            nsis)           install_nsis ;;
+            create-dmg)     install_create_dmg ;;
+            flatpak)        install_flatpak ;;
+            alejandra)      install_alejandra ;;
+            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra)" ;;
+        esac
+        # Skip the per-dep "installed" line for apt-queued items —
+        # apt_flush emits one per package after the batch lands.
+        [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && anodizer::ok "${dep} installed"
+    done
+}
+
+main() {
+    local combined
+    combined=$(merge_dep_inputs)
+    dedupe_deps "$combined"
+
+    if [ "${#DEPS[@]}" -eq 0 ]; then
+        anodizer::detail "no dependencies requested"
+        exit 0
+    fi
+
+    anodizer::section "Dependency installation (${#DEPS[@]})"
+    dispatch_install
+    apt_flush
+}
+
+# Source-safe: only run `main` when executed directly. Lets tests source
+# this file to exercise individual installer helpers without the dispatch
+# loop firing.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

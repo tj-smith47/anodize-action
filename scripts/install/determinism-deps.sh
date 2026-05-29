@@ -8,9 +8,10 @@
 # when sign / sbom would skip; both are cheap and the determinism
 # default exercises both.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 if [ "$RUNNER_OS" = "Linux" ]; then
-    echo "deps=zig,cargo-zigbuild,upx,nfpm,makeself,snapcraft,syft,cosign" >> "$GITHUB_OUTPUT"
+    gha_set_output deps "zig,cargo-zigbuild,upx,nfpm,makeself,snapcraft,syft,cosign"
 else
-    echo "deps=upx,syft,cosign" >> "$GITHUB_OUTPUT"
+    gha_set_output deps "upx,syft,cosign"
 fi
