@@ -59,8 +59,8 @@ resolve_max_retries() {
     # Stateful modes must run exactly once. case-glob matches the flag
     # anywhere in the arg list.
     case " $ANODIZER_ARGS " in
-        *" --publish-only "*|*" --rollback-only "*)
-            anodizer::verb retry "disabled for stateful mode (--publish-only / --rollback-only)"
+        *" --publish-only "*|*" --rollback-only "*|*" tag rollback "*)
+            anodizer::verb retry "disabled for stateful mode (--publish-only / --rollback-only / tag rollback)"
             echo 1
             ;;
         *) echo 3 ;;

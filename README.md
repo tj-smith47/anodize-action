@@ -51,7 +51,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -67,7 +67,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -97,7 +97,7 @@ jobs:
       crate: ${{ steps.a.outputs.workspace }}
       has-builds: ${{ steps.a.outputs.has-builds }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -110,7 +110,7 @@ jobs:
     needs: resolve
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -127,7 +127,7 @@ jobs:
 
 ```yaml
 # ci.yml — build and upload anodizer once per commit
-- uses: actions/checkout@v4
+- uses: actions/checkout@v6
 - uses: dtolnay/rust-toolchain@stable
 - run: cargo build --release -p anodizer
 - uses: actions/upload-artifact@v4
@@ -169,7 +169,7 @@ The action shallow-clones `tj-smith47/anodizer` at the branch you name,
 builds it from source, and puts it on `PATH` for the rest of the job:
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v6
 - uses: tj-smith47/anodizer-action@v1
   with:
     from-branch: my-feature        # branch on tj-smith47/anodizer
@@ -227,7 +227,7 @@ determinism-check:
       os: [ubuntu-latest, macos-latest, windows-latest]
   runs-on: ${{ matrix.os }}
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
     - uses: tj-smith47/anodizer-action@v1
@@ -402,7 +402,7 @@ jobs:
     outputs:
       crates: ${{ steps.t.outputs.crates }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
@@ -425,7 +425,7 @@ jobs:
         crate: ${{ fromJson(needs.tag.outputs.crates) }}
         shard: [linux, macos, windows-x86_64, windows-aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
@@ -441,7 +441,7 @@ jobs:
     needs: [tag, determinism-check]
     if: needs.tag.outputs.crates != '[]'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1

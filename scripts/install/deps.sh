@@ -94,6 +94,9 @@ skip_unsupported_os() {
 
 # If `$<var>` is set, pin the brew formula to `<formula>@<version>`.
 brew_install() {
+    # `var` documents that $2 is the env-var name; the indirection in
+    # `${!2:-}` reads its value. shellcheck cannot see the indirect use.
+    # shellcheck disable=SC2034
     local formula="$1" var="$2" version="${!2:-}"
     if [ -n "$version" ]; then
         brew install "${formula}@${version}"
@@ -104,6 +107,7 @@ brew_install() {
 
 # If `$<var>` is set, pass `--version=<version>` to choco.
 choco_install() {
+    # shellcheck disable=SC2034
     local pkg="$1" var="$2" version="${!2:-}"
     if [ -n "$version" ]; then
         choco install "$pkg" -y --no-progress --version="$version"

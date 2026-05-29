@@ -29,7 +29,8 @@ emit_file_output() {
 # output. Last-wins overwrites retry-loop partials; jq -e rejects malformed
 # JSON before it can break downstream `fromJson()`.
 emit_marker_output() {
-    local key="$1" default="$2" pattern="$3" value="$default" last
+    local key="$1" default="$2" pattern="$3" last
+    local value="$default"
     if [ -f "$ANODIZER_STDOUT_LOG" ]; then
         last=$(grep -oP "(?<=^anodizer-output ${key}=)${pattern}" "$ANODIZER_STDOUT_LOG" | tail -1 || true)
         if [ -n "$last" ] && echo "$last" | jq -e . >/dev/null 2>&1; then

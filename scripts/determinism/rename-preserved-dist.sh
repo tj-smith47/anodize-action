@@ -8,7 +8,9 @@
 #
 # Handles both the flat layout (preserved-dist/<f>.json) and the
 # per-crate layout written by `anodizer check determinism --crate <name>`
-# (preserved-dist/<crate>/<f>.json).
+# (preserved-dist/<crate>/<f>.json). The `_preserved-bin/<triple>/<basename>`
+# subdir (raw binaries staged by `preserve_raw_binaries`) coexists with
+# both layouts but holds no manifests, so it is skipped.
 set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
@@ -39,6 +41,9 @@ rename_manifests_in() {
 rename_manifests_in "preserved-dist/"
 for subdir in preserved-dist/*/; do
     [ -d "$subdir" ] || continue
+    case "$(basename "$subdir")" in
+        _preserved-bin) continue ;;
+    esac
     rename_manifests_in "$subdir"
 done
 
