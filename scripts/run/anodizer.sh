@@ -44,7 +44,16 @@ has_preserved_context() {
 }
 
 # Wipe generated artifacts between retries to prevent "already exists"
-# collisions, scoped to one level deep so unrelated subdirs survive.
+# collisions, giving a non-preserved retry a clean rebuild. Deletion is
+# confined to `./dist`: top-level files at `./dist` are removed, and each
+# `./dist/<crate>/` subdir is recursively cleared of files (nested per-crate
+# trees like `_preserved-bin/<triple>/` and sub-manifests are legitimately
+# deep, so the subdir sweep has no -maxdepth). Directories are left in place;
+# the loop only iterates direct `./dist/*/` children. `find` does not follow
+# symlinks (no -L), so a symlinked file or dir is -type l, never -type f and
+# never descended into — deletion cannot escape the tree. The whole function
+# is skipped when preserved-dist manifests are present (see caller), so
+# --publish-only inputs are never touched.
 cleanup_dist() {
     [ -d "./dist" ] || return 0
     find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
