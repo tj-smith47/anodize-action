@@ -22,6 +22,40 @@ all in one step.
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+### Rollback on release failure
+
+The action does not provide an opt-in input for rollback — it's a separate step
+you add to your workflow. This keeps the action's scope small and lets you
+control the exact recovery shape (mode, scope, branch override).
+
+```yaml
+- name: Run anodizer release
+  id: release
+  uses: tj-smith47/anodizer-action@v1
+  with:
+    args: release
+    # ... other inputs ...
+
+- name: Rollback on release failure
+  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+  env:
+    GH_TOKEN: ${{ secrets.GH_PAT }}
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+  run: anodizer tag rollback "$GITHUB_SHA"
+```
+
+- `id: release` is required so the rollback step's `if:` can reference
+  `steps.release.outcome`.
+- The condition fires on both `failure()` and `cancelled()` — a cancelled run
+  may have left a half-published tag behind.
+- `anodizer tag rollback "$GITHUB_SHA"` auto-derives the branch from the bump
+  SHA, so no `--branch` flag is needed in the common case (a release workflow
+  triggered by an `anodizer tag` push).
+- For cfgd-style multi-job workflows where the release runs against a tagged
+  bump commit produced by an earlier job, pass the SHA explicitly (e.g.
+  `${{ needs.tag.outputs.head_sha }}` if the prior job exposes it) instead of
+  `$GITHUB_SHA`.
+
 ### Auto-install dependencies from config
 
 ```yaml
@@ -204,6 +238,13 @@ Useful for multi-crate loops, tagging, and ad-hoc subcommands:
     done
     git push origin HEAD
 ```
+
+> ⚠️ **Legacy pattern.** The per-crate loop above predates the atomic
+> workspace flow. New configs should prefer a single `args: tag` step (see
+> [Workspace orchestration](#workspace-orchestration) below) which bumps,
+> tags, and pushes every changed crate in one atomic commit. The loop is
+> retained here only because operators on older configs may still be
+> driving per-crate tagging by hand.
 
 ### Determinism harness (one-liner cross-platform shard)
 
@@ -464,6 +505,10 @@ The `Run anodizer` step retries up to 3 times for transient failures (registry
 rate limits, Docker push auth expiry, network blips). Between retries it
 prunes generated artifacts from `dist/` while preserving split context files
 (`dist/*/context.json`) so `--merge` can still find them.
+
+`--publish-only`, `--rollback-only`, and `tag rollback` invocations skip the
+retry layer — they are stateful and re-running them would either duplicate
+state changes or fight with concurrent operations.
 
 ## License
 
