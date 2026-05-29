@@ -7,6 +7,15 @@
 # identically on every attempt; the cost of two extra 10s waits is low
 # vs. a flaky release.
 #
+# `--publish-only` is exempt from retries. It is intrinsically stateful:
+# a partial success writes `dist/run-<run_id>/report.json`, and a blind
+# retry would either (a) trip the publish-stage rerun guard and bail, or
+# (b) — if forced past the guard — open duplicate PRs against PR-based
+# publishers (homebrew, scoop, nix, krew, MCP). Recovery from a partial
+# publish-only failure is operator-driven via
+# `anodizer release --rollback-only --from-run=<id>`, not a wrapper
+# retry.
+#
 # Stdout (only) is teed to $ANODIZER_STDOUT_LOG so the outputs step can
 # parse `anodizer-output` markers without losing log visibility in the
 # GHA UI. Stderr is NOT captured anywhere — it flows directly to the
@@ -19,7 +28,18 @@ source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
 
 anodizer::section "anodizer"
 
-max_retries=3
+# Detect --publish-only / --rollback-only — both are stateful and must
+# run exactly once. case-glob matches the flag anywhere in the arg list.
+case " $ANODIZER_ARGS " in
+    *" --publish-only "*|*" --rollback-only "*)
+        max_retries=1
+        anodizer::verb retry "disabled for stateful mode (--publish-only / --rollback-only)"
+        ;;
+    *)
+        max_retries=3
+        ;;
+esac
+
 attempt=1
 : > "$ANODIZER_STDOUT_LOG"
 while [ $attempt -le $max_retries ]; do
@@ -31,7 +51,11 @@ while [ $attempt -le $max_retries ]; do
         break
     fi
     if [ $attempt -eq $max_retries ]; then
-        anodizer::err "anodizer failed after ${max_retries} attempts"
+        if [ $max_retries -eq 1 ]; then
+            anodizer::err "anodizer failed (no retry for stateful modes)"
+        else
+            anodizer::err "anodizer failed after ${max_retries} attempts"
+        fi
         exit 1
     fi
     anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
