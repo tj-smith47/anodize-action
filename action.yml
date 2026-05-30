@@ -357,7 +357,7 @@ runs:
 
     - name: Set up sccache
       if: inputs.determinism == 'true' || inputs.from-source == 'true'
-      uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.9
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.9
 
     # sccache is armed only for determinism / from-source. from-branch clones
     # a remote and builds it once per CI run with no chance of reuse, so the
