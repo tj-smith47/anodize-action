@@ -51,10 +51,10 @@ control the exact recovery shape (mode, scope, branch override).
 - `anodizer tag rollback "$GITHUB_SHA"` auto-derives the branch from the bump
   SHA, so no `--branch` flag is needed in the common case (a release workflow
   triggered by an `anodizer tag` push).
-- For cfgd-style multi-job workflows where the release runs against a tagged
-  bump commit produced by an earlier job, pass the SHA explicitly (e.g.
-  `${{ needs.tag.outputs.head_sha }}` if the prior job exposes it) instead of
-  `$GITHUB_SHA`.
+- For multi-job workflows where the release runs against a tagged bump commit
+  produced by an earlier job, pass the SHA explicitly (e.g.
+  `${{ needs.tag.outputs.head-sha }}`, mapping the action's `head-sha` output
+  through the tag job's `outputs:`) instead of `$GITHUB_SHA`.
 
 ### Auto-install dependencies from config
 
@@ -423,8 +423,13 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | `crate-path` | Path to the resolved crate directory (requires `resolve-workspace: true`) |
 | `has-builds` | Whether the resolved crate has binary builds configured (requires `resolve-workspace: true`) |
 | `split-matrix` | JSON matrix for `strategy.matrix` covering configured build targets (requires `install-only: true`) |
-| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used. Empty array (`[]`) when nothing changed. |
-| `versions` | JSON object mapping crate name to new version (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used. |
+| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used on a per-crate workspace. Empty array (`[]`) when nothing changed. |
+| `versions` | JSON object mapping crate name to new version (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used on a per-crate workspace. |
+| `new-tag` | New tag `anodizer tag` created (e.g. `v1.2.3`), for single-crate and lockstep-workspace repos. Empty when no tag was cut. (Per-crate workspaces use `crates`/`versions` instead.) |
+| `old-tag` | Previous tag `anodizer tag` bumped from. Empty on a first release. |
+| `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
+| `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on this for single-crate / lockstep repos. |
+| `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target). Check this out in downstream jobs so the tree matches the tag. |
 
 ## Workspace orchestration
 
