@@ -63,3 +63,32 @@ fi
 
 emit_marker_output crates   "[]" '\[.*\]'
 emit_marker_output versions "{}" '\{.*\}'
+
+# `anodizer tag` (single-crate / lockstep path) prints bare `new_tag=`,
+# `old_tag=`, and `part=` lines — the github-tag-action-compatible format,
+# distinct from the per-crate `anodizer-output` markers above. Surfacing them
+# lets a workflow_run-style release pipeline gate on whether a tag was cut
+# straight from the action instead of re-deriving it from git. Last line wins.
+read_bare_marker() {
+    [ -f "$ANODIZER_STDOUT_LOG" ] || { printf ''; return; }
+    grep -oP "(?<=^$1=).*" "$ANODIZER_STDOUT_LOG" | tail -1 || true
+}
+new_tag=$(read_bare_marker new_tag)
+old_tag=$(read_bare_marker old_tag)
+gha_set_output new-tag "$new_tag"
+gha_set_output old-tag "$old_tag"
+gha_set_output part    "$(read_bare_marker part)"
+
+# tagged: a new tag was actually cut. True when new-tag is non-empty and differs
+# from the previous tag (covers first release where old-tag is empty, and custom
+# tags); false on a no-op run where anodizer prints new_tag == old_tag.
+if [ -n "$new_tag" ] && [ "$new_tag" != "$old_tag" ]; then
+    gha_set_output tagged true
+else
+    gha_set_output tagged false
+fi
+
+# HEAD after `anodizer tag --push` is the tag target (the version-sync bump
+# commit, or the original HEAD when no bump was needed), so downstream jobs can
+# check out exactly what the tag points at.
+gha_set_output head-sha "$(git rev-parse HEAD 2>/dev/null || true)"

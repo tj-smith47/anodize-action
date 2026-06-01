@@ -279,6 +279,30 @@ outputs:
       `fromJson(steps.<id>.outputs.versions).<crate>` or bracket-form for
       hyphenated crate names: `fromJson(steps.<id>.outputs.versions)['my-crate']`.
     value: ${{ steps.outputs.outputs.versions }}
+  new-tag:
+    description: >
+      Tag `anodizer tag` created this run (e.g. `v1.2.3`), for single-crate and
+      lockstep-workspace repos. Empty when no tag was cut. Per-crate workspaces
+      surface tags via `crates`/`versions` instead.
+    value: ${{ steps.outputs.outputs.new-tag }}
+  old-tag:
+    description: "Previous tag `anodizer tag` bumped from. Empty when there was none (first release)."
+    value: ${{ steps.outputs.outputs.old-tag }}
+  part:
+    description: "Semver part bumped by `anodizer tag`: `major` | `minor` | `patch` | `none` | `custom`."
+    value: ${{ steps.outputs.outputs.part }}
+  tagged:
+    description: >
+      `'true'` when this run cut a new tag (`new-tag` is non-empty and differs
+      from `old-tag`), `'false'` on a no-op run. Gate downstream release jobs on
+      this for single-crate / lockstep repos.
+    value: ${{ steps.outputs.outputs.tagged }}
+  head-sha:
+    description: >
+      Commit SHA at HEAD after `anodizer tag --push` (the tag target — the
+      version-sync bump commit, or the original HEAD when no bump was needed).
+      Check this out in downstream jobs so the tree matches the tag.
+    value: ${{ steps.outputs.outputs.head-sha }}
 
 runs:
   using: "composite"
