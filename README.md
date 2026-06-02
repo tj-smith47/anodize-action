@@ -431,6 +431,37 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on this for single-crate / lockstep repos. |
 | `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target). Check this out in downstream jobs so the tree matches the tag. |
 
+## Build provenance (SLSA attestations)
+
+When your `.anodizer.yaml` enables `attestations` in the default `subjects`
+mode, anodizer writes a subjects manifest (`dist/attestation-subjects.json`, or
+`dist/<crate>.attestation-subjects.json` in per-crate workspaces) listing every
+release-uploadable artifact and its sha256. After anodizer runs, this action
+flattens those manifests into a checksums file and mints a GitHub-trusted,
+OIDC-backed SLSA build-provenance attestation over them via
+[`actions/attest-build-provenance`][abp] — no attestation key is ever held by
+anodizer or stored as a release asset.
+
+It is automatic: producing the manifest is the opt-in, so you only set
+`attestations.enabled: true` in your config. The step is a no-op when no
+manifest is present. The calling workflow must grant the two permissions the
+attestation API needs (alongside `contents: write` for the release itself):
+
+```yaml
+permissions:
+  contents: write       # create the release / upload assets
+  id-token: write       # OIDC identity for keyless attestation (and cosign)
+  attestations: write   # write the SLSA provenance attestation
+```
+
+Consumers verify an artifact against its provenance with:
+
+```bash
+gh attestation verify <artifact> --repo <owner>/<repo>
+```
+
+[abp]: https://github.com/actions/attest-build-provenance
+
 ## Workspace orchestration
 
 `anodizer tag` (without `--crate`) detects which crates in the workspace have changed since their last tag, bumps their versions, creates all per-crate tags in one bump commit, and pushes everything atomically. Two step outputs carry the result into downstream jobs:

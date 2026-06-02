@@ -646,6 +646,28 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/run/outputs.sh"
 
     # -------------------------------------------------------------------------
+    # Build provenance (SLSA) — when anodizer ran in the default `subjects`
+    # attestation mode it left dist[/<crate>].attestation-subjects.json. Flatten
+    # those subjects into a checksums file and mint a GitHub-trusted, OIDC-backed
+    # SLSA attestation over them; anodizer itself never holds an attestation key.
+    # Producing the manifest is the opt-in, so consumers only set
+    # `attestations.enabled` in their config — the caller must additionally grant
+    # `id-token: write` and `attestations: write`.
+    # -------------------------------------------------------------------------
+    - name: Collect attestation subjects
+      if: inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
+      id: attest-subjects
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: "${GITHUB_ACTION_PATH}/scripts/run/attest-subjects.sh"
+
+    - name: Attest build provenance
+      if: steps.attest-subjects.outputs.checksums != ''
+      uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+      with:
+        subject-checksums: ${{ steps.attest-subjects.outputs.checksums }}
+
+    # -------------------------------------------------------------------------
     # Upload split artifacts (for split build jobs)
     # -------------------------------------------------------------------------
     - name: Upload split artifacts
