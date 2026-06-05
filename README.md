@@ -22,6 +22,41 @@ all in one step.
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+### Publisher tokens
+
+A release that only publishes back to **its own** repository — create the
+GitHub Release, upload assets — works with the default `GITHUB_TOKEN`.
+
+Publishers that open a pull request against **another** repository need a token
+with write access to that repo; the default `GITHUB_TOKEN` cannot push to other
+repositories. Provision a personal access token (classic `public_repo`, or a
+fine-grained PAT scoped to the target repos) as a secret and pass it via `env:`.
+Each publisher reads its own variable first, then falls back to
+`ANODIZER_GITHUB_TOKEN`, then `GITHUB_TOKEN`:
+
+| Publisher | Token env var | Target |
+|-----------|---------------|--------|
+| Homebrew | `HOMEBREW_TAP_TOKEN` | your tap repo |
+| krew | `KREW_INDEX_TOKEN` | krew-index fork → PR |
+| Scoop | `SCOOP_BUCKET_TOKEN` | your bucket repo |
+| winget | `WINGET_PKGS_TOKEN` | winget-pkgs fork → PR |
+| Nix | `NIX_PKGS_TOKEN` | your nix repo |
+| SchemaStore | `SCHEMASTORE_TOKEN` | SchemaStore fork → PR |
+
+```yaml
+- uses: tj-smith47/anodizer-action@v1
+  with:
+    args: release
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}          # same-repo release
+    SCHEMASTORE_TOKEN: ${{ secrets.SCHEMASTORE_PAT }}  # fork push + SchemaStore PR
+```
+
+The SchemaStore publisher pushes the updated catalog/schema to a fork of
+`SchemaStore/schemastore` and opens a PR upstream, so `SCHEMASTORE_TOKEN` (or the
+`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` fallback) must be a PAT that can push to
+your fork and open a pull request against the upstream repository.
+
 ### Rollback on release failure
 
 The action does not provide an opt-in input for rollback — it's a separate step
