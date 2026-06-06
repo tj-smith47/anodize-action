@@ -97,7 +97,7 @@ inputs:
     required: false
 
   # ---------------------------------------------------------------------------
-  # Docker setup (for projects using docker_v2 in .anodizer.yaml)
+  # Docker setup (for projects using dockers_v2 in .anodizer.yaml)
   # ---------------------------------------------------------------------------
   docker-registry:
     description: >
