@@ -5,7 +5,8 @@ Rust-native release automation tool inspired by GoReleaser.
 
 The action installs anodizer (cached per version), auto-installs pipeline
 dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
-cargo-zigbuild, upx, nsis, create-dmg, flatpak, linuxdeploy) based on your
+cargo-zigbuild, upx, nsis, create-dmg, flatpak, linuxdeploy, rcodesign, wix)
+based on your
 `.anodizer.yaml`, imports signing keys, logs in to container registries,
 handles split/merge artifact plumbing, and runs any anodizer subcommand —
 all in one step.
@@ -375,7 +376,7 @@ exact tag instead:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `linuxdeploy`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `linuxdeploy`, `rcodesign`, `wix`. |
 | `auto-install` | `false` | Parse `.anodizer.yaml` and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
 
@@ -388,14 +389,15 @@ following top-level keys and installs the matching tool:
 | `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
 | `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). |
 | `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
-| `binary_signs:` / `docker_signs:` | `cosign` | |
+| `cmd: cosign` (any sign block) / `docker_signs:` | `cosign` | `signs:`/`binary_signs:` default to GPG (preinstalled); cosign installs only when a block sets `cmd: cosign`, plus always for `docker_signs:` (which defaults to cosign). |
 | `upx:` | `upx` | |
 | `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
 | `dmgs:` | `create-dmg` | macOS only (warns on other runners). |
 | `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
 | `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
+| `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing (uses macOS-runner `codesign`/`xcrun`). |
 | `pkgs:` | _none_ | Warns if runner is not macOS. |
-| `msis:` | _none_ | Warns if runner is not Windows. |
+| `msis:` | `wix` (Windows) | WiX v4 `wix` dotnet global tool. Warns if runner is not Windows. |
 | `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
 
 ### Workspace resolution (monorepo)

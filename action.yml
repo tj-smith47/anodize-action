@@ -65,7 +65,8 @@ inputs:
     description: >
       Comma-separated list of build/pipeline dependencies to install.
       Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-      cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy.
+      cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
+      rcodesign, wix.
       Uses the platform's native package manager (apt on Linux, brew on macOS,
       choco on Windows); some deps fall back to direct downloads when no
       packaged version exists.
@@ -74,10 +75,11 @@ inputs:
     description: >
       Parse `.anodizer.yaml` in the workdir and automatically install the
       dependencies needed by the configured stages (nfpm, makeself, snapcraft,
-      rpmbuild for srpm, cosign for binary_signs/docker_signs, syft for sboms,
-      nsis, create-dmg, flatpak-builder, upx, zig+cargo-zigbuild for
-      cross-compilation, alejandra when the nix publisher requests it as the
-      formatter, linuxdeploy + its appimage plugin for appimages:).
+      rpmbuild for srpm, cosign for any sign block whose cmd is cosign and for
+      docker_signs:, syft for sboms, nsis, create-dmg, flatpak-builder, upx,
+      zig+cargo-zigbuild for cross-compilation, alejandra when the nix publisher
+      requests it as the formatter, linuxdeploy + its appimage plugin for
+      appimages:, rcodesign for notarize.macos:, wix for msis: on Windows).
     default: "false"
     required: false
   install-rust:

@@ -1,0 +1,75 @@
+#!/usr/bin/env bats
+# auto-detect-cosign-cmd.bats — unit tests for the cmd-based cosign detection
+# in scripts/install/auto-detect-deps.sh.
+#
+# anodizer's per-block default signing `cmd:` differs by sign type (verified
+# against crates/core/src/signing.rs):
+#   - `signs:` / `binary_signs:` (SignConfig) default to GPG when `cmd:` is
+#     unset → cosign installs ONLY when a block sets `cmd: cosign`.
+#   - `docker_signs:` (DockerSignConfig) has a STATIC cosign default
+#     (DEFAULT_CMD = "cosign") → cosign installs even with no `cmd:` line.
+# GPG is preinstalled on every runner, so a gpg block must pull NOTHING.
+#
+# Covers:
+#   1. signs: with cmd: cosign            → cosign emitted
+#   2. binary_signs: with cmd: cosign     → cosign emitted
+#   3. docker_signs: with no cmd:         → cosign emitted (static default)
+#   4. binary_signs: with cmd: gpg        → cosign NOT emitted
+#   5. signs: with no cmd: (gpg default)  → cosign NOT emitted
+
+load test_helper
+
+setup() {
+    common_setup
+    export GITHUB_OUTPUT="${_TEST_HOME}/github_output"
+    : > "$GITHUB_OUTPUT"
+}
+
+teardown() {
+    common_teardown
+}
+
+_run_auto_detect() {
+    local cfg_body="$1" runner_os="${2:-Linux}"
+    local workdir="${_TEST_HOME}/workdir"
+    rm -rf "$workdir"
+    mkdir -p "$workdir"
+    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
+    run env \
+        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+        NO_COLOR=1 \
+        RUNNER_OS="$runner_os" \
+        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
+}
+
+@test "cosign-cmd: signs: with cmd: cosign emits cosign" {
+    _run_auto_detect $'signs:\n  - artifacts: all\n    cmd: cosign'
+    [ "$status" -eq 0 ]
+    grep -q '^deps=.*cosign' "$GITHUB_OUTPUT"
+}
+
+@test "cosign-cmd: binary_signs: with cmd: cosign emits cosign" {
+    _run_auto_detect $'binary_signs:\n  - artifacts: binary\n    cmd: cosign'
+    [ "$status" -eq 0 ]
+    grep -q '^deps=.*cosign' "$GITHUB_OUTPUT"
+}
+
+@test "cosign-cmd: docker_signs: with no cmd: emits cosign (static default)" {
+    _run_auto_detect $'docker_signs:\n  - artifacts: all'
+    [ "$status" -eq 0 ]
+    grep -q '^deps=.*cosign' "$GITHUB_OUTPUT"
+}
+
+@test "cosign-cmd: binary_signs: with cmd: gpg does NOT emit cosign" {
+    _run_auto_detect $'binary_signs:\n  - artifacts: binary\n    cmd: gpg'
+    [ "$status" -eq 0 ]
+    grep -q '^deps=' "$GITHUB_OUTPUT"
+    ! grep -q 'cosign' "$GITHUB_OUTPUT"
+}
+
+@test "cosign-cmd: signs: with no cmd: (gpg default) does NOT emit cosign" {
+    _run_auto_detect $'signs:\n  - artifacts: all'
+    [ "$status" -eq 0 ]
+    grep -q '^deps=' "$GITHUB_OUTPUT"
+    ! grep -q 'cosign' "$GITHUB_OUTPUT"
+}

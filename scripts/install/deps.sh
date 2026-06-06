@@ -5,7 +5,8 @@
 # separated lists), dedupes, and installs each requested dep.
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-# cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy.
+# cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
+# rcodesign, wix.
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -35,6 +36,26 @@ LINUXDEPLOY_DEFAULT_SHA_AMD64="514d4ffe2a2f757369b41863a4f63fbbb222c429652803ebc
 LINUXDEPLOY_DEFAULT_SHA_ARM64="6d2f140cc8c3b07831b1011922ed453b34f7e90d21a4bfbc65e1ec99ca71b8f3"
 LINUXDEPLOY_PLUGIN_DEFAULT_SHA_AMD64="c603eb063609daa2cc953cfcf6e117cea13fa00c8bfcbbfa5efa88a205adc424"
 LINUXDEPLOY_PLUGIN_DEFAULT_SHA_ARM64="a8b267f2511389235729028590542c76f7212da8cf2b045b37fbe829b0e0c843"
+
+# rcodesign (the apple-codesign project, indygreg/apple-platform-rs) drives
+# anodizer's cross-platform `notarize.macos:` path. Release tarballs are named
+# `apple-codesign-<ver>-<triple>.tar.gz` and carry the `rcodesign` binary one
+# directory deep (verified by `tar -tzf`). Upstream ships NO checksums file, so
+# the shas below were computed by download-and-sha256sum of each pinned asset.
+# Override with RCODESIGN_VERSION + the matching *_SHA_* env vars (all required
+# together — an override without its own shas is rejected, mirroring the
+# alejandra/linuxdeploy pins).
+RCODESIGN_DEFAULT_VERSION="0.29.0"
+RCODESIGN_DEFAULT_SHA_LINUX_AMD64="dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002"
+RCODESIGN_DEFAULT_SHA_LINUX_ARM64="4af92c87ddf52f5f2d1258a3b4e56c7dcb8f1b2468df744976c5f139e031961f"
+RCODESIGN_DEFAULT_SHA_MACOS_AMD64="14ef11bedd51a8d95eafd767939ae96d5900e5a61511bef75bb21db6e7c74140"
+RCODESIGN_DEFAULT_SHA_MACOS_ARM64="d1a532150adaf90048260d76359261aa716abafc45c53c5dc18845029184334a"
+
+# WiX v4 is anodizer's default MSI toolchain (`wix build`); the CLI is the
+# `wix` dotnet global tool. Pinned for reproducibility — override with
+# WIX_VERSION. dotnet (the host for the global tool) is preinstalled on the
+# GitHub windows runner images.
+WIX_DEFAULT_VERSION="4.0.6"
 
 DEPS=()
 
@@ -427,6 +448,89 @@ install_linuxdeploy() {
     esac
 }
 
+# rcodesign (apple-codesign) drives anodizer's cross-platform
+# `notarize.macos:` path (`rcodesign sign` / `rcodesign notary-submit`). It runs
+# on Linux, macOS, and Windows, so this installs a pinned, sha-verified release
+# binary on each. The tarball carries `rcodesign` one directory deep, so
+# `tar --strip-components=1` lands the bare binary; macOS uses the
+# `macos-universal`-equivalent per-arch tarballs (x86_64 / aarch64 darwin).
+# Windows has no clean musl/release-binary story here (upstream ships a
+# *-pc-windows-msvc.zip, not a tarball), so the Windows arm falls back to
+# `cargo install apple-codesign --locked` — a Rust toolchain is available in
+# the action via install-rust (the cross-platform notarize path is the only
+# notarize mode usable on a Windows runner anyway). Override the pinned binary
+# with RCODESIGN_VERSION + the matching *_SHA_* env vars (all required
+# together).
+install_rcodesign() {
+    case "$RUNNER_OS" in
+        Linux|macOS)
+            local version="${RCODESIGN_VERSION:-$RCODESIGN_DEFAULT_VERSION}"
+            local triple sha
+            case "${RUNNER_OS}:${RUNNER_ARCH}" in
+                Linux:X64)    triple="x86_64-unknown-linux-musl"; sha="$RCODESIGN_DEFAULT_SHA_LINUX_AMD64" ;;
+                Linux:ARM64)  triple="aarch64-unknown-linux-musl"; sha="$RCODESIGN_DEFAULT_SHA_LINUX_ARM64" ;;
+                macOS:X64)    triple="x86_64-apple-darwin";  sha="$RCODESIGN_DEFAULT_SHA_MACOS_AMD64" ;;
+                macOS:ARM64)  triple="aarch64-apple-darwin"; sha="$RCODESIGN_DEFAULT_SHA_MACOS_ARM64" ;;
+                *) gha_fail "Unsupported ${RUNNER_OS} arch for rcodesign: $RUNNER_ARCH" ;;
+            esac
+            if [ "$version" != "$RCODESIGN_DEFAULT_VERSION" ]; then
+                # Upstream publishes no checksums file, so a version override
+                # MUST come with its own sha — refusing unverified installs.
+                local override_sha="${RCODESIGN_SHA256:-}"
+                [ -n "$override_sha" ] \
+                    || gha_fail "RCODESIGN_VERSION=$version requires RCODESIGN_SHA256 (upstream publishes no checksums file)"
+                sha="$override_sha"
+            fi
+
+            local install_dir="${RUNNER_TEMP:-/tmp}/rcodesign"
+            mkdir -p "$install_dir"
+            local tarball="apple-codesign-${version}-${triple}.tar.gz"
+            # The release tag is URL-encoded (`apple-codesign/<ver>` → `%2F`).
+            local url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${version}/${tarball}"
+            curl -sSfL "$url" -o "${install_dir}/${tarball}"
+            echo "${sha}  ${install_dir}/${tarball}" | sha256sum -c -
+            # `rcodesign` sits one dir deep (apple-codesign-<ver>-<triple>/rcodesign);
+            # strip the leading component and extract only the binary.
+            tar -xzf "${install_dir}/${tarball}" -C "$install_dir" --strip-components=1 \
+                "apple-codesign-${version}-${triple}/rcodesign"
+            chmod +x "${install_dir}/rcodesign"
+            gha_add_path "$install_dir"
+            anodizer::ok "rcodesign ${version} (${triple}) installed at ${install_dir}/rcodesign"
+            ;;
+        Windows)
+            # No clean release tarball for Windows (upstream ships a
+            # *-pc-windows-msvc.zip), so build from crates.io via the action's
+            # Rust toolchain. The cross-platform notarize.macos path is the only
+            # notarize mode usable on a Windows runner.
+            command -v cargo > /dev/null 2>&1 \
+                || gha_fail "rcodesign on Windows requires Rust; set install-rust: true"
+            local version="${RCODESIGN_VERSION:-$RCODESIGN_DEFAULT_VERSION}"
+            cargo install apple-codesign --locked --version "$version"
+            ;;
+    esac
+}
+
+# WiX drives anodizer's `msis:` stage (crates/stage-msi — v4 `wix build`). The
+# v4 CLI is the `wix` dotnet global tool, installed via the dotnet SDK that is
+# preinstalled on the GitHub windows runner images. dotnet global tools land in
+# `%USERPROFILE%\.dotnet\tools`, which the dotnet installer adds to PATH on the
+# hosted images; we add it explicitly so a fresh shell in the same job sees it.
+# Pin the version with WIX_VERSION (default tracks WiX v4, anodizer's default).
+install_wix() {
+    case "$RUNNER_OS" in
+        Windows)
+            local version="${WIX_VERSION:-$WIX_DEFAULT_VERSION}"
+            dotnet tool install --global wix --version "$version" \
+                || gha_fail "dotnet tool install wix@${version} failed"
+            # dotnet global tools install to $HOME/.dotnet/tools; surface it on
+            # PATH for later steps in case the image's default PATH lacks it.
+            gha_add_path "${USERPROFILE:-$HOME}/.dotnet/tools"
+            anodizer::ok "wix ${version} installed via dotnet global tool"
+            ;;
+        Linux|macOS) skip_unsupported_os wix "Windows-only (msis: config requires a Windows runner)" ;;
+    esac
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────
 
 dispatch_install() {
@@ -449,7 +553,9 @@ dispatch_install() {
             flatpak)        install_flatpak ;;
             alejandra)      install_alejandra ;;
             linuxdeploy)    install_linuxdeploy ;;
-            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy)" ;;
+            rcodesign)      install_rcodesign ;;
+            wix)            install_wix ;;
+            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix)" ;;
         esac
         # Skip the per-dep "installed" line for apt-queued items —
         # apt_flush emits one per package after the batch lands.
