@@ -28,6 +28,15 @@ grep -qE '^upx:' "$cfg" && deps+=("upx") || true
 grep -qE '^nsis:' "$cfg" && deps+=("nsis") || true
 grep -qE '^dmgs:' "$cfg" && deps+=("create-dmg") || true
 grep -qE '^flatpaks:' "$cfg" && deps+=("flatpak") || true
+# appimages: shells out to linuxdeploy + its appimage output plugin, both
+# Linux-only AppImages — emit the dep on Linux, warn (don't fail) elsewhere.
+if grep -qE '^appimages:' "$cfg"; then
+    if [ "${RUNNER_OS:-}" = "Linux" ]; then
+        deps+=("linuxdeploy")
+    else
+        gha_warning "auto-install: appimages: requires a Linux runner (got ${RUNNER_OS:-unset}); skipping"
+    fi
+fi
 # alejandra is only needed when the nix publisher opts into it as the
 # formatter (the alternative, `nixfmt`, has no auto-installer here yet).
 grep -qE '^[[:space:]]+formatter:[[:space:]]*alejandra[[:space:]]*$' "$cfg" && deps+=("alejandra") || true

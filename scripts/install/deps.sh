@@ -5,7 +5,7 @@
 # separated lists), dedupes, and installs each requested dep.
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-# cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra.
+# cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy.
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -22,6 +22,19 @@ DETERMINISM_INSTALL="${DETERMINISM_INSTALL:-}"
 ALEJANDRA_DEFAULT_VERSION="4.0.0"
 ALEJANDRA_DEFAULT_SHA_AMD64="a23b9d47cba945805c6169541046de890e94e07a5aa416c86dee15bca2da6216"
 ALEJANDRA_DEFAULT_SHA_ARM64="a30b0d54ee3f0d6633d0398b50258408d2cc31646a9c8c4ba3ee4ebf2cebd8c8"
+
+# linuxdeploy + its appimage output plugin ship only a rolling `continuous`
+# release (no version tags, no checksums sidecar), so the pinned shas below
+# are keyed to the asset bytes served at pin time — verified against the
+# GitHub releases API `digest` field AND a download-and-sha256 of each asset.
+# Override with LINUXDEPLOY_VERSION + the four matching *_SHA_* env vars (all
+# required together) to pull a different snapshot; an override without its own
+# shas is rejected, mirroring the alejandra pin.
+LINUXDEPLOY_DEFAULT_VERSION="continuous"
+LINUXDEPLOY_DEFAULT_SHA_AMD64="514d4ffe2a2f757369b41863a4f63fbbb222c429652803ebc081cb16ba21ac25"
+LINUXDEPLOY_DEFAULT_SHA_ARM64="6d2f140cc8c3b07831b1011922ed453b34f7e90d21a4bfbc65e1ec99ca71b8f3"
+LINUXDEPLOY_PLUGIN_DEFAULT_SHA_AMD64="c603eb063609daa2cc953cfcf6e117cea13fa00c8bfcbbfa5efa88a205adc424"
+LINUXDEPLOY_PLUGIN_DEFAULT_SHA_ARM64="a8b267f2511389235729028590542c76f7212da8cf2b045b37fbe829b0e0c843"
 
 DEPS=()
 
@@ -357,6 +370,63 @@ install_alejandra() {
     esac
 }
 
+# linuxdeploy drives anodizer's `appimages:` stage. It is itself an AppImage,
+# as is the appimage output plugin it needs to emit a `.AppImage` (anodizer
+# invokes `linuxdeploy --output appimage`, which is a no-op without
+# linuxdeploy-plugin-appimage on PATH). Both are installed side by side into
+# one PATH dir.
+#
+# CI runners frequently lack FUSE (no /dev/fuse), so an AppImage can't
+# self-mount. APPIMAGE_EXTRACT_AND_RUN=1 is linuxdeploy's documented escape
+# hatch: each AppImage extracts itself to a temp dir and runs from there
+# instead of FUSE-mounting. It is exported into $GITHUB_ENV so anodizer's
+# stage sees it when it later spawns linuxdeploy, and the plugin is named
+# `linuxdeploy-plugin-appimage` (no extension) so linuxdeploy's plugin
+# discovery finds it on PATH.
+install_linuxdeploy() {
+    case "$RUNNER_OS" in
+        Linux)
+            local version="${LINUXDEPLOY_VERSION:-$LINUXDEPLOY_DEFAULT_VERSION}"
+            local arch ld_sha plugin_sha
+            case "$RUNNER_ARCH" in
+                X64)   arch=x86_64;  ld_sha="$LINUXDEPLOY_DEFAULT_SHA_AMD64"; plugin_sha="$LINUXDEPLOY_PLUGIN_DEFAULT_SHA_AMD64" ;;
+                ARM64) arch=aarch64; ld_sha="$LINUXDEPLOY_DEFAULT_SHA_ARM64"; plugin_sha="$LINUXDEPLOY_PLUGIN_DEFAULT_SHA_ARM64" ;;
+                *)     gha_fail "Unsupported Linux arch for linuxdeploy: $RUNNER_ARCH" ;;
+            esac
+            if [ "$version" != "$LINUXDEPLOY_DEFAULT_VERSION" ]; then
+                # The `continuous` release rolls its assets in place, so a
+                # version override MUST carry its own shas — refusing
+                # unverified installs (no upstream checksums file exists).
+                ld_sha="${LINUXDEPLOY_SHA256:-}"
+                plugin_sha="${LINUXDEPLOY_PLUGIN_SHA256:-}"
+                { [ -n "$ld_sha" ] && [ -n "$plugin_sha" ]; } \
+                    || gha_fail "LINUXDEPLOY_VERSION=$version requires LINUXDEPLOY_SHA256 and LINUXDEPLOY_PLUGIN_SHA256 (upstream publishes no checksums file)"
+            fi
+
+            local install_dir="${RUNNER_TEMP:-/tmp}/linuxdeploy"
+            mkdir -p "$install_dir"
+
+            local ld_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/${version}/linuxdeploy-${arch}.AppImage"
+            curl -sSfL "$ld_url" -o "${install_dir}/linuxdeploy"
+            echo "${ld_sha}  ${install_dir}/linuxdeploy" | sha256sum -c -
+            chmod +x "${install_dir}/linuxdeploy"
+
+            local plugin_url="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/${version}/linuxdeploy-plugin-appimage-${arch}.AppImage"
+            curl -sSfL "$plugin_url" -o "${install_dir}/linuxdeploy-plugin-appimage"
+            echo "${plugin_sha}  ${install_dir}/linuxdeploy-plugin-appimage" | sha256sum -c -
+            chmod +x "${install_dir}/linuxdeploy-plugin-appimage"
+
+            gha_add_path "$install_dir"
+            # Persist for the later `anodizer release` step (which spawns
+            # linuxdeploy itself) — $GITHUB_ENV survives across steps; a bare
+            # `export` would not.
+            gha_set_env APPIMAGE_EXTRACT_AND_RUN 1
+            anodizer::ok "linuxdeploy + appimage plugin (${version}/${arch}) installed at ${install_dir}"
+            ;;
+        macOS|Windows) skip_unsupported_os linuxdeploy "Linux-only (appimages: config requires a Linux runner)" ;;
+    esac
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────
 
 dispatch_install() {
@@ -378,7 +448,8 @@ dispatch_install() {
             create-dmg)     install_create_dmg ;;
             flatpak)        install_flatpak ;;
             alejandra)      install_alejandra ;;
-            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra)" ;;
+            linuxdeploy)    install_linuxdeploy ;;
+            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy)" ;;
         esac
         # Skip the per-dep "installed" line for apt-queued items —
         # apt_flush emits one per package after the batch lands.

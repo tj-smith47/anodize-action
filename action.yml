@@ -65,8 +65,8 @@ inputs:
     description: >
       Comma-separated list of build/pipeline dependencies to install.
       Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-      cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra. Uses the
-      platform's native package manager (apt on Linux, brew on macOS,
+      cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy.
+      Uses the platform's native package manager (apt on Linux, brew on macOS,
       choco on Windows); some deps fall back to direct downloads when no
       packaged version exists.
     required: false
@@ -77,7 +77,7 @@ inputs:
       rpmbuild for srpm, cosign for binary_signs/docker_signs, syft for sboms,
       nsis, create-dmg, flatpak-builder, upx, zig+cargo-zigbuild for
       cross-compilation, alejandra when the nix publisher requests it as the
-      formatter).
+      formatter, linuxdeploy + its appimage plugin for appimages:).
     default: "false"
     required: false
   install-rust:

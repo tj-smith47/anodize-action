@@ -5,7 +5,7 @@ Rust-native release automation tool inspired by GoReleaser.
 
 The action installs anodizer (cached per version), auto-installs pipeline
 dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
-cargo-zigbuild, upx, nsis, create-dmg, flatpak) based on your
+cargo-zigbuild, upx, nsis, create-dmg, flatpak, linuxdeploy) based on your
 `.anodizer.yaml`, imports signing keys, logs in to container registries,
 handles split/merge artifact plumbing, and runs any anodizer subcommand —
 all in one step.
@@ -375,7 +375,7 @@ exact tag instead:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `linuxdeploy`. |
 | `auto-install` | `false` | Parse `.anodizer.yaml` and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
 
@@ -393,6 +393,7 @@ following top-level keys and installs the matching tool:
 | `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
 | `dmgs:` | `create-dmg` | macOS only (warns on other runners). |
 | `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
+| `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
 | `pkgs:` | _none_ | Warns if runner is not macOS. |
 | `msis:` | _none_ | Warns if runner is not Windows. |
 | `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
