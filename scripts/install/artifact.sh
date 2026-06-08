@@ -10,5 +10,5 @@ chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
 gha_add_path "$install_dir"
 
 gha_notice "anodizer installed from artifact to ${install_dir}"
-anodizer::verb Installed "anodizer from artifact"
+anodizer::ok "anodizer installed from artifact"
 anodizer::detail "${install_dir}/${BIN}"

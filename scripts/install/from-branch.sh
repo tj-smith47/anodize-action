@@ -12,8 +12,7 @@ if [ -d "$clone_dest" ]; then
     rm -rf "$clone_dest"
 fi
 
-anodizer::verb Cloning "tj-smith47/anodizer@${FROM_BRANCH}"
-gha_group_begin "Cloning tj-smith47/anodizer branch ${FROM_BRANCH}"
+gha_section Cloning "tj-smith47/anodizer@${FROM_BRANCH}"
 git clone --depth 1 --branch "$FROM_BRANCH" --single-branch "$repo_url" "$clone_dest"
 gha_group_end
 

@@ -33,7 +33,7 @@ if [ -n "$CRATE" ]; then
     extra_args+=(--crate="$CRATE")
 fi
 
-anodizer::section "anodizer check determinism"
+anodizer::verb Checking "determinism"
 anodizer::kv targets "$TARGETS"
 anodizer::kv stages "$stages"
 anodizer::kv runs "$RUNS"

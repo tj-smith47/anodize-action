@@ -21,8 +21,7 @@ if [ -n "$FROM_BRANCH" ]; then
     unset SCCACHE_GHA_ENABLED
 fi
 
-anodizer::verb Building "anodizer from source"
-gha_group_begin "Building anodizer from source"
+gha_section Building "anodizer from source"
 cargo build --release -p anodizer
 install_dir="${RUNNER_TOOL_CACHE}/anodizer/source"
 mkdir -p "$install_dir"

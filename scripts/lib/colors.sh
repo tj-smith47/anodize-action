@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
-# Cargo-style verbs + goreleaser-style section markers for composite-action
-# log output.
+# Console-output vocabulary for the composite action, kept cohesive with
+# the anodizer CLI's "format B" scheme so action lines and CLI lines read
+# as one log:
+#
+#   <bold-green present-participle verb> <title>      ← section header (left margin)
+#      • detail / info                                 ← child line, 3-space indent
+#      ✓ success
+#      ✗ failure
+#
+# One helper per line-kind. Headers carry the human-readable title; the
+# matching `::group::` collapsible is emitted by the same helper so the
+# title can never drift between the two.
 #
 # Usage:
 #   source "${GITHUB_ACTION_PATH}/scripts/lib/colors.sh"
-#   anodizer::verb Installing "anodizer from ${URL}"
-#   anodizer::step "downloading archive"
-#   anodizer::ok   "anodizer installed to ${install_dir}"
+#   anodizer::verb Installing "tools"     # plain header, no ::group::
+#   anodizer::step "downloading archive"  # • detail
+#   anodizer::ok   "anodizer installed"   # ✓ success
+#
+# Indentation encodes nesting depth only (2 spaces per level on top of the
+# base 3-space child indent) — never word/verb length. For collapsible
+# phases pair the header and its body with the gha_group_* helpers in
+# gha.sh (or gha_section there, which wraps a header in a ::group::).
 #
 # GitHub Actions renders ANSI in the web UI; color is disabled when
 # NO_COLOR is set or stdout is not a TTY. For PR annotations use the
@@ -57,59 +72,85 @@ else
     _ANODIZER_BOLD_RED=""
 fi
 
-# Cargo-style verb line: right-padded bold-green verb followed by detail.
-#   anodizer::verb Installing "anodizer v0.1.0"
-#   →   Installing anodizer v0.1.0
-# The 12-column right-align matches `cargo`'s own output width.
+# Path separators are normalized for display only — a Windows runner can
+# hand us `C:\hostedtoolcache/.../anodizer.exe` with mixed separators.
+# Collapse backslashes to forward slashes so child lines read consistently;
+# never mutate a value used for filesystem access (display-only callers).
+anodizer::norm_path() {
+    printf '%s' "${1//\\//}"
+}
+
+# Child-line indent is depth-driven: a base 3-space margin plus 2 spaces per
+# nesting level. Depth defaults to 0. Word/verb length never influences it.
+_anodizer_indent() {
+    local depth="${1:-0}" base="   " level
+    for (( level = 0; level < depth; level++ )); do
+        base+="  "
+    done
+    printf '%s' "$base"
+}
+
+# Section header (format B): a bold-green present-participle verb at the
+# left margin, ONE space, then the title. The only thing at column 0.
+#   anodizer::verb Building "source"
+#   → Building source
+# Diagnostic, so it writes to stderr: a sibling helper's stdout may be
+# captured via $(...) and must not ingest this colored line.
 anodizer::verb() {
     local verb="$1"
     shift
-    printf "%s%12s%s %s\n" "${_ANODIZER_BOLD_GREEN}" "${verb}" "${_ANODIZER_RESET}" "$*" >&2
+    printf "%s%s%s %s\n" "${_ANODIZER_BOLD_GREEN}" "${verb}" "${_ANODIZER_RESET}" "$*" >&2
 }
 
-# Goreleaser-style bullet for a sub-step inside a larger stage.
+# Detail / info child line — `•` marker, dimmed-cyan, optional dimmed
+# trailing value. Pass an integer depth as $2 to nest deeper.
 #   anodizer::step "downloading release archive"
-#   → • downloading release archive
+#   →    • downloading release archive
 anodizer::step() {
-    printf " %s•%s %s\n" "${_ANODIZER_CYAN}" "${_ANODIZER_RESET}" "$*"
+    printf "%s%s•%s %s\n" "$(_anodizer_indent "${2:-0}")" "${_ANODIZER_CYAN}" "${_ANODIZER_RESET}" "$1"
 }
 
-# Success check — bold green ✓ with message.
+# Success child line — green `✓` marker.
+#   anodizer::ok "anodizer built from source"
+#   →    ✓ anodizer built from source
 anodizer::ok() {
-    printf " %s✓%s %s\n" "${_ANODIZER_BOLD_GREEN}" "${_ANODIZER_RESET}" "$*"
+    printf "%s%s✓%s %s\n" "$(_anodizer_indent "${2:-0}")" "${_ANODIZER_BOLD_GREEN}" "${_ANODIZER_RESET}" "$1"
 }
 
-# Warning — bold yellow, for non-annotation diagnostics. Use ::warning::
-# separately when the message should appear as a GitHub annotation.
-anodizer::warn() {
-    printf " %s⚠%s %s\n" "${_ANODIZER_BOLD_YELLOW}" "${_ANODIZER_RESET}" "$*" >&2
-}
-
-# Error — bold red ✗ with message. Use ::error:: separately when the message
-# should appear as a GitHub annotation.
+# Failure child line — red `✗` marker. Use ::error:: separately when the
+# message should also surface as a GitHub annotation.
 anodizer::err() {
-    printf " %s✗%s %s\n" "${_ANODIZER_BOLD_RED}" "${_ANODIZER_RESET}" "$*" >&2
+    printf "%s%s✗%s %s\n" "$(_anodizer_indent "${2:-0}")" "${_ANODIZER_BOLD_RED}" "${_ANODIZER_RESET}" "$1" >&2
 }
 
-# Dimmed detail line — for paths, versions, and subordinate info that
-# should fade into the background (cargo's ` -> path/to/file` style).
+# Warning child line — bold-yellow `•`, kept in the child scheme. Use
+# ::warning:: separately when the message should be a GitHub annotation.
+anodizer::warn() {
+    printf "%s%s•%s %s\n" "$(_anodizer_indent "${2:-0}")" "${_ANODIZER_BOLD_YELLOW}" "${_ANODIZER_RESET}" "$1" >&2
+}
+
+# Dimmed subordinate value (path / version) under a header — a `•` detail
+# whose text is dimmed so it fades behind the success line above it.
+# Backslashes are normalized to forward slashes for display consistency.
+#   anodizer::detail "C:\\foo/bar"
+#   →    • C:/foo/bar
 anodizer::detail() {
-    printf "   %s%s%s\n" "${_ANODIZER_DIM}" "$*" "${_ANODIZER_RESET}"
+    printf "%s%s•%s %s%s%s\n" \
+        "$(_anodizer_indent "${2:-0}")" \
+        "${_ANODIZER_CYAN}" "${_ANODIZER_RESET}" \
+        "${_ANODIZER_DIM}" "$(anodizer::norm_path "$1")" "${_ANODIZER_RESET}"
 }
 
-# Section header — bold cyan surrounded by horizontal rule. Use at the top
-# of a new phase within an action step.
-#   anodizer::section "Dependency installation"
-anodizer::section() {
-    local label="$*"
-    printf "\n%s══ %s ══%s\n" "${_ANODIZER_BOLD_CYAN}" "${label}" "${_ANODIZER_RESET}"
-}
-
-# Dimmed key=value for debug/diagnostic output.
+# Dimmed key/value detail child — a `•` line whose dimmed key is separated
+# from the value by two spaces (no glyph), matching the CLI's `kv` row.
+#   anodizer::kv targets "x86_64-unknown-linux-gnu"
+#   →    • targets  x86_64-unknown-linux-gnu
 anodizer::kv() {
     local key="$1"
     shift
-    printf "   %s%s%s = %s%s%s\n" \
+    printf "%s%s•%s %s%s%s  %s\n" \
+        "$(_anodizer_indent 0)" \
+        "${_ANODIZER_CYAN}" "${_ANODIZER_RESET}" \
         "${_ANODIZER_DIM}" "${key}" "${_ANODIZER_RESET}" \
-        "${_ANODIZER_BOLD}" "$*" "${_ANODIZER_RESET}"
+        "$*"
 }

@@ -117,11 +117,9 @@ resolve_polling() {
     echo ""
 }
 
-anodizer::section "Resolving ${ARTIFACT_WORKFLOW} artifact"
+gha_section Resolving "${ARTIFACT_WORKFLOW} artifact for ${COMMIT_SHA}"
 anodizer::kv commit "${COMMIT_SHA}"
 anodizer::kv artifact "${FROM_ARTIFACT}"
-
-gha_group_begin "Resolving $ARTIFACT_WORKFLOW run for $COMMIT_SHA"
 
 # Dereference once up front so annotated tag SHAs work too.
 deref_sha=$(git rev-parse "${COMMIT_SHA}^{commit}" 2>/dev/null || echo "$COMMIT_SHA")

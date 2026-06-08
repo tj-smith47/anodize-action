@@ -32,7 +32,7 @@ rename_manifests_in() {
         dst="${dir}${f}-${SHARD_LABEL}.json"
         if [ -f "$src" ]; then
             mv "$src" "$dst"
-            anodizer::verb renamed "$src -> $dst"
+            anodizer::step "renamed $src -> $dst"
             renamed=$((renamed + 1))
         fi
     done

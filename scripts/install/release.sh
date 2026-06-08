@@ -20,9 +20,8 @@ fi
 archive="anodizer-${version}-${OS}-${ARCH}.${EXT}"
 url="https://github.com/tj-smith47/anodizer/releases/download/${TAG}/${archive}"
 
-anodizer::verb Downloading "${archive}"
+gha_section Downloading "${archive}"
 anodizer::detail "${url}"
-gha_group_begin "Downloading $url"
 tmpdir=$(mktemp -d)
 downloaded=false
 for attempt in 1 2 3; do
@@ -38,8 +37,7 @@ done
     || gha_fail "Failed to download anodizer ${TAG} from ${url} after 3 attempts"
 gha_group_end
 
-anodizer::verb Extracting "${archive}"
-gha_group_begin "Extracting"
+gha_section Extracting "${archive}"
 mkdir -p "$install_dir"
 if [ "$EXT" = "zip" ]; then
     unzip -q -o "${tmpdir}/${archive}" -d "$install_dir"

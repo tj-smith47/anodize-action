@@ -106,7 +106,7 @@ apt_queue() {
 }
 apt_flush() {
     [ "${#APT_PKGS[@]}" -eq 0 ] && return
-    anodizer::verb Installing "apt batch: ${APT_NAMES[*]}"
+    anodizer::step "installing apt batch: ${APT_NAMES[*]}"
     sudo apt-get install -yq "${APT_PKGS[@]}" \
         || gha_fail "apt batch install failed for: ${APT_NAMES[*]}"
     local name
@@ -536,7 +536,7 @@ install_wix() {
 dispatch_install() {
     local dep pre_queue
     for dep in "${DEPS[@]}"; do
-        anodizer::verb Installing "${dep}"
+        anodizer::step "installing ${dep}"
         pre_queue=${#APT_PKGS[@]}
         case "$dep" in
             nfpm)           install_nfpm ;;
@@ -573,7 +573,7 @@ main() {
         exit 0
     fi
 
-    anodizer::section "Dependency installation (${#DEPS[@]})"
+    anodizer::verb Installing "${#DEPS[@]} dependencies"
     dispatch_install
     apt_flush
 }

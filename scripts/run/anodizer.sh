@@ -69,7 +69,7 @@ resolve_max_retries() {
     # anywhere in the arg list.
     case " $ANODIZER_ARGS " in
         *" --publish-only "*|*" --rollback-only "*|*" tag rollback "*)
-            anodizer::verb retry "disabled for stateful mode (--publish-only / --rollback-only / tag rollback)"
+            anodizer::warn "retry disabled for stateful mode (--publish-only / --rollback-only / tag rollback)"
             echo 1
             ;;
         *) echo 3 ;;
@@ -85,7 +85,7 @@ run_attempt() {
 }
 
 main() {
-    anodizer::section "anodizer"
+    anodizer::verb Running "anodizer"
 
     local max_retries attempt=1
     max_retries=$(resolve_max_retries)
