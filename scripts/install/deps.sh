@@ -57,6 +57,15 @@ RCODESIGN_DEFAULT_SHA_MACOS_ARM64="d1a532150adaf90048260d76359261aa716abafc45c53
 # GitHub windows runner images.
 WIX_DEFAULT_VERSION="4.0.6"
 
+# snapcraft's PyPI releases stopped at 4.8.1 (June 2021 — pre-dates
+# SNAPCRAFT_STORE_CREDENTIALS), so the no-snapd fallback installs from the
+# upstream git tag instead, constrained to that tag's own uv.lock. The pin
+# tracks the snap store's latest/stable channel so a pip-installed snapcraft
+# matches the version a snapd-equipped runner gets from
+# `snap install snapcraft`. Override with SNAPCRAFT_VERSION (also honoured
+# by the macOS brew path).
+SNAPCRAFT_DEFAULT_VERSION="8.14.5"
+
 DEPS=()
 
 # ── input merge + dedupe ─────────────────────────────────────────────
@@ -182,9 +191,125 @@ install_makeself() {
     esac
 }
 
+# Convert a uv.lock (`$1`) into `name==version` pip constraint lines on
+# stdout. Skips non-registry packages (the project itself) and names whose
+# lock holds conflicting versions across dependency-group forks (dev/docs
+# only in snapcraft's lock) — pip rejects conflicting duplicate constraints,
+# and every runtime dependency resolves to a single locked version.
+snapcraft_lock_to_constraints() {
+    python3 - "$1" <<'PYEOF'
+import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    sys.stderr.write("python >= 3.11 (tomllib) required to derive pip constraints from uv.lock\n")
+    sys.exit(1)
+
+with open(sys.argv[1], "rb") as f:
+    lock = tomllib.load(f)
+versions = {}
+for pkg in lock["package"]:
+    if "registry" not in pkg.get("source", {}):
+        continue
+    versions.setdefault(pkg["name"], set()).add(pkg["version"])
+for name in sorted(versions):
+    if len(versions[name]) == 1:
+        print(f"{name}=={versions[name].pop()}")
+PYEOF
+}
+
+# Containerised runners (e.g. ARC pods) have no snapd — snapd cannot run
+# inside a container — so `snap install snapcraft` is impossible there. A
+# pip install covers the publish-only case: `snapcraft upload` needs just
+# the CLI + SNAPCRAFT_STORE_CREDENTIALS, no snapd/lxd/multipass (the .snap
+# itself is packed on a snapd-equipped runner). PyPI's snapcraft is
+# abandoned at 4.8.1, so the install pulls the upstream git tag, with the
+# tag's uv.lock as a pip constraints file — an unconstrained resolve picks
+# a newer craft-application whose lifecycle-command API breaks snapcraft at
+# import time.
+snapcraft_install_linux_pip() {
+    local version="${SNAPCRAFT_VERSION:-$SNAPCRAFT_DEFAULT_VERSION}"
+    command -v python3 > /dev/null 2>&1 \
+        || gha_fail "snapcraft: no snapd and no python3 on this runner — preinstall snapcraft in the runner image, or provide python3 + pip for the pip fallback"
+    command -v git > /dev/null 2>&1 \
+        || gha_fail "snapcraft: the pip fallback installs from a git tag and requires git on PATH"
+    local -a apt_needs=()
+    command -v pipx > /dev/null 2>&1 || python3 -m pip --version > /dev/null 2>&1 \
+        || apt_needs+=(python3-pip)
+    # snapcraft imports the distro's apt bindings at startup on Linux
+    # (snapcraft_legacy's repo module does `import apt` unconditionally).
+    # python-apt is not pip-installable from PyPI, so it must come from the
+    # system package manager and stay visible to the snapcraft install —
+    # hence --user / --system-site-packages below rather than an isolated
+    # venv.
+    python3 -c 'import apt' > /dev/null 2>&1 \
+        || apt_needs+=(python3-apt)
+    if [ "${#apt_needs[@]}" -gt 0 ]; then
+        command -v apt-get > /dev/null 2>&1 \
+            || gha_fail "snapcraft: no snapd, and the pip fallback needs ${apt_needs[*]} (no apt-get available to install them) — preinstall snapcraft in the runner image"
+        anodizer::detail "installing ${apt_needs[*]} via apt for the pip fallback"
+        sudo apt-get update -q
+        sudo apt-get install -yq "${apt_needs[@]}" \
+            || gha_fail "snapcraft: apt install of ${apt_needs[*]} failed — preinstall snapcraft (or these packages) in the runner image"
+    fi
+
+    local workdir="${RUNNER_TEMP:-/tmp}/snapcraft-pip"
+    mkdir -p "$workdir"
+    curl -sSfL "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" \
+        -o "${workdir}/uv.lock" \
+        || gha_fail "snapcraft: failed to fetch uv.lock for tag ${version} — does the tag exist upstream?"
+    snapcraft_lock_to_constraints "${workdir}/uv.lock" > "${workdir}/constraints.txt" \
+        || gha_fail "snapcraft: could not derive pip constraints from uv.lock for ${version}"
+
+    local spec="git+https://github.com/canonical/snapcraft@${version}"
+    if command -v pipx > /dev/null 2>&1; then
+        # PIP_CONSTRAINT reaches the pip inside pipx's venv, constraining
+        # the whole dependency resolve (--pip-args would not).
+        # --system-site-packages keeps the distro's python-apt visible —
+        # an isolated venv breaks snapcraft at import.
+        PIP_CONSTRAINT="${workdir}/constraints.txt" \
+            pipx install --system-site-packages "$spec" \
+            || gha_fail "snapcraft: pipx install failed for ${spec}"
+    else
+        local -a pip_args=(--user)
+        # PEP 668: Ubuntu >= 24.04 marks the system interpreter
+        # externally-managed; --user installs need the explicit opt-out.
+        local stdlib
+        stdlib=$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
+        [ -f "${stdlib}/EXTERNALLY-MANAGED" ] && pip_args+=(--break-system-packages)
+        python3 -m pip install "${pip_args[@]}" --quiet \
+            --constraint "${workdir}/constraints.txt" "$spec" \
+            || gha_fail "snapcraft: pip install failed for ${spec}"
+    fi
+    # Both pipx and pip --user land console scripts in ~/.local/bin; expose
+    # it to later workflow steps AND to this shell for the probe below.
+    gha_add_path "${HOME}/.local/bin"
+    export PATH="${HOME}/.local/bin:${PATH}"
+    # Run the CLI, don't just stat it — a missing runtime module (e.g.
+    # python-apt outside the venv) only surfaces at import time.
+    local probe
+    probe=$(snapcraft version 2>&1) \
+        || gha_fail "snapcraft: installed but 'snapcraft version' failed — ${probe}"
+    anodizer::ok "snapcraft ${version} installed via pip (upload-capable; packing snaps still needs a snapd-equipped runner)"
+}
+
 install_snapcraft() {
     case "$RUNNER_OS" in
-        Linux)   sudo snap install snapcraft --classic ;;
+        Linux)
+            if command -v snapcraft > /dev/null 2>&1; then
+                anodizer::detail "snapcraft already present ($(command -v snapcraft))"
+                return
+            fi
+            # `snap version` succeeds only when the client can reach a live
+            # snapd socket; a bare `command -v snap` would wrongly take the
+            # snap path in containers that ship the client without snapd.
+            if command -v snap > /dev/null 2>&1 && snap version > /dev/null 2>&1; then
+                sudo snap install snapcraft --classic
+            else
+                snapcraft_install_linux_pip
+            fi
+            ;;
         macOS)   brew_install snapcraft SNAPCRAFT_VERSION ;;
         Windows) skip_unsupported_os snapcraft ;;
     esac

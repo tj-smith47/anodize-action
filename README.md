@@ -387,7 +387,7 @@ following top-level keys and installs the matching tool:
 |---------------------|----------|-------|
 | `nfpm:` | `nfpm` | |
 | `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
-| `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). |
+| `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). Linux installs via snap; runners without snapd (e.g. containerised self-hosted) fall back to a pip install pinned by `SNAPCRAFT_VERSION` (default `8.14.5`) — upload-capable, but packing snaps still needs snapd. |
 | `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
 | `cmd: cosign` (any sign block) / `docker_signs:` | `cosign` | `signs:`/`binary_signs:` default to GPG (preinstalled); cosign installs only when a block sets `cmd: cosign`, plus always for `docker_signs:` (which defaults to cosign). |
 | `upx:` | `upx` | |
