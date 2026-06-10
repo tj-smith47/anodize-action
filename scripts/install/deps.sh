@@ -249,7 +249,8 @@ snapcraft_install_linux_pip() {
         command -v apt-get > /dev/null 2>&1 \
             || gha_fail "snapcraft: no snapd, and the pip fallback needs ${apt_needs[*]} (no apt-get available to install them) — preinstall snapcraft in the runner image"
         anodizer::detail "installing ${apt_needs[*]} via apt for the pip fallback"
-        sudo apt-get update -q
+        sudo apt-get update -q \
+            || gha_fail "snapcraft: apt-get update failed"
         sudo apt-get install -yq "${apt_needs[@]}" \
             || gha_fail "snapcraft: apt install of ${apt_needs[*]} failed — preinstall snapcraft (or these packages) in the runner image"
     fi
@@ -261,6 +262,10 @@ snapcraft_install_linux_pip() {
         || gha_fail "snapcraft: failed to fetch uv.lock for tag ${version} — does the tag exist upstream?"
     snapcraft_lock_to_constraints "${workdir}/uv.lock" > "${workdir}/constraints.txt" \
         || gha_fail "snapcraft: could not derive pip constraints from uv.lock for ${version}"
+    # An empty constraints file silently degrades to an unconstrained
+    # resolve — the exact failure mode the lock exists to prevent.
+    [ -s "${workdir}/constraints.txt" ] \
+        || gha_fail "snapcraft: uv.lock for ${version} yielded no constraints — lock schema changed?"
 
     local spec="git+https://github.com/canonical/snapcraft@${version}"
     if command -v pipx > /dev/null 2>&1; then
@@ -297,7 +302,10 @@ snapcraft_install_linux_pip() {
 install_snapcraft() {
     case "$RUNNER_OS" in
         Linux)
-            if command -v snapcraft > /dev/null 2>&1; then
+            # Run the CLI rather than stat it: a broken preinstall (e.g. a
+            # venv missing python-apt) must fall through to a fresh install,
+            # not pass here and die later at upload.
+            if snapcraft version > /dev/null 2>&1; then
                 anodizer::detail "snapcraft already present ($(command -v snapcraft))"
                 return
             fi

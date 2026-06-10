@@ -8,15 +8,16 @@
 # /usr/bin:/bin only) instead of inheriting the developer's full PATH —
 # /snap/bin and linuxbrew must never leak into an assertion.
 #
-# Covers seven behaviours:
+# Covers eight behaviours:
 #
-#   1. snapcraft already on PATH            → skipped, exits 0
-#   2. snapd alive                          → sudo snap install --classic
-#   3. no snapd, pipx available             → pipx install, constrained
-#   4. no snapd, no pipx                    → pip --user install, constrained
-#   5. Windows                              → skipped with a warning, exits 0
-#   6. uv.lock → constraints conversion     → dups + non-registry excluded
-#   7. uv.lock fetch failure                → loud fail, exits ≠0
+#   1. working snapcraft already on PATH    → skipped, exits 0
+#   2. BROKEN snapcraft already on PATH     → falls through to reinstall
+#   3. snapd alive                          → sudo snap install --classic
+#   4. no snapd, pipx available             → pipx install, constrained
+#   5. no snapd, no pipx                    → pip --user install, constrained
+#   6. Windows                              → skipped with a warning, exits 0
+#   7. uv.lock → constraints conversion     → dups + non-registry excluded
+#   8. uv.lock fetch failure                → loud fail, exits ≠0
 
 load test_helper
 
@@ -92,10 +93,23 @@ echo "$@" >> "$SUDO_LOG"
 exit 0
 STUB
     chmod +x "${FAKE_BIN}/sudo"
+
+    # ── Stub: apt-get — the bootstrap's `command -v apt-get` gate must pass
+    #    on any host (macOS dev boxes ship no apt-get); sudo is stubbed so
+    #    the real package manager is never reached either way ─────────────
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/apt-get"
+    chmod +x "${FAKE_BIN}/apt-get"
 }
 
 teardown() {
     common_teardown
+}
+
+# The constraints generator needs stdlib tomllib; hosts on python < 3.11
+# cannot exercise the pip-fallback paths.
+_require_tomllib() {
+    "$REAL_PYTHON" -c 'import tomllib' 2>/dev/null \
+        || skip "host python3 lacks tomllib (< 3.11)"
 }
 
 # Shared invocation wrapper. Sources scripts/install/deps.sh (source-safe —
@@ -120,7 +134,7 @@ _run_install_snapcraft() {
         "
 }
 
-# ── Test 1: snapcraft already on PATH → skipped ─────────────────────────
+# ── Test 1: working snapcraft already on PATH → skipped ─────────────────
 
 @test "snapcraft: already on PATH is skipped" {
     printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/snapcraft"
@@ -133,7 +147,33 @@ _run_install_snapcraft() {
     [ ! -s "$SUDO_LOG" ]
 }
 
-# ── Test 2: live snapd → classic snap install ────────────────────────────
+# ── Test 2: BROKEN snapcraft on PATH → falls through to reinstall ───────
+
+@test "snapcraft: broken preinstall falls through to reinstall" {
+    _require_tomllib
+    # On PATH but dying at startup (e.g. a venv missing python-apt) — the
+    # early-skip probe runs the CLI, so this must NOT short-circuit.
+    printf '#!/usr/bin/env bash\nexit 1\n' > "${FAKE_BIN}/snapcraft"
+    chmod +x "${FAKE_BIN}/snapcraft"
+
+    PIPX_LOG="${_TEST_HOME}/pipx.log"
+    cat > "${FAKE_BIN}/pipx" <<STUB
+#!/usr/bin/env bash
+echo "args=\$*" >> "${PIPX_LOG}"
+mkdir -p "\$HOME/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "\$HOME/.local/bin/snapcraft"
+chmod +x "\$HOME/.local/bin/snapcraft"
+exit 0
+STUB
+    chmod +x "${FAKE_BIN}/pipx"
+
+    _run_install_snapcraft RUNNER_OS="Linux"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"already present"* ]]
+    grep -q 'git+https://github.com/canonical/snapcraft@' "$PIPX_LOG"
+}
+
+# ── Test 3: live snapd → classic snap install ────────────────────────────
 
 @test "snapcraft: live snapd takes the snap install path" {
     # Overwrite the dead default with a live snapd probe.
@@ -145,9 +185,10 @@ _run_install_snapcraft() {
     grep -q '^snap install snapcraft --classic$' "$SUDO_LOG"
 }
 
-# ── Test 3: no snapd, pipx available → constrained pipx install ─────────
+# ── Test 4: no snapd, pipx available → constrained pipx install ─────────
 
 @test "snapcraft: no snapd installs via pipx with uv.lock constraints" {
+    _require_tomllib
     PIPX_LOG="${_TEST_HOME}/pipx.log"
     cat > "${FAKE_BIN}/pipx" <<STUB
 #!/usr/bin/env bash
@@ -171,9 +212,10 @@ STUB
     [ "$(cat "${RUNNER_TEMP_DIR}/snapcraft-pip/constraints.txt")" = "craft-application==6.2.0" ]
 }
 
-# ── Test 4: no snapd, no pipx → constrained pip --user install ──────────
+# ── Test 5: no snapd, no pipx → constrained pip --user install ──────────
 
 @test "snapcraft: no snapd and no pipx installs via pip --user" {
+    _require_tomllib
     PIP_LOG="${_TEST_HOME}/pip.log"
     # Dispatching python3 stub: intercept `-m pip`, pass everything else
     # (constraints generator, sysconfig probe) to the real interpreter.
@@ -201,7 +243,7 @@ STUB
     grep -q "^${_TEST_HOME}/.local/bin$" "$GITHUB_PATH_FILE"
 }
 
-# ── Test 5: Windows is skipped (snapcraft upload is Linux/macOS-only) ───
+# ── Test 6: Windows is skipped (snapcraft upload is Linux/macOS-only) ───
 
 @test "snapcraft: Windows is skipped, exits 0" {
     skip_called_file="${_TEST_HOME}/skip_called"
@@ -222,9 +264,10 @@ STUB
     [ -f "${skip_called_file}" ]
 }
 
-# ── Test 6: uv.lock → constraints excludes dups + non-registry ──────────
+# ── Test 7: uv.lock → constraints excludes dups + non-registry ──────────
 
 @test "snapcraft: lock-to-constraints drops forked and non-registry packages" {
+    _require_tomllib
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
         NO_COLOR=1 \
@@ -238,7 +281,7 @@ STUB
     [ "$output" = "craft-application==6.2.0" ]
 }
 
-# ── Test 7: uv.lock fetch failure → loud fail ───────────────────────────
+# ── Test 8: uv.lock fetch failure → loud fail ───────────────────────────
 
 @test "snapcraft: uv.lock fetch failure fails loudly" {
     cat > "${FAKE_BIN}/curl" <<'STUB'
