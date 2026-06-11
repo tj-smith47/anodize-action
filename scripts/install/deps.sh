@@ -324,6 +324,8 @@ install_snapcraft() {
             # Run the CLI rather than stat it: a broken preinstall (e.g. a
             # venv missing python-apt) must fall through to a fresh install,
             # not pass here and die later at upload.
+            # No unsquashfs assertion here: a preinstalled snapcraft means the
+            # runner image's build-time `command -v unsquashfs` gate already ran.
             if snapcraft version > /dev/null 2>&1; then
                 anodizer::detail "snapcraft already present ($(command -v snapcraft))"
                 return
