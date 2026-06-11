@@ -128,6 +128,12 @@ apt_flush() {
 
 # ── shared installer helpers ─────────────────────────────────────────
 
+# Returns 0 when unsquashfs is on PATH; overridable in tests to simulate
+# a runner image that lacks squashfs-tools.
+_squashfs_tools_available() {
+    command -v unsquashfs > /dev/null 2>&1
+}
+
 skip_unsupported_os() {
     local tool="$1"
     local reason="${2:-not natively supported on ${RUNNER_OS}}"
@@ -245,9 +251,18 @@ snapcraft_install_linux_pip() {
     # venv.
     python3 -c 'import apt' > /dev/null 2>&1 \
         || apt_needs+=(python3-apt)
+    # snapcraft_legacy/_store.py calls get_snap_tool_path("unsquashfs") during
+    # upload to inspect the .snap — missing squashfs-tools raises
+    # ToolMissingError() at runtime, not at install time.
+    _squashfs_tools_available \
+        || apt_needs+=(squashfs-tools)
     if [ "${#apt_needs[@]}" -gt 0 ]; then
-        command -v apt-get > /dev/null 2>&1 \
-            || gha_fail "snapcraft: no snapd, and the pip fallback needs ${apt_needs[*]} (no apt-get available to install them) — preinstall snapcraft in the runner image"
+        if ! command -v apt-get > /dev/null 2>&1; then
+            # No apt-get: fail with actionable guidance naming the missing tool.
+            _squashfs_tools_available \
+                || gha_fail "snapcraft: unsquashfs not found and no apt-get to install squashfs-tools — add squashfs-tools to your runner image"
+            gha_fail "snapcraft: no snapd, and the pip fallback needs ${apt_needs[*]} (no apt-get available to install them) — preinstall snapcraft in the runner image"
+        fi
         anodizer::detail "installing ${apt_needs[*]} via apt for the pip fallback"
         sudo apt-get update -q \
             || gha_fail "snapcraft: apt-get update failed"
@@ -296,6 +311,10 @@ snapcraft_install_linux_pip() {
     local probe
     probe=$(snapcraft version 2>&1) \
         || gha_fail "snapcraft: installed but 'snapcraft version' failed — ${probe}"
+    # Assert early: upload calls get_snap_tool_path("unsquashfs") and raises
+    # ToolMissingError() if the binary is absent — catch it at install time.
+    _squashfs_tools_available \
+        || gha_fail "snapcraft: unsquashfs not found — install squashfs-tools in the runner image (snapcraft upload requires it)"
     anodizer::ok "snapcraft ${version} installed via pip (upload-capable; packing snaps still needs a snapd-equipped runner)"
 }
 

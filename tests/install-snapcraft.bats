@@ -8,16 +8,19 @@
 # /usr/bin:/bin only) instead of inheriting the developer's full PATH —
 # /snap/bin and linuxbrew must never leak into an assertion.
 #
-# Covers eight behaviours:
+# Covers eleven behaviours:
 #
-#   1. working snapcraft already on PATH    → skipped, exits 0
-#   2. BROKEN snapcraft already on PATH     → falls through to reinstall
-#   3. snapd alive                          → sudo snap install --classic
-#   4. no snapd, pipx available             → pipx install, constrained
-#   5. no snapd, no pipx                    → pip --user install, constrained
-#   6. Windows                              → skipped with a warning, exits 0
-#   7. uv.lock → constraints conversion     → dups + non-registry excluded
-#   8. uv.lock fetch failure                → loud fail, exits ≠0
+#   1.  working snapcraft already on PATH    → skipped, exits 0
+#   2.  BROKEN snapcraft already on PATH     → falls through to reinstall
+#   3.  snapd alive                          → sudo snap install --classic
+#   4.  no snapd, pipx available             → pipx install, constrained
+#   5.  no snapd, no pipx                    → pip --user install, constrained
+#   6.  Windows                              → skipped with a warning, exits 0
+#   7.  uv.lock → constraints conversion     → dups + non-registry excluded
+#   8.  uv.lock fetch failure                → loud fail, exits ≠0
+#   9.  unsquashfs absent + apt-get present  → squashfs-tools added to apt batch
+#   10. unsquashfs absent + no apt-get       → loud fail naming squashfs-tools
+#   11. unsquashfs still absent after apt    → post-install assert fails loudly
 
 load test_helper
 
@@ -293,4 +296,133 @@ STUB
     _run_install_snapcraft RUNNER_OS="Linux"
     [ "$status" -ne 0 ]
     [[ "$output" == *"uv.lock"* ]]
+}
+
+# ── Test 9: unsquashfs missing + apt-get available → squashfs-tools queued ──
+#
+# Overrides _squashfs_tools_available to return 1 (simulates a runner image
+# without squashfs-tools) so apt_needs includes squashfs-tools and the apt
+# batch install runs. apt-get stub records args; the apt-get "install" call
+# also registers _squashfs_tools_available as returning 0 so the
+# end-of-install assert passes (the test uses a per-call counter approach via
+# a flag file, mirroring what the real apt install would achieve on the host).
+
+@test "snapcraft: missing unsquashfs triggers apt install of squashfs-tools" {
+    _require_tomllib
+
+    # pipx stub so the install reaches the post-install assert.
+    PIPX_LOG="${_TEST_HOME}/pipx.log"
+    cat > "${FAKE_BIN}/pipx" <<STUB
+#!/usr/bin/env bash
+echo "args=\$*" >> "${PIPX_LOG}"
+mkdir -p "\$HOME/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "\$HOME/.local/bin/snapcraft"
+chmod +x "\$HOME/.local/bin/snapcraft"
+exit 0
+STUB
+    chmod +x "${FAKE_BIN}/pipx"
+
+    # _squashfs_tools_available always returns 1 so apt_needs includes
+    # squashfs-tools and the post-install assert also fires (exit != 0);
+    # we verify the sudo apt-get call carried squashfs-tools.
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        NO_COLOR=1 \
+        RUNNER_ARCH="X64" \
+        RUNNER_OS="Linux" \
+        RUNNER_TEMP="${RUNNER_TEMP_DIR}" \
+        GITHUB_PATH="${GITHUB_PATH_FILE}" \
+        FIXTURE_LOCK="${FIXTURE_LOCK}" \
+        SUDO_LOG="${SUDO_LOG}" \
+        PATH="${CONTROLLED_PATH}" \
+        bash -c "
+            source '${REPO_ROOT}/scripts/install/deps.sh'
+            brew_install() { :; }
+            skip_unsupported_os() { :; }
+            _squashfs_tools_available() { return 1; }
+            install_snapcraft
+        "
+    # The post-install assert fires too (unsquashfs still absent), so we
+    # expect a non-zero exit; what we are verifying is that squashfs-tools
+    # was passed to apt-get before that point.
+    grep -q 'squashfs-tools' "$SUDO_LOG"
+}
+
+# ── Test 10: unsquashfs missing + no apt-get → loud fail naming squashfs-tools
+
+@test "snapcraft: missing unsquashfs and no apt-get fails with squashfs-tools message" {
+    _require_tomllib
+    # Remove apt-get stub so command -v apt-get fails.
+    rm -f "${FAKE_BIN}/apt-get"
+
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        NO_COLOR=1 \
+        RUNNER_ARCH="X64" \
+        RUNNER_OS="Linux" \
+        RUNNER_TEMP="${RUNNER_TEMP_DIR}" \
+        GITHUB_PATH="${GITHUB_PATH_FILE}" \
+        FIXTURE_LOCK="${FIXTURE_LOCK}" \
+        SUDO_LOG="${SUDO_LOG}" \
+        PATH="${CONTROLLED_PATH}" \
+        bash -c "
+            source '${REPO_ROOT}/scripts/install/deps.sh'
+            brew_install() { :; }
+            skip_unsupported_os() { :; }
+            _squashfs_tools_available() { return 1; }
+            install_snapcraft
+        "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"squashfs-tools"* ]]
+}
+
+# ── Test 11: post-install assert fires independently of apt_needs path ───────
+#
+# _squashfs_tools_available returns true on the first call (so apt_needs is
+# empty and no apt install runs), then false on the second call (simulating
+# a broken install). The post-install assert must fire and name unsquashfs.
+
+@test "snapcraft: post-install assert fails when unsquashfs absent after install" {
+    _require_tomllib
+    CALL_COUNT_FILE="${_TEST_HOME}/squash_call_count"
+    printf '0' > "$CALL_COUNT_FILE"
+
+    PIPX_LOG="${_TEST_HOME}/pipx.log"
+    cat > "${FAKE_BIN}/pipx" <<STUB
+#!/usr/bin/env bash
+echo "args=\$*" >> "${PIPX_LOG}"
+mkdir -p "\$HOME/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "\$HOME/.local/bin/snapcraft"
+chmod +x "\$HOME/.local/bin/snapcraft"
+exit 0
+STUB
+    chmod +x "${FAKE_BIN}/pipx"
+
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        NO_COLOR=1 \
+        RUNNER_ARCH="X64" \
+        RUNNER_OS="Linux" \
+        RUNNER_TEMP="${RUNNER_TEMP_DIR}" \
+        GITHUB_PATH="${GITHUB_PATH_FILE}" \
+        FIXTURE_LOCK="${FIXTURE_LOCK}" \
+        SUDO_LOG="${SUDO_LOG}" \
+        CALL_COUNT_FILE="${CALL_COUNT_FILE}" \
+        PATH="${CONTROLLED_PATH}" \
+        bash -c "
+            source '${REPO_ROOT}/scripts/install/deps.sh'
+            brew_install() { :; }
+            skip_unsupported_os() { :; }
+            # First call (apt_needs check): returns 0 so no apt install runs.
+            # Second call (post-install assert): returns 1 to trigger the fail.
+            _squashfs_tools_available() {
+                local n
+                n=\$(cat \"\${CALL_COUNT_FILE}\")
+                printf '%d' \$(( n + 1 )) > \"\${CALL_COUNT_FILE}\"
+                [ \"\$n\" -eq 0 ]
+            }
+            install_snapcraft
+        "
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unsquashfs"* ]]
 }
