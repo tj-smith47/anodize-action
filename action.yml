@@ -305,6 +305,19 @@ outputs:
       version-sync bump commit, or the original HEAD when no bump was needed).
       Check this out in downstream jobs so the tree matches the tag.
     value: ${{ steps.outputs.outputs.head-sha }}
+  irreversibly_published:
+    description: >
+      `'true'` when the run's summary (`dist/run-*/summary.json`, or
+      `dist/<crate>/run-*/summary.json` in per-crate workspaces) records a
+      one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...)
+      whose publish landed — the version is burned at a registry that never
+      accepts the same version twice, so a tag rollback can only orphan the
+      live release, never enable a clean same-version re-cut. `'false'` when
+      only reversible publishers (github-release assets, blobs,
+      tap/bucket/index commits) succeeded, or when nothing was proven
+      published (including when no summary exists). Gate destructive recovery
+      steps on this: `if: steps.<id>.outputs.irreversibly_published != 'true'`.
+    value: ${{ steps.outputs.outputs.irreversibly_published }}
 
 runs:
   using: "composite"
@@ -638,8 +651,15 @@ runs:
     # -------------------------------------------------------------------------
     # Outputs
     # -------------------------------------------------------------------------
+    # always(): outputs must be collected even when "Run anodizer" fails —
+    # the `irreversibly_published` output exists precisely so a FAILED
+    # release run can tell its workflow whether a one-way-door publisher
+    # already burned the version before any rollback fires. Default
+    # success() gating here would skip this step on failure and leave
+    # `irreversibly_published` empty, which a rollback gate reads as
+    # "nothing burned".
     - name: Collect outputs
-      if: inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
+      if: always() && inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
       id: outputs
       shell: bash
       working-directory: ${{ inputs.workdir }}

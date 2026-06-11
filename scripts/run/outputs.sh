@@ -92,3 +92,38 @@ fi
 # commit, or the original HEAD when no bump was needed), so downstream jobs can
 # check out exactly what the tag points at.
 gha_set_output head-sha "$(git rev-parse HEAD 2>/dev/null || true)"
+
+# irreversibly_published: "true" when any run summary under dist shows
+# a one-way-door (Submitter group) publisher whose publish landed —
+# registries like crates.io / chocolatey / winget / snapcraft never
+# accept the same version twice, so the version is burned and a tag
+# rollback can never lead to a clean same-version re-cut. Workflows
+# gate destructive recovery steps (`anodizer tag rollback`) on this.
+# Reversible publishers (github-release assets, blobs, tap/bucket/index
+# commits) do NOT set it: their state can be deleted and the same
+# version re-cut, so rollback stays available even after they succeed.
+# Scans the flat layout (dist/run-*/summary.json) AND the per-crate
+# layout (dist/<crate>/run-*/summary.json); ANY burn evidence anywhere
+# flips to true — a false "true" (skip rollback, operator triages) is
+# strictly safer than a false "false" (destroy published state).
+# Summaries older than the top-level irreversibly_published flag fall
+# back to the per-result rows: group Submitter with any status other
+# than "failed" / "skipped-*" means the publish landed (even
+# "rolled-back" — a cargo yank does not reopen the version slot).
+# No summary at all → "false" (nothing proven burned).
+irreversibly_published=false
+for f in "${dist}"/run-*/summary.json "${dist}"/*/run-*/summary.json; do
+    [ -f "$f" ] || continue
+    if jq -e '
+        (.irreversibly_published // false) or
+        ((.results // [])
+         | map(select(.group == "Submitter"
+                      and .status != "failed"
+                      and (.status | startswith("skipped-") | not)))
+         | length > 0)
+    ' "$f" >/dev/null 2>&1; then
+        irreversibly_published=true
+        break
+    fi
+done
+gha_set_output irreversibly_published "$irreversibly_published"
