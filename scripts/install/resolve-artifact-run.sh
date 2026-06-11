@@ -63,26 +63,34 @@ run_has_artifact() {
     [ "$count" != "0" ]
 }
 
+# Each resolver returns its result in RUN_ID rather than on stdout: the
+# resolvers emit ::notice:: lines, and a command substitution would capture
+# those into the value (the runner then queries runs/NaN/artifacts).
+RUN_ID=""
+
 # Phase 1 — exact-SHA fast path.
 resolve_fast() {
-    find_run '.conclusion=="success"' "$COMMIT_SHA" "$deref_sha"
+    RUN_ID=$(find_run '.conclusion=="success"' "$COMMIT_SHA" "$deref_sha")
 }
 
-# Phase 2 — walk up to 5 parents looking for a successful run.
+# Phase 2 — walk up to 5 parents looking for a successful run. Parents come
+# from the commits API, not local git: checkout defaults to fetch-depth 1,
+# where rev-parse SHA~1 has nothing to resolve against.
 resolve_parents() {
-    local depth parent_sha id
+    local depth cur="$deref_sha" id
     gha_notice "No CI run for exact SHA; checking parent commits"
     for depth in 1 2 3 4 5; do
-        parent_sha=$(git rev-parse "${deref_sha}~${depth}" 2>/dev/null || echo "")
-        [ -z "$parent_sha" ] && break
-        id=$(find_run '.conclusion=="success"' "$parent_sha" "")
+        cur=$(gh api "repos/${REPO}/commits/${cur}" --jq '.parents[0].sha // empty' \
+            2>/dev/null || echo "")
+        [ -z "$cur" ] && break
+        id=$(find_run '.conclusion=="success"' "$cur" "")
         if [ -n "$id" ]; then
-            gha_notice "Found CI run ${id} at parent ~${depth} (${parent_sha})"
-            echo "$id"
+            gha_notice "Found CI run ${id} at parent ~${depth} (${cur})"
+            RUN_ID="$id"
             return 0
         fi
     done
-    echo ""
+    RUN_ID=""
 }
 
 # Phase 3 — exponential-backoff poll. Accepts an in-progress run once its
@@ -93,7 +101,7 @@ resolve_polling() {
     while [ $attempt -le $max_attempts ]; do
         id=$(find_run '.conclusion=="success"' "$COMMIT_SHA" "$deref_sha")
         if [ -n "$id" ]; then
-            echo "$id"
+            RUN_ID="$id"
             return 0
         fi
 
@@ -104,7 +112,7 @@ resolve_polling() {
         in_progress=$(find_run '(.status=="in_progress" or .status=="queued") and (.conclusion==null or .conclusion=="")' "$COMMIT_SHA" "$deref_sha")
         if [ -n "$in_progress" ] && run_has_artifact "$in_progress"; then
             gha_notice "Accepting in-progress run $in_progress (artifact $FROM_ARTIFACT already uploaded)"
-            echo "$in_progress"
+            RUN_ID="$in_progress"
             return 0
         fi
 
@@ -114,7 +122,7 @@ resolve_polling() {
         next=$((sleep_secs * 2))
         sleep_secs=$((next > 30 ? 30 : next))
     done
-    echo ""
+    RUN_ID=""
 }
 
 gha_section Resolving "${ARTIFACT_WORKFLOW} artifact for ${COMMIT_SHA}"
@@ -124,9 +132,10 @@ anodizer::kv artifact "${FROM_ARTIFACT}"
 # Dereference once up front so annotated tag SHAs work too.
 deref_sha=$(git rev-parse "${COMMIT_SHA}^{commit}" 2>/dev/null || echo "$COMMIT_SHA")
 
-run_id=$(resolve_fast)
-[ -z "$run_id" ] && run_id=$(resolve_parents)
-[ -z "$run_id" ] && run_id=$(resolve_polling)
+resolve_fast
+[ -z "$RUN_ID" ] && resolve_parents
+[ -z "$RUN_ID" ] && resolve_polling
+run_id="$RUN_ID"
 
 if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
     gha_fail "Could not find a successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
