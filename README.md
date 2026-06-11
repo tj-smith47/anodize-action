@@ -468,7 +468,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
 | `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on this for single-crate / lockstep repos. |
 | `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target). Check this out in downstream jobs so the tree matches the tag. |
-| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned at a registry that never accepts the same version twice. `'false'` when only reversible publishers succeeded or nothing was proven published. Gate destructive recovery on it: `if: failure() && steps.<id>.outputs.irreversibly_published != 'true'`. Collected with `always()`, so it is set even when the release step failed. |
+| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned at a registry that never accepts the same version twice. `'false'` when only reversible publishers succeeded or nothing was proven published. Gate destructive recovery on it: `if: always() && (steps.<id>.outcome == 'failure' || steps.<id>.outcome == 'cancelled') && steps.<id>.outputs.irreversibly_published != 'true'`. Collected with `always()`, so it is set even when the release step failed or was cancelled. |
 
 ## Build provenance (SLSA attestations)
 

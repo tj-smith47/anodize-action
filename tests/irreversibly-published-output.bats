@@ -20,13 +20,16 @@
 load test_helper
 
 # Run the real outputs.sh inside a fresh git repo whose dist/ the caller
-# has populated via _write_summary. Echoes the resulting GITHUB_OUTPUT.
+# has populated via _write_summary. Optional $1 is seeded into the
+# captured stdout log (e.g. a "new_tag=v1.0.0" marker line). Echoes the
+# resulting GITHUB_OUTPUT.
 _run_outputs() {
     local workdir="${_TEST_HOME}/repo"
     local log_file="${_TEST_HOME}/stdout.log"
     local github_output="${_TEST_HOME}/github-output"
 
     : > "$log_file"
+    [ $# -ge 1 ] && printf '%s\n' "$1" > "$log_file"
     : > "$github_output"
 
     (
@@ -34,6 +37,34 @@ _run_outputs() {
         ANODIZER_STDOUT_LOG="$log_file" GITHUB_OUTPUT="$github_output" \
             bash "${BATS_TEST_DIRNAME}/../scripts/run/outputs.sh"
     )
+    cat "$github_output"
+}
+
+# Same, but on a minimal PATH that deliberately lacks jq (everything
+# else outputs.sh needs is symlinked in), capturing stdout so the
+# ::warning:: annotation is assertable alongside GITHUB_OUTPUT.
+_run_outputs_without_jq() {
+    local workdir="${_TEST_HOME}/repo"
+    local log_file="${_TEST_HOME}/stdout.log"
+    local github_output="${_TEST_HOME}/github-output"
+    local stub="${_TEST_HOME}/no-jq-bin"
+
+    rm -rf "$stub"
+    mkdir -p "$stub"
+    local tool
+    for tool in bash git grep sed tr head tail cat dirname cut; do
+        ln -s "$(command -v "$tool")" "$stub/$tool"
+    done
+
+    : > "$log_file"
+    : > "$github_output"
+
+    (
+        cd "$workdir"
+        PATH="$stub" ANODIZER_STDOUT_LOG="$log_file" GITHUB_OUTPUT="$github_output" \
+            "$stub/bash" "${BATS_TEST_DIRNAME}/../scripts/run/outputs.sh" 2>/dev/null
+    )
+    echo "---GITHUB_OUTPUT---"
     cat "$github_output"
 }
 
@@ -162,4 +193,46 @@ _field() { grep "^$1=" | tail -1 | cut -d= -f2-; }
     _write_summary "run-v1.0.0" '{"results": []}'
     out="$(_run_outputs)"
     [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'false' ]
+}
+
+@test "irreversibly_published: tag filter — stale summary for another tag is ignored" {
+    # This run cut v2.0.0; the only burned summary on disk is the
+    # previous version's. It must not block v2.0.0's recovery (same
+    # .tag keying as anodizer's in-binary rollback guard).
+    _init_repo
+    _write_summary "run-v1.0.0" '{"tag": "v1.0.0", "irreversibly_published": true, "results": []}'
+    out="$(_run_outputs 'new_tag=v2.0.0')"
+    [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'false' ]
+}
+
+@test "irreversibly_published: tag filter — matching burned summary flips true" {
+    _init_repo
+    _write_summary "run-v1.0.0" '{"tag": "v1.0.0", "irreversibly_published": true, "results": []}'
+    _write_summary "run-v2.0.0" '{"tag": "v2.0.0", "irreversibly_published": true, "results": []}'
+    out="$(_run_outputs 'new_tag=v2.0.0')"
+    [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'true' ]
+}
+
+@test "irreversibly_published: no tag marker scans all summaries (publish-only runs)" {
+    # release --publish-only never prints new_tag=; with no expected
+    # tag, any burned summary must still block.
+    _init_repo
+    _write_summary "run-v1.0.0" '{"tag": "v1.0.0", "irreversibly_published": true, "results": []}'
+    out="$(_run_outputs)"
+    [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'true' ]
+}
+
+@test "irreversibly_published: missing jq with summaries present fails closed with a warning" {
+    _init_repo
+    _write_summary "run-v1.0.0" '{"tag": "v1.0.0", "irreversibly_published": false, "results": []}'
+    out="$(_run_outputs_without_jq)"
+    [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'true' ]
+    printf '%s' "$out" | grep -q '::warning::jq not found'
+}
+
+@test "irreversibly_published: missing jq with no summaries stays false without warning" {
+    _init_repo
+    out="$(_run_outputs_without_jq)"
+    [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'false' ]
+    ! printf '%s' "$out" | grep -q '::warning::jq not found'
 }

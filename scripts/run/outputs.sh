@@ -93,7 +93,7 @@ fi
 # check out exactly what the tag points at.
 gha_set_output head-sha "$(git rev-parse HEAD 2>/dev/null || true)"
 
-# irreversibly_published: "true" when any run summary under dist shows
+# irreversibly_published: "true" when a run summary under dist shows
 # a one-way-door (Submitter group) publisher whose publish landed —
 # registries like crates.io / chocolatey / winget / snapcraft never
 # accept the same version twice, so the version is burned and a tag
@@ -103,24 +103,42 @@ gha_set_output head-sha "$(git rev-parse HEAD 2>/dev/null || true)"
 # commits) do NOT set it: their state can be deleted and the same
 # version re-cut, so rollback stays available even after they succeed.
 # Scans the flat layout (dist/run-*/summary.json) AND the per-crate
-# layout (dist/<crate>/run-*/summary.json); ANY burn evidence anywhere
-# flips to true — a false "true" (skip rollback, operator triages) is
-# strictly safer than a false "false" (destroy published state).
-# Summaries older than the top-level irreversibly_published flag fall
-# back to the per-result rows: group Submitter with any status other
-# than "failed" / "skipped-*" means the publish landed (even
-# "rolled-back" — a cargo yank does not reopen the version slot).
-# No summary at all → "false" (nothing proven burned).
+# layout (dist/<crate>/run-*/summary.json). When this run cut a tag
+# (new_tag above), only summaries whose .tag matches it count — same
+# keying as anodizer's in-binary rollback guard — so a stale summary
+# from an earlier version cannot block recovery of the current one; a
+# run with no tag marker scans everything (e.g. release --publish-only,
+# where the per-crate layouts make any single expected tag ambiguous).
+# OR-fold across matching summaries: ANY burned crate blocks. A false
+# "true" (skip rollback, operator triages) is strictly safer than a
+# false "false" (destroy published state). Summaries older than the
+# top-level irreversibly_published flag fall back to the per-result
+# rows: group Submitter with any status other than "failed" /
+# "skipped-*" means the publish landed (even "rolled-back" — a cargo
+# yank does not reopen the version slot). No summary at all → "false"
+# (nothing proven burned).
 irreversibly_published=false
+have_jq=true
+command -v jq >/dev/null 2>&1 || have_jq=false
 for f in "${dist}"/run-*/summary.json "${dist}"/*/run-*/summary.json; do
     [ -f "$f" ] || continue
-    if jq -e '
-        (.irreversibly_published // false) or
-        ((.results // [])
-         | map(select(.group == "Submitter"
-                      and .status != "failed"
-                      and (.status | startswith("skipped-") | not)))
-         | length > 0)
+    # Summaries exist but jq can't read them: fail CLOSED. Reporting
+    # "false" here would green-light a rollback with evidence sitting
+    # unread on disk.
+    if [ "$have_jq" != true ]; then
+        gha_warning "jq not found on PATH; run summaries exist under '${dist}' but cannot be inspected — reporting irreversibly_published=true (conservative). Install jq to get a real verdict."
+        irreversibly_published=true
+        break
+    fi
+    if jq -e --arg tag "$new_tag" '
+        (($tag == "") or (.tag == $tag)) and (
+            (.irreversibly_published // false) or
+            ((.results // [])
+             | map(select(.group == "Submitter"
+                          and .status != "failed"
+                          and (.status | startswith("skipped-") | not)))
+             | length > 0)
+        )
     ' "$f" >/dev/null 2>&1; then
         irreversibly_published=true
         break
