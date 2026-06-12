@@ -16,8 +16,9 @@ inputs:
       literal "nightly" (newest release whose tag matches `*-nightly`,
       i.e. `vX.Y.Z-<sha>-nightly`). Semver ranges such as "~> v2" are NOT
       supported — pass an explicit tag, "latest", "nightly", or use
-      `from-artifact` / `from-source`. Ignored when `from-artifact` or
-      `from-source` is set.
+      `from-artifact` / `from-source`. Must not be combined with
+      `from-artifact`, `from-source`, or `from-branch` — the action fails
+      when an explicit version is set alongside any of them.
     default: "latest"
     required: false
   from-artifact:
@@ -73,7 +74,9 @@ inputs:
     required: false
   auto-install:
     description: >
-      Parse `.anodizer.yaml` in the workdir and automatically install the
+      Parse the anodizer config in the workdir (`.anodizer.yaml` or any
+      of the binary's other discovery candidates, including the TOML
+      variants) and automatically install the
       dependencies needed by the configured stages (nfpm, makeself, snapcraft,
       rpmbuild for srpm, cosign for any sign block whose cmd is cosign and for
       docker_signs:, syft for sboms, nsis, create-dmg, flatpak-builder, upx,
@@ -118,14 +121,19 @@ inputs:
   # ---------------------------------------------------------------------------
   upload-dist:
     description: >
-      Upload dist/ as a workflow artifact after running anodizer. Set to "true"
-      in split build jobs. The artifact name defaults to "dist-$RUNNER_OS".
+      Upload the dist tree (the configured `dist:` directory, default
+      `dist/`) as a workflow artifact named "dist-$RUNNER_OS" after running
+      anodizer. Set to "true" in split build jobs. With
+      `preserve-dist: 'true'` it instead uploads `preserved-dist/` as
+      "dist-<shard-label>", so same-OS shards on a determinism matrix
+      don't collide.
     default: "false"
     required: false
   download-dist:
     description: >
       Download and merge dist-* artifacts before running anodizer. Set to "true"
-      in merge jobs. Merges all artifacts matching "dist-*" into dist/.
+      in merge jobs. Merges all artifacts matching "dist-*" into the dist tree
+      (the configured `dist:` directory, default `dist/`).
     default: "false"
     required: false
 
@@ -185,8 +193,10 @@ inputs:
     description: >
       Run the determinism harness (`anodizer check determinism`) on this shard.
       When true, the action: installs Rust (if not already), builds anodizer
-      from source, installs cross-build deps (zig, cargo-zigbuild, upx) on
-      Linux, derives the configured-target CSV for the current RUNNER_OS via
+      from source, installs the harness dependency set (zig, cargo-zigbuild,
+      upx, nfpm, makeself, snapcraft, syft, cosign on Linux; upx, syft,
+      cosign on macOS/Windows), derives the configured-target CSV for the
+      current RUNNER_OS via
       `anodizer targets --json`, `rustup target add`s those triples, and
       invokes the harness. Intended to be the entire body of a per-OS
       harness shard on a 3-OS matrix [ubuntu-latest, macos-latest,
@@ -205,7 +215,10 @@ inputs:
       macOS and Windows get `build,source,upx,archive,sbom,sign,checksum`
       (no nfpm/makeself/snapcraft — apt is Linux-only and apk/deb/rpm
       signing isn't provisioned on the non-Linux shards). Explicit
-      values override.
+      values override. Beyond the default set the harness also accepts
+      `cargo-package`, `docker`, `msi`, `nsis`, `dmg`, `pkg`, `srpm`, and
+      the `installers` family selector (expands to
+      nfpm,makeself,srpm,msi,nsis,dmg,pkg).
     default: ""
     required: false
   determinism-targets:
@@ -264,8 +277,8 @@ outputs:
   split-matrix:
     description: >
       JSON matrix for `strategy.matrix` covering all configured build targets.
-      Produced from `.anodizer.yaml` when `install-only: true`. Each entry has
-      `os`, `target`, and `artifact` fields.
+      Produced from the anodizer config when `install-only: true`. Each entry
+      has `os`, `target`, and `artifact` fields.
     value: ${{ steps.split-matrix.outputs.matrix }}
   crates:
     description: >
@@ -305,7 +318,7 @@ outputs:
       version-sync bump commit, or the original HEAD when no bump was needed).
       Check this out in downstream jobs so the tree matches the tag.
     value: ${{ steps.outputs.outputs.head-sha }}
-  irreversibly_published:
+  irreversibly-published:
     description: >
       `'true'` when the run's summary (`dist/run-*/summary.json`, or
       `dist/<crate>/run-*/summary.json` in per-crate workspaces) records a
@@ -319,7 +332,13 @@ outputs:
       default failure handling is anodizer's in-process `release.on_failure`
       policy, which already refuses to roll back past one-way doors. Workflows
       adding a custom destructive recovery step must gate it on this output:
-      `if: steps.<id>.outputs.irreversibly_published != 'true'`.
+      `if: steps.<id>.outputs.irreversibly-published != 'true'`.
+    value: ${{ steps.outputs.outputs.irreversibly_published }}
+  irreversibly_published:
+    description: >
+      Deprecated snake_case alias of `irreversibly-published` (same value);
+      retained so existing workflows keep working. New workflows should
+      read `irreversibly-published`.
     value: ${{ steps.outputs.outputs.irreversibly_published }}
 
 runs:
@@ -576,11 +595,21 @@ runs:
     # -------------------------------------------------------------------------
     # Split artifact handling
     # -------------------------------------------------------------------------
+    # Resolve the configured dist directory once; the artifact download /
+    # upload `uses:` steps below can't source the shell resolver, so they
+    # consume this step's output instead of hardcoding `dist/`.
+    - name: Resolve dist directory
+      if: inputs.download-dist == 'true' || inputs.upload-dist == 'true'
+      id: dist
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      run: "${GITHUB_ACTION_PATH}/scripts/run/resolve-dist-dir.sh"
+
     - name: Download split artifacts
       if: inputs.download-dist == 'true'
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
-        path: ${{ inputs.workdir }}/dist/
+        path: ${{ steps.dist.outputs.path }}/
         pattern: dist-*
         merge-multiple: true
 
@@ -672,7 +701,7 @@ runs:
 
     # -------------------------------------------------------------------------
     # Build provenance (SLSA) — when anodizer ran in the default `subjects`
-    # attestation mode it left dist[/<crate>].attestation-subjects.json. Flatten
+    # attestation mode it left dist/[<crate>.]attestation-subjects.json. Flatten
     # those subjects into a checksums file and mint a GitHub-trusted, OIDC-backed
     # SLSA attestation over them; anodizer itself never holds an attestation key.
     # Producing the manifest is the opt-in, so consumers only set
@@ -693,11 +722,14 @@ runs:
         subject-checksums: ${{ steps.attest-subjects.outputs.checksums }}
 
     # -------------------------------------------------------------------------
-    # Upload split artifacts (for split build jobs)
+    # Upload split artifacts (for split build jobs). With preserve-dist the
+    # harness's byte-stable tree under preserved-dist/ is what downstream
+    # publish jobs need, and the per-shard label keeps same-OS shards from
+    # colliding on the artifact name.
     # -------------------------------------------------------------------------
     - name: Upload split artifacts
       if: inputs.upload-dist == 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: dist-${{ runner.os }}
-        path: ${{ inputs.workdir }}/dist/
+        name: ${{ inputs.preserve-dist == 'true' && format('dist-{0}', inputs.shard-label) || format('dist-{0}', runner.os) }}
+        path: ${{ inputs.preserve-dist == 'true' && format('{0}/preserved-dist/', inputs.workdir) || format('{0}/', steps.dist.outputs.path) }}
