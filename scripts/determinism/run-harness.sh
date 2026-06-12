@@ -33,17 +33,9 @@ if [ -n "$CRATE" ]; then
     extra_args+=(--crate="$CRATE")
 fi
 
-anodizer::verb Checking "determinism"
-anodizer::kv targets "$TARGETS"
-anodizer::kv stages "$stages"
-anodizer::kv runs "$RUNS"
-if [ "$PRESERVE_DIST" = "true" ]; then
-    anodizer::kv preserve-dist ./preserved-dist
-fi
-if [ -n "$CRATE" ]; then
-    anodizer::kv crate "$CRATE"
-fi
-
+# No header/parameter echo here: the binary's own "Checking determinism"
+# group prints targets/stages/runs/preserve-dist/crate with one formatter.
+# Echoing them from the wrapper too doubled the header in release logs.
 anodizer check determinism \
     --stages="$stages" \
     --runs="$RUNS" \
