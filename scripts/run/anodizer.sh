@@ -25,18 +25,24 @@
 # resembles a marker contaminate the parsed output.
 set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
+source "${GITHUB_ACTION_PATH}/scripts/lib/config.sh"
 
-# Predicate: is dist/ holding context manifests we must preserve across a
-# retry? `context.json` (or `context-<shard>.json`) at root or in any
-# first-level subdir signals a split-build input / per-crate preserved-dist
-# tree consumed by `release --merge` / `release --publish-only`; wiping
-# it would turn a transient failure into an unrecoverable one.
+# The configured output tree (default `dist`); custom `dist:` values must
+# steer the retry cleanup too, or a retry would wipe the wrong directory.
+dist_dir=$(resolve_dist_dir)
+
+# Predicate: is the dist tree holding context manifests we must preserve
+# across a retry? `context.json` (or `context-<shard>.json`) at root or in
+# any first-level subdir signals a split-build input / per-crate
+# preserved-dist tree consumed by `release --merge` /
+# `release --publish-only`; wiping it would turn a transient failure into
+# an unrecoverable one.
 has_preserved_context() {
-    [ -d "./dist" ] || return 1
-    [ -f "./dist/context.json" ] && return 0
-    ls ./dist/context-*.json >/dev/null 2>&1 && return 0
+    [ -d "$dist_dir" ] || return 1
+    [ -f "${dist_dir}/context.json" ] && return 0
+    ls "${dist_dir}"/context-*.json >/dev/null 2>&1 && return 0
     local d
-    for d in ./dist/*/; do
+    for d in "${dist_dir}"/*/; do
         [ -d "$d" ] || continue
         ls "${d}context"*.json >/dev/null 2>&1 && return 0
     done
@@ -45,20 +51,20 @@ has_preserved_context() {
 
 # Wipe generated artifacts between retries to prevent "already exists"
 # collisions, giving a non-preserved retry a clean rebuild. Deletion is
-# confined to `./dist`: top-level files at `./dist` are removed, and each
-# `./dist/<crate>/` subdir is recursively cleared of files (nested per-crate
+# confined to the dist tree: top-level files are removed, and each
+# `<dist>/<crate>/` subdir is recursively cleared of files (nested per-crate
 # trees like `_preserved-bin/<triple>/` and sub-manifests are legitimately
 # deep, so the subdir sweep has no -maxdepth). Directories are left in place;
-# the loop only iterates direct `./dist/*/` children. `find` does not follow
+# the loop only iterates direct `<dist>/*/` children. `find` does not follow
 # symlinks (no -L), so a symlinked file or dir is -type l, never -type f and
 # never descended into — deletion cannot escape the tree. The whole function
 # is skipped when preserved-dist manifests are present (see caller), so
 # --publish-only inputs are never touched.
 cleanup_dist() {
-    [ -d "./dist" ] || return 0
-    find ./dist -maxdepth 1 -type f -delete 2>/dev/null || true
+    [ -d "$dist_dir" ] || return 0
+    find "$dist_dir" -maxdepth 1 -type f -delete 2>/dev/null || true
     local d
-    for d in ./dist/*/; do
+    for d in "${dist_dir}"/*/; do
         [ -d "$d" ] || continue
         find "$d" -type f -delete 2>/dev/null || true
     done

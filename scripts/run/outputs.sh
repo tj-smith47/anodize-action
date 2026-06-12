@@ -11,6 +11,7 @@
 #     downstream `fromJson()` callers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
 
 # Heredoc-frame a file into a multi-line step output. Caller passes the
 # output key and the file path.
@@ -38,17 +39,6 @@ emit_marker_output() {
         fi
     fi
     gha_set_output "$key" "$value"
-}
-
-resolve_dist_dir() {
-    local cfg d
-    for cfg in .anodizer.yaml .anodizer.yml anodizer.yaml anodizer.yml; do
-        [ -f "$cfg" ] || continue
-        d=$(grep -E '^dist:' "$cfg" | head -1 | sed 's/^dist:\s*//' | tr -d '"' | tr -d "'")
-        [ -n "$d" ] && { echo "$d"; return; }
-        break
-    done
-    echo "dist"
 }
 
 dist=$(resolve_dist_dir)

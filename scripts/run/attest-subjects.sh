@@ -16,19 +16,25 @@
 # enabled, so the output is left empty and the caller's attest step gates off.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
+
+dist=$(resolve_dist_dir)
 
 shopt -s nullglob
-manifests=(dist/*attestation-subjects.json)
+manifests=("${dist}"/*attestation-subjects.json)
 if [ ${#manifests[@]} -eq 0 ]; then
-    anodizer::step "no attestation subjects manifest in dist/; attestations not enabled"
+    anodizer::step "no attestation subjects manifest in ${dist}/; attestations not enabled"
     gha_set_output checksums ""
     gha_set_output count 0
     exit 0
 fi
 
 # Absolute path: the attest step runs at $GITHUB_WORKSPACE, not this script's
-# working-directory (inputs.workdir), so a relative dist/ path would not resolve.
-checksums="$(pwd)/dist/attestation-subjects.sha256"
+# working-directory (inputs.workdir), so a relative dist path would not resolve.
+case "$dist" in
+    /*) checksums="${dist}/attestation-subjects.sha256" ;;
+    *)  checksums="$(pwd)/${dist}/attestation-subjects.sha256" ;;
+esac
 {
     for m in "${manifests[@]}"; do
         jq -r '.[] | "\(.digest.sha256)  \(.name)"' "$m"
