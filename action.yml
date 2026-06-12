@@ -315,8 +315,11 @@ outputs:
       live release, never enable a clean same-version re-cut. `'false'` when
       only reversible publishers (github-release assets, blobs,
       tap/bucket/index commits) succeeded, or when nothing was proven
-      published (including when no summary exists). Gate destructive recovery
-      steps on this: `if: steps.<id>.outputs.irreversibly_published != 'true'`.
+      published (including when no summary exists). Forensic signal: the
+      default failure handling is anodizer's in-process `release.on_failure`
+      policy, which already refuses to roll back past one-way doors. Workflows
+      adding a custom destructive recovery step must gate it on this output:
+      `if: steps.<id>.outputs.irreversibly_published != 'true'`.
     value: ${{ steps.outputs.outputs.irreversibly_published }}
 
 runs:

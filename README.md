@@ -58,11 +58,45 @@ The SchemaStore publisher pushes the updated catalog/schema to a fork of
 `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` fallback) must be a PAT that can push to
 your fork and open a pull request against the upstream repository.
 
-### Rollback on release failure
+### Preflight and failure handling — in-process, no extra steps
 
-The action does not provide an opt-in input for rollback — it's a separate step
-you add to your workflow. This keeps the action's scope small and lets you
-control the exact recovery shape (mode, scope, branch override).
+The release step is self-contained. `anodizer release` runs a config-derived
+environment preflight before any stage (required tools, secrets, endpoint
+reachability, parseable key material) and, on a pipeline failure, executes the
+`release.on_failure` policy inside the binary — rolling back the tag and
+version-bump commit by default, auto-degrading to `hold` once any one-way-door
+publisher (crates.io, chocolatey, winget, snapcraft, ...) has landed. Failure
+policy is config, not workflow YAML:
+
+```yaml
+# .anodizer.yaml
+release:
+  on_failure: rollback   # rollback | hold; default rollback
+```
+
+To prove a runner can cut the release before a real tag is in flight — a
+scheduled canary, or debugging a missing-secret failure — run the same engine
+standalone:
+
+```yaml
+- uses: tj-smith47/anodizer-action@v1
+  with:
+    args: preflight --publish-only
+  env:
+    # same secret env block as the release job
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+```
+
+### Manual recovery (advanced)
+
+A run killed before the binary could execute its own policy (runner eviction,
+cancellation), or one held by `on_failure: hold`, is recovered by hand with
+`anodizer tag rollback` / `anodizer release --rollback-only`. `tag rollback`
+reads the run summaries itself and refuses when the version is burned at a
+one-way-door publisher (override with `--force`).
+
+Workflows that wire their own destructive recovery step must gate it on the
+`irreversibly_published` output so it never destroys a live release:
 
 ```yaml
 - name: Run anodizer release
@@ -72,18 +106,16 @@ control the exact recovery shape (mode, scope, branch override).
     args: release
     # ... other inputs ...
 
-- name: Rollback on release failure
-  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+- name: Custom recovery
+  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
   env:
     GH_TOKEN: ${{ secrets.GH_PAT }}
     GITHUB_TOKEN: ${{ secrets.GH_PAT }}
   run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
-- `id: release` is required so the rollback step's `if:` can reference
-  `steps.release.outcome`.
-- The condition fires on both `failure()` and `cancelled()` — a cancelled run
-  may have left a half-published tag behind.
+- `id: release` is what makes `steps.release.outcome` and
+  `steps.release.outputs.irreversibly_published` resolvable.
 - `anodizer tag rollback "$GITHUB_SHA"` auto-derives the branch from the bump
   SHA, so no `--branch` flag is needed in the common case (a release workflow
   triggered by an `anodizer tag` push).
@@ -468,7 +500,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 | `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
 | `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on this for single-crate / lockstep repos. |
 | `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target). Check this out in downstream jobs so the tree matches the tag. |
-| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned at a registry that never accepts the same version twice. `'false'` when only reversible publishers succeeded or nothing was proven published. Gate destructive recovery on it: `if: always() && (steps.<id>.outcome == 'failure' || steps.<id>.outcome == 'cancelled') && steps.<id>.outputs.irreversibly_published != 'true'`. Collected with `always()`, so it is set even when the release step failed or was cancelled. |
+| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned at a registry that never accepts the same version twice. `'false'` when only reversible publishers succeeded or nothing was proven published. Forensic signal: the default failure handling is anodizer's in-process `release.on_failure` policy, which already refuses to roll back past one-way doors, so most workflows never read this. Workflows adding a [custom destructive recovery step](#manual-recovery-advanced) must gate on it: `if: always() && (steps.<id>.outcome == 'failure' || steps.<id>.outcome == 'cancelled') && steps.<id>.outputs.irreversibly_published != 'true'`. Collected with `always()`, so it is set even when the release step failed or was cancelled. |
 
 ## Build provenance (SLSA attestations)
 
