@@ -4,9 +4,9 @@ GitHub Action for [Anodizer](https://github.com/tj-smith47/anodizer), a
 Rust-native release automation tool inspired by GoReleaser.
 
 The action installs anodizer (cached per version), auto-installs pipeline
-dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, zig,
-cargo-zigbuild, upx, nsis, create-dmg, flatpak, linuxdeploy, rcodesign, wix)
-based on your
+dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
+cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
+rcodesign, wix) based on your
 `.anodizer.yaml`, imports signing keys, logs in to container registries,
 handles split/merge artifact plumbing, and runs any anodizer subcommand —
 all in one step.
@@ -39,6 +39,7 @@ Each publisher reads its own variable first, then falls back to
 |-----------|---------------|--------|
 | Homebrew | `HOMEBREW_TAP_TOKEN` | your tap repo |
 | krew | `KREW_INDEX_TOKEN` | krew-index fork → PR |
+| MCP | `MCP_GITHUB_TOKEN` | MCP registry (API publish) |
 | Scoop | `SCOOP_BUCKET_TOKEN` | your bucket repo |
 | winget | `WINGET_PKGS_TOKEN` | winget-pkgs fork → PR |
 | Nix | `NIX_PKGS_TOKEN` | your nix repo |
@@ -57,6 +58,11 @@ The SchemaStore publisher pushes the updated catalog/schema to a fork of
 `SchemaStore/schemastore` and opens a PR upstream, so `SCHEMASTORE_TOKEN` (or the
 `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` fallback) must be a PAT that can push to
 your fork and open a pull request against the upstream repository.
+
+The MCP publisher is the one row that is not a fork → PR: it exchanges
+`MCP_GITHUB_TOKEN` (a GitHub PAT, or Actions OIDC when the job has
+`id-token: write`) for an MCP registry JWT and publishes via the registry
+API.
 
 ### Preflight and failure handling — in-process, no extra steps
 
@@ -360,7 +366,7 @@ Tune with:
 | Input | Default | Purpose |
 |-------|---------|---------|
 | `determinism-runs` | `2` | N for `--runs=N`. |
-| `determinism-stages` | `build,archive,sbom,checksum` | Stages to diff per run. `sign` is excluded by default (shards lack keys); pass `build,archive,sbom,sign,checksum` to opt in when keys are provisioned. |
+| `determinism-stages` | (per-OS) | Stages to diff per run. Defaults to the stages configured-and-installable on the runner: Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS and Windows get `build,source,upx,archive,sbom,sign,checksum`. Explicit values override. |
 | `determinism-targets` | (auto) | Override the target CSV; useful on non-standard runner labels. |
 
 The harness step does **not** retry on failure — it gates release
@@ -371,7 +377,7 @@ directly).
 ### Nightly builds
 
 Anodizer publishes immutable nightly tags shaped `vX.Y.Z-<sha>-nightly`
-(e.g. `v0.2.0-7fe10db-nightly`) — every nightly is its own permanent
+(e.g. `v0.8.0-abc1234-nightly`) — every nightly is its own permanent
 release rather than a moving `nightly` tag. Mirrors goreleaser-action ≥
 v7.2.0.
 
@@ -388,7 +394,7 @@ exact tag instead:
 ```yaml
 - uses: tj-smith47/anodizer-action@v1
   with:
-    version: v0.2.0-7fe10db-nightly        # exact pin, won't drift
+    version: v0.8.0-abc1234-nightly        # exact pin, won't drift
 ```
 
 ## Inputs
@@ -397,7 +403,7 @@ exact tag instead:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.1.1`), the literal `latest` (newest stable release), or the literal `nightly` (newest release whose tag matches `vX.Y.Z-<sha>-nightly`). **No semver ranges** (`~> v2`) — pass an explicit tag or one of the aliases. Ignored when `from-artifact`, `from-source`, or `from-branch` is set. |
+| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.8.0`), the literal `latest` (newest stable release), or the literal `nightly` (newest release whose tag matches `vX.Y.Z-<sha>-nightly`). **No semver ranges** (`~> v2`) — pass an explicit tag or one of the aliases. Ignored when `from-artifact`, `from-source`, or `from-branch` is set. |
 | `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
@@ -408,7 +414,7 @@ exact tag instead:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `linuxdeploy`, `rcodesign`, `wix`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`. |
 | `auto-install` | `false` | Parse `.anodizer.yaml` and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
 
@@ -422,11 +428,13 @@ following top-level keys and installs the matching tool:
 | `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). Linux installs via snap; runners without snapd (e.g. containerised self-hosted) fall back to a pip install pinned by `SNAPCRAFT_VERSION` (default tracks `SNAPCRAFT_DEFAULT_VERSION` in `scripts/install/deps.sh`) — upload-capable, but packing snaps still needs snapd. |
 | `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
 | `cmd: cosign` (any sign block) / `docker_signs:` | `cosign` | `signs:`/`binary_signs:` default to GPG (preinstalled); cosign installs only when a block sets `cmd: cosign`, plus always for `docker_signs:` (which defaults to cosign). |
+| `sboms:` | `syft` | |
 | `upx:` | `upx` | |
 | `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
 | `dmgs:` | `create-dmg` | macOS only (warns on other runners). |
 | `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
 | `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
+| `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
 | `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing (uses macOS-runner `codesign`/`xcrun`). |
 | `pkgs:` | _none_ | Warns if runner is not macOS. |
 | `msis:` | `wix` (Windows) | WiX v4 `wix` dotnet global tool. Warns if runner is not Windows. |
@@ -479,7 +487,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 |-------|---------|-------------|
 | `determinism` | `false` | Run `anodizer check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx + syft + cosign on Linux; upx + syft + cosign on macOS/Windows). Mutually exclusive with `args`. |
 | `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
-| `determinism-stages` | `build,archive,sbom,checksum` | Stages to validate (comma-separated). `sign` is opt-in only — pass `build,archive,sbom,sign,checksum` when GPG/cosign keys are provisioned. |
+| `determinism-stages` | (per-OS) | Stages to validate (comma-separated). When unset, defaults to the stages configured-and-installable on the current runner: Linux `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS/Windows `build,source,upx,archive,sbom,sign,checksum` (no nfpm/makeself/snapcraft off-Linux). |
 | `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodizer targets --json` by filtering on the current runner label. |
 
 ## Outputs
