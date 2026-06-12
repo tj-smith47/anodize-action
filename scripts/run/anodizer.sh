@@ -49,25 +49,19 @@ has_preserved_context() {
     return 1
 }
 
-# Wipe generated artifacts between retries to prevent "already exists"
-# collisions, giving a non-preserved retry a clean rebuild. Deletion is
-# confined to the dist tree: top-level files are removed, and each
-# `<dist>/<crate>/` subdir is recursively cleared of files (nested per-crate
-# trees like `_preserved-bin/<triple>/` and sub-manifests are legitimately
-# deep, so the subdir sweep has no -maxdepth). Directories are left in place;
-# the loop only iterates direct `<dist>/*/` children. `find` does not follow
-# symlinks (no -L), so a symlinked file or dir is -type l, never -type f and
-# never descended into — deletion cannot escape the tree. The whole function
-# is skipped when preserved-dist manifests are present (see caller), so
-# --publish-only inputs are never touched.
+# Wipe generated artifacts between retries, leaving the dist tree GENUINELY
+# empty: anodizer's dist-not-empty guard counts ANY directory entry, so a
+# leftover empty `run-<id>/` subdir (or an undeleted symlink) makes every
+# retry die with "dist directory is not empty" instead of rebuilding.
+# Files and symlinks are removed at every depth, then empty dirs are pruned
+# depth-first. `find` does not follow symlinks (no -L): a symlink is deleted
+# as a link, never descended into — deletion cannot escape the tree. The
+# whole function is skipped when preserved-dist manifests are present (see
+# caller), so --publish-only inputs are never touched.
 cleanup_dist() {
     [ -d "$dist_dir" ] || return 0
-    find "$dist_dir" -maxdepth 1 -type f -delete 2>/dev/null || true
-    local d
-    for d in "${dist_dir}"/*/; do
-        [ -d "$d" ] || continue
-        find "$d" -type f -delete 2>/dev/null || true
-    done
+    find "$dist_dir" -mindepth 1 \( -type f -o -type l \) -delete 2>/dev/null || true
+    find "$dist_dir" -mindepth 1 -depth -type d -empty -delete 2>/dev/null || true
 }
 
 resolve_max_retries() {
@@ -116,7 +110,9 @@ main() {
         else
             cleanup_dist
         fi
-        sleep 10
+        # Overridable so the bats suite can exercise the retry loop without
+        # real 10s waits.
+        sleep "${ANODIZER_RETRY_DELAY:-10}"
         attempt=$((attempt + 1))
     done
 }
