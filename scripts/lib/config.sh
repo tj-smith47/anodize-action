@@ -51,7 +51,11 @@ anodizer_config_is_toml() {
 anodizer_config_dist_value() {
     local cfg="$1" d=""
     if anodizer_config_is_toml "$cfg"; then
-        d=$(grep -E '^dist[[:space:]]*=' "$cfg" | head -1 \
+        # TOML top-level keys must precede the first table header, so the
+        # scan stops at the first `[...]` line — a `dist =` inside a table
+        # like `[archives]` must never be mistaken for the top-level key.
+        d=$(sed -n '/^[[:space:]]*\[/q;p' "$cfg" \
+            | grep -E '^dist[[:space:]]*=' | head -1 \
             | sed -E 's/^dist[[:space:]]*=[[:space:]]*//')
     else
         d=$(grep -E '^dist:' "$cfg" | head -1 \
