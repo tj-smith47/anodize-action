@@ -86,9 +86,27 @@ if notarize_macos_configured; then
 fi
 has_top_key sboms && deps+=("syft") || true
 has_top_key upx && deps+=("upx") || true
+# nsis builds on every platform (makensis: nsis apt on Linux, brew on macOS,
+# choco on Windows), so it emits unconditionally.
 has_top_key nsis && deps+=("nsis") || true
-has_top_key dmgs && deps+=("create-dmg") || true
-has_top_key flatpaks && deps+=("flatpak") || true
+# dmgs: a .dmg builds on macOS (hdiutil) and Linux (genisoimage) but has no
+# Windows path — warn (don't fail) and omit there, like pkgs.
+if has_top_key dmgs; then
+    if [ "${RUNNER_OS:-}" = "Windows" ]; then
+        gha_warning "auto-install: dmgs: needs macOS hdiutil or Linux genisoimage (got Windows); skipping"
+    else
+        deps+=("create-dmg")
+    fi
+fi
+# flatpaks: Flatpak is Linux-only — emit on Linux, warn (don't fail) elsewhere,
+# like appimages.
+if has_top_key flatpaks; then
+    if [ "${RUNNER_OS:-}" = "Linux" ]; then
+        deps+=("flatpak")
+    else
+        gha_warning "auto-install: flatpaks: requires a Linux runner (got ${RUNNER_OS:-unset}); skipping"
+    fi
+fi
 # appimages: shells out to linuxdeploy + its appimage output plugin, both
 # Linux-only AppImages — emit the dep on Linux, warn (don't fail) elsewhere.
 if has_top_key appimages; then
@@ -106,21 +124,24 @@ else
     grep -qE '^[[:space:]]+formatter:[[:space:]]*alejandra[[:space:]]*$' "$cfg" && deps+=("alejandra") || true
 fi
 
-# pkgs/msis can't be cross-built — warn (don't fail) when config asks for
-# them on the wrong runner; the build will fail later with a better error.
-if has_top_key pkgs && [ "${RUNNER_OS:-}" != "macOS" ]; then
-    gha_warning "auto-install: pkgs: requires macOS runner (got ${RUNNER_OS:-unset}); skipping"
-fi
-# msis: builds MSIs via WiX (crates/stage-msi/src/wix.rs — v4 `wix build`, or
-# v3 `candle`+`light`). anodizer defaults to v4, whose CLI is the `wix` dotnet
-# global tool. On Windows, install it (newer windows-2022/2025 images no longer
-# ship WiX preinstalled); on other runners keep the existing can't-cross-build
-# warning — MSIs require a Windows runner.
-if has_top_key msis; then
+# pkgs: builds macOS .pkg installers — native pkgbuild on macOS, the Linux flat
+# XAR toolchain (xar + mkbom) on Linux. Either host can produce the artifact, so
+# emit the dep on both; only Windows lacks a path.
+if has_top_key pkgs; then
     if [ "${RUNNER_OS:-}" = "Windows" ]; then
-        deps+=("wix")
+        gha_warning "auto-install: pkgs: needs macOS pkgbuild or the Linux flat-package toolchain (got Windows); skipping"
     else
-        gha_warning "auto-install: msis: requires Windows runner (got ${RUNNER_OS:-unset}); skipping"
+        deps+=("pkgbuild")
+    fi
+fi
+# msis: builds MSIs. WiX itself is Windows-only and EULA-gated, so on Linux the
+# msi stage uses `wixl` (msitools) from the v3-dialect .wxs. Both Windows (WiX)
+# and Linux (wixl) can produce the artifact; only macOS lacks a path.
+if has_top_key msis; then
+    if [ "${RUNNER_OS:-}" = "macOS" ]; then
+        gha_warning "auto-install: msis: needs WiX (Windows) or wixl (Linux) — got macOS; skipping"
+    else
+        deps+=("wix")
     fi
 fi
 

@@ -6,7 +6,7 @@ Rust-native release automation tool inspired by GoReleaser.
 The action installs anodizer (cached per version), auto-installs pipeline
 dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-rcodesign, wix) based on your
+rcodesign, wix, pkgbuild) based on your
 anodizer config (`.anodizer.yaml` or any of the binary's other discovery
 candidates, including the TOML variants), imports signing keys, logs in to
 container registries, handles split/merge artifact plumbing (uploads honor
@@ -459,7 +459,7 @@ exact tag instead:
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `pkgbuild`. |
 | `auto-install` | `false` | Parse the anodizer config (YAML or TOML, same discovery order as the binary: `.anodizer.yaml`, `.anodizer.yml`, `.anodizer.toml`, `anodizer.yaml`, `anodizer.yml`, `anodizer.toml`) and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
 
@@ -478,13 +478,13 @@ shown in YAML form; the TOML equivalents (`key = ...` assignments,
 | `sboms:` | `syft` | |
 | `upx:` | `upx` | |
 | `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
-| `dmgs:` | `create-dmg` | macOS only (warns on other runners). |
+| `dmgs:` | `create-dmg` | macOS uses `hdiutil`; Linux installs `genisoimage` (the dmg stage falls back to it). |
 | `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
 | `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
 | `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
 | `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing (uses macOS-runner `codesign`/`xcrun`). |
-| `pkgs:` | _none_ | Warns if runner is not macOS. |
-| `msis:` | `wix` (Windows) | WiX v4 `wix` dotnet global tool. Warns if runner is not Windows. |
+| `pkgs:` | `pkgbuild` | macOS uses native `pkgbuild` (Xcode CLT); Linux installs the flat-package toolchain (`xar` + `mkbom` from bomutils, built from source). |
+| `msis:` | `wix` | Windows: WiX v4 `wix` dotnet global tool. Linux: `wixl` (msitools), which the msi stage drives directly from the v3-dialect `.wxs`. |
 | `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
 
 #### Override env vars (dependency version pins)
@@ -503,7 +503,7 @@ bump) the version it installs. Pass them via the job/step `env:` block:
 | `ZIG_VERSION` | `0.13.0` | Direct-download version on Linux (SHA256 verified against ziglang.org's `index.json`); pins brew/choco on macOS/Windows. |
 | `UPX_VERSION` | (unpinned) | Pins upx on macOS (brew) / Windows (choco). Linux installs via apt, unpinned. |
 | `NSIS_VERSION` | (unpinned) | Pins makensis on macOS (brew) / nsis on Windows (choco). Linux installs via apt, unpinned. |
-| `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew); create-dmg is macOS-only. |
+| `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew). On Linux the dmg stage uses apt `genisoimage` (unpinned). |
 | `ALEJANDRA_VERSION` | `4.0.0` | Linux direct-download version. Overriding **requires** `ALEJANDRA_SHA256` (upstream publishes no checksums file). Pins brew on macOS. |
 | `ALEJANDRA_SHA256` | (built-in for the default version) | SHA256 of the alejandra binary; required alongside an `ALEJANDRA_VERSION` override. |
 | `LINUXDEPLOY_VERSION` | `continuous` | linuxdeploy + appimage-plugin download version. Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |

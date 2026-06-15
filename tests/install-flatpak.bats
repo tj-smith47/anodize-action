@@ -17,7 +17,8 @@
 #      Sdk//24.08 installed, exits 0
 #   2. FLATPAK_RUNTIME_VERSION override → that branch pre-staged, exits 0
 #   3. macOS / Windows → skipped (flatpak is Linux-only), exits 0
-#   4. auto-detect: `flatpaks:` config emits the flatpak dep
+#   4. auto-detect: `flatpaks:` config emits flatpak on Linux; warns + omits
+#      on macOS/Windows (Flatpak is Linux-only)
 
 load test_helper
 
@@ -73,6 +74,28 @@ _run_install_flatpak() {
         "
 }
 
+# Drive the FULL dispatch path (dispatch_install + apt_flush) for the flatpak
+# dep, so the generic "flatpak installed" completion line is in play. Used to
+# assert the self-logging installer does not double-print.
+_run_dispatch_flatpak() {
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        GITHUB_PATH="${GITHUB_PATH}" \
+        GITHUB_ENV="${GITHUB_ENV}" \
+        SUDO_LOG="${SUDO_LOG}" \
+        NO_COLOR=1 \
+        RUNNER_ARCH="X64" \
+        PATH="${FAKE_BIN}:${PATH}" \
+        "$@" \
+        bash -c "
+            source '${REPO_ROOT}/scripts/install/deps.sh'
+            skip_unsupported_os() { echo \"SKIPPED: \$1\"; }
+            DEPS=(flatpak)
+            dispatch_install
+            apt_flush
+        "
+}
+
 # ── Test 1: default runtime on Linux → remote + runtimes staged, exits 0 ───
 
 @test "flatpak: default runtime stages flathub remote + Platform//24.08 + Sdk//24.08 on Linux" {
@@ -96,6 +119,28 @@ _run_install_flatpak() {
     grep -q 'org.freedesktop.Platform//23.08' "$SUDO_LOG"
     grep -q 'org.freedesktop.Sdk//23.08' "$SUDO_LOG"
     ! grep -q '//24.08' "$SUDO_LOG"
+}
+
+# ── Test: dispatch emits exactly ONE completion line (no duplicate) ────────
+
+@test "flatpak: Linux dispatch emits exactly one completion line, not two" {
+    # install_flatpak flushes apt internally and prints its own completion
+    # line, so the generic "flatpak installed" dispatch line must be
+    # suppressed. apt_flush still emits one "flatpak installed" line for the
+    # `flatpak` apt package itself — that is the single legitimate occurrence;
+    # the bug would add a SECOND from dispatch_install.
+    _run_dispatch_flatpak RUNNER_OS="Linux"
+    [ "$status" -eq 0 ]
+    # Snapshot the dispatch output — each `run` below clobbers $output.
+    local out="$output"
+    # The installer's own completion line is present exactly once.
+    [[ "$out" == *"flatpak + flatpak-builder + runtime"* ]]
+    run bash -c "printf '%s\n' \"\$1\" | grep -c 'flatpak + flatpak-builder + runtime'" _ "$out"
+    [ "$output" -eq 1 ]
+    # Exactly one "flatpak installed" line total (apt_flush's, for the flatpak
+    # apt package) — the generic dispatch duplicate must not add a second.
+    run bash -c "printf '%s\n' \"\$1\" | grep -c 'flatpak installed'" _ "$out"
+    [ "$output" -eq 1 ]
 }
 
 # ── Test 3: non-Linux runners are skipped (flatpak is Linux-only) ──────────
@@ -127,8 +172,25 @@ _run_auto_detect() {
         bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
 }
 
-@test "auto-detect: flatpaks: config emits the flatpak dep" {
+@test "auto-detect: flatpaks: config on Linux emits the flatpak dep" {
     _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "Linux"
     [ "$status" -eq 0 ]
     grep -q '^deps=.*flatpak' "$GITHUB_OUTPUT"
+}
+
+@test "auto-detect: flatpaks: config on macOS warns and omits flatpak" {
+    # Flatpak is Linux-only; non-Linux runners are warned-and-omitted.
+    _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "macOS"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"requires a Linux runner"* ]]
+    grep -q '^deps=' "$GITHUB_OUTPUT"
+    ! grep -q 'flatpak' "$GITHUB_OUTPUT"
+}
+
+@test "auto-detect: flatpaks: config on Windows warns and omits flatpak" {
+    _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "Windows"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"requires a Linux runner"* ]]
+    grep -q '^deps=' "$GITHUB_OUTPUT"
+    ! grep -q 'flatpak' "$GITHUB_OUTPUT"
 }

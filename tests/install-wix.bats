@@ -3,19 +3,20 @@
 # scripts/install/deps.sh AND the msis: auto-detect wiring in
 # scripts/install/auto-detect-deps.sh.
 #
-# WiX drives anodizer's `msis:` stage (crates/stage-msi — v4 `wix build`). The
-# v4 CLI is the `wix` dotnet global tool, installed via the dotnet SDK that is
-# preinstalled on the GitHub windows runner images. MSIs can only be built on a
-# Windows runner, so non-Windows runners are skipped (warn, don't fail).
+# WiX drives anodizer's `msis:` stage (crates/stage-msi). On Windows the v4 CLI
+# is the `wix` dotnet global tool; WiX itself is Windows-only and EULA-gated, so
+# on Linux the stage uses `wixl` (msitools, apt) from the v3-dialect .wxs. macOS
+# has no MSI path and is skipped (warn, don't fail).
 #
 # Stubs dotnet so no network is needed. Covers:
 #
 #   1. Windows → `dotnet tool install --global wix --version <pin>` runs,
 #      tools dir added to PATH, exits 0
 #   2. WIX_VERSION override → forwarded to --version
-#   3. Linux / macOS → skipped (WiX is Windows-only), exits 0
-#   4. auto-detect: msis: config on Windows emits the wix dep
-#   5. auto-detect: msis: config on a non-Windows runner warns + omits it
+#   3. Linux → queues the wixl apt package, exits 0
+#   4. macOS → skipped (no MSI path), exits 0
+#   5. auto-detect: msis: config on Windows AND Linux emits the wix dep
+#   6. auto-detect: msis: config on macOS warns + omits it
 
 load test_helper
 
@@ -78,13 +79,16 @@ _run_install_wix() {
     [[ "$output" == *"--version 5.0.2"* ]]
 }
 
-# ── Test 3: non-Windows runners are skipped (WiX is Windows-only) ─────────
+# ── Test 3: Linux queues wixl (msitools) — the Linux MSI path ─────────────
 
-@test "wix: Linux is skipped, exits 0" {
+@test "wix: Linux queues the wixl apt package, exits 0" {
     _run_install_wix RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"SKIPPED"* ]]
+    [[ "$output" == *"wixl queued for batch apt install"* ]]
+    [[ "$output" != *"SKIPPED"* ]]
 }
+
+# ── Test 4: macOS has no MSI path and is skipped ──────────────────────────
 
 @test "wix: macOS is skipped, exits 0" {
     _run_install_wix RUNNER_OS="macOS"
@@ -113,10 +117,16 @@ _run_auto_detect() {
     grep -q '^deps=.*wix' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: msis: config on Linux warns and omits wix" {
+@test "auto-detect: msis: config on Linux emits the wix dep (wixl path)" {
     _run_auto_detect $'msis:\n  - wxs: app.wxs' "Linux"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"requires Windows runner"* ]]
+    grep -q '^deps=.*wix' "$GITHUB_OUTPUT"
+}
+
+@test "auto-detect: msis: config on macOS warns and omits wix" {
+    _run_auto_detect $'msis:\n  - wxs: app.wxs' "macOS"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"got macOS"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'wix' "$GITHUB_OUTPUT"
 }

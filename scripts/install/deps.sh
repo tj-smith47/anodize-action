@@ -6,7 +6,7 @@
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-# rcodesign, wix.
+# rcodesign, wix, pkgbuild.
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -316,6 +316,7 @@ snapcraft_install_linux_pip() {
     _squashfs_tools_available \
         || gha_fail "snapcraft: unsquashfs not found — install squashfs-tools in the runner image (snapcraft upload requires it)"
     anodizer::ok "snapcraft ${version} installed via pip (upload-capable; packing snaps still needs a snapd-equipped runner)"
+    _INSTALLER_EMITTED_OK=1
 }
 
 install_snapcraft() {
@@ -424,6 +425,7 @@ cosign_install_windows() {
 
     gha_add_path "$install_dir"
     anodizer::ok "cosign ${version} installed at ${install_dir}/cosign.exe"
+    _INSTALLER_EMITTED_OK=1
 }
 
 install_cosign() {
@@ -504,7 +506,10 @@ install_nsis() {
 install_create_dmg() {
     case "$RUNNER_OS" in
         macOS)   brew_install create-dmg CREATE_DMG_VERSION ;;
-        Linux|Windows) skip_unsupported_os create-dmg "macOS-only (dmgs: config requires a macOS runner)" ;;
+        # anodizer's dmg stage prefers macOS `hdiutil` and falls back to
+        # `genisoimage` on Linux, so the Linux .dmg build needs genisoimage.
+        Linux)   apt_queue genisoimage genisoimage ;;
+        Windows) skip_unsupported_os create-dmg "macOS/Linux only (dmgs: needs hdiutil or genisoimage)" ;;
     esac
 }
 
@@ -539,8 +544,38 @@ install_flatpak() {
                 "org.freedesktop.Sdk//${runtime_version}" \
                 || gha_fail "flatpak: installing org.freedesktop.Platform//${runtime_version} + Sdk failed"
             anodizer::ok "flatpak + flatpak-builder + runtime ${runtime_version} (Platform + Sdk) installed"
+            _INSTALLER_EMITTED_OK=1
             ;;
         macOS|Windows) skip_unsupported_os flatpak-builder "Linux-only (flatpaks: config requires a Linux runner)" ;;
+    esac
+}
+
+install_pkgbuild() {
+    case "$RUNNER_OS" in
+        # macOS ships pkgbuild with the Xcode Command Line Tools; nothing to do.
+        macOS)   anodizer::detail "pkgbuild ships with Xcode CLT on macOS" ;;
+        Linux)
+            # The Linux .pkg path assembles the flat XAR package by hand:
+            # cpio+gzip (base image) for the Payload, xar (apt) to flatten, and
+            # mkbom for the Bom. bomutils is not packaged for Debian/Ubuntu, so
+            # build mkbom from source; it is a tiny CMake-free C project.
+            apt_queue xar xar
+            apt_flush
+            if ! command -v mkbom > /dev/null 2>&1; then
+                local src="${RUNNER_TEMP:-/tmp}/bomutils"
+                rm -rf "$src"
+                git clone --depth 1 https://github.com/hogliux/bomutils.git "$src" \
+                    || gha_fail "bomutils clone failed"
+                make -C "$src" \
+                    || gha_fail "bomutils build failed"
+                sudo make -C "$src" install \
+                    || gha_fail "bomutils install failed"
+                rm -rf "$src"
+            fi
+            anodizer::ok "Linux flat-pkg toolchain (xar + mkbom) installed"
+            _INSTALLER_EMITTED_OK=1
+            ;;
+        Windows) skip_unsupported_os pkgbuild "macOS/Linux only (pkgs: macOS installer format)" ;;
     esac
 }
 
@@ -626,6 +661,7 @@ install_linuxdeploy() {
             # `export` would not.
             gha_set_env APPIMAGE_EXTRACT_AND_RUN 1
             anodizer::ok "linuxdeploy + appimage plugin (${version}/${arch}) installed at ${install_dir}"
+            _INSTALLER_EMITTED_OK=1
             ;;
         macOS|Windows) skip_unsupported_os linuxdeploy "Linux-only (appimages: config requires a Linux runner)" ;;
     esac
@@ -679,6 +715,7 @@ install_rcodesign() {
             chmod +x "${install_dir}/rcodesign"
             gha_add_path "$install_dir"
             anodizer::ok "rcodesign ${version} (${triple}) installed at ${install_dir}/rcodesign"
+            _INSTALLER_EMITTED_OK=1
             ;;
         Windows)
             # No clean release tarball for Windows (upstream ships a
@@ -709,8 +746,15 @@ install_wix() {
             # PATH for later steps in case the image's default PATH lacks it.
             gha_add_path "${USERPROFILE:-$HOME}/.dotnet/tools"
             anodizer::ok "wix ${version} installed via dotnet global tool"
+            _INSTALLER_EMITTED_OK=1
             ;;
-        Linux|macOS) skip_unsupported_os wix "Windows-only (msis: config requires a Windows runner)" ;;
+        Linux)
+            # WiX itself is Windows-only and EULA-gated, so the Linux MSI path is
+            # `wixl` (msitools), which anodizer's msi stage drives directly. It
+            # consumes the v3-dialect .wxs and emits the .msi in one step.
+            apt_queue wixl wixl
+            ;;
+        macOS) skip_unsupported_os wix "Windows/Linux only (msis: needs wixl on macOS, not packaged)" ;;
     esac
 }
 
@@ -721,6 +765,13 @@ dispatch_install() {
     for dep in "${DEPS[@]}"; do
         anodizer::step "installing ${dep}"
         pre_queue=${#APT_PKGS[@]}
+        # Self-logging installers set this to suppress the generic completion
+        # line below. The apt-queue-delta heuristic alone is insufficient: an
+        # installer that flushes apt internally (pkgbuild, flatpak) drains the
+        # queue back to pre_queue, and a direct-download installer (rcodesign,
+        # linuxdeploy, wix/cosign on their non-apt arms) never touches it — both
+        # would otherwise print the generic line on top of their own.
+        _INSTALLER_EMITTED_OK=""
         case "$dep" in
             nfpm)           install_nfpm ;;
             makeself)       install_makeself ;;
@@ -738,11 +789,16 @@ dispatch_install() {
             linuxdeploy)    install_linuxdeploy ;;
             rcodesign)      install_rcodesign ;;
             wix)            install_wix ;;
-            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix)" ;;
+            pkgbuild)       install_pkgbuild ;;
+            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild)" ;;
         esac
-        # Skip the per-dep "installed" line for apt-queued items —
-        # apt_flush emits one per package after the batch lands.
-        [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && anodizer::ok "${dep} installed"
+        # Skip the generic "installed" line when either (a) the installer left
+        # something apt-queued — apt_flush emits one line per package after the
+        # batch lands — or (b) the installer already emitted its own completion
+        # line (_INSTALLER_EMITTED_OK).
+        if [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && [ -z "$_INSTALLER_EMITTED_OK" ]; then
+            anodizer::ok "${dep} installed"
+        fi
     done
 }
 
