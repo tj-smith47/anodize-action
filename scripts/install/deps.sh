@@ -508,9 +508,38 @@ install_create_dmg() {
     esac
 }
 
+# flatpak drives anodizer's `flatpaks:` stage: the stage shells out to
+# `flatpak-builder --repo=repo build <manifest>` then `flatpak build-bundle`,
+# so BOTH the `flatpak` CLI (build-bundle) and `flatpak-builder` must be on
+# PATH. flatpak-builder also needs the runtime + SDK the manifest pins
+# (org.freedesktop.Platform / org.freedesktop.Sdk) staged into a flatpak
+# installation before the build, or it fails resolving the base.
+#
+# RUNTIME_VERSION tracks the branch anodizer's flatpaks: blocks pin
+# (`runtime_version: "24.08"`); override with FLATPAK_RUNTIME_VERSION to
+# pre-stage a different branch. The runtimes come from flathub, so the
+# flathub remote is added first (idempotent via --if-not-exists).
+FLATPAK_DEFAULT_RUNTIME_VERSION="24.08"
 install_flatpak() {
     case "$RUNNER_OS" in
-        Linux)   apt_queue flatpak-builder flatpak-builder ;;
+        Linux)
+            # apt_queue + an inline flush: the runtime install below needs the
+            # `flatpak` binary present, so the batch must land before it runs.
+            apt_queue flatpak flatpak
+            apt_queue flatpak-builder flatpak-builder
+            apt_flush
+            local runtime_version="${FLATPAK_RUNTIME_VERSION:-$FLATPAK_DEFAULT_RUNTIME_VERSION}"
+            # System-wide remote + runtimes so a non-root `flatpak-builder` and
+            # the later `anodizer release` step share one installation.
+            sudo flatpak remote-add --if-not-exists flathub \
+                https://flathub.org/repo/flathub.flatpakrepo \
+                || gha_fail "flatpak: adding the flathub remote failed"
+            sudo flatpak install -y --noninteractive flathub \
+                "org.freedesktop.Platform//${runtime_version}" \
+                "org.freedesktop.Sdk//${runtime_version}" \
+                || gha_fail "flatpak: installing org.freedesktop.Platform//${runtime_version} + Sdk failed"
+            anodizer::ok "flatpak + flatpak-builder + runtime ${runtime_version} (Platform + Sdk) installed"
+            ;;
         macOS|Windows) skip_unsupported_os flatpak-builder "Linux-only (flatpaks: config requires a Linux runner)" ;;
     esac
 }
