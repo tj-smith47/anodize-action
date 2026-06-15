@@ -141,6 +141,34 @@ anodizer::detail() {
         "${_ANODIZER_DIM}" "$(anodizer::norm_path "$1")" "${_ANODIZER_RESET}"
 }
 
+# Run a noisy subprocess quietly: capture stdout+stderr, print nothing on
+# success, and surface the full captured output only when the command fails
+# (then propagate its exit status). This keeps the apt/curl/sha256sum/syft/
+# cosign chatter out of a green run while preserving every byte for a red one.
+#
+# Escape hatch: when RUNNER_DEBUG=1 (GitHub Actions step-debug) or
+# ANODIZER_VERBOSE is set, the command runs with its output passed straight
+# through live — nothing is swallowed when a human is actively debugging.
+#
+#   anodizer::run_quiet sudo apt-get install -yq foo
+anodizer::run_quiet() {
+    if [ "${RUNNER_DEBUG:-}" = "1" ] || [ -n "${ANODIZER_VERBOSE:-}" ]; then
+        "$@"
+        return
+    fi
+    local log status=0
+    # mktemp's default location honours $TMPDIR and always exists; don't pin
+    # it under $RUNNER_TEMP, which may not be created yet on every runner.
+    log=$(mktemp 2>/dev/null) || log=$(mktemp "${TMPDIR:-/tmp}/anodizer-run.XXXXXX")
+    # Capture the command's own exit before the `if` overwrites $?.
+    "$@" > "$log" 2>&1 || status=$?
+    if [ "$status" -ne 0 ]; then
+        cat "$log" >&2
+    fi
+    rm -f "$log"
+    return "$status"
+}
+
 # Dimmed key/value detail child — a `•` line whose dimmed key is separated
 # from the value by two spaces (no glyph), matching the CLI's `kv` row.
 #   anodizer::kv targets "x86_64-unknown-linux-gnu"

@@ -24,18 +24,24 @@ ALEJANDRA_DEFAULT_VERSION="4.0.0"
 ALEJANDRA_DEFAULT_SHA_AMD64="a23b9d47cba945805c6169541046de890e94e07a5aa416c86dee15bca2da6216"
 ALEJANDRA_DEFAULT_SHA_ARM64="a30b0d54ee3f0d6633d0398b50258408d2cc31646a9c8c4ba3ee4ebf2cebd8c8"
 
-# linuxdeploy + its appimage output plugin ship only a rolling `continuous`
-# release (no version tags, no checksums sidecar), so the pinned shas below
-# are keyed to the asset bytes served at pin time — verified against the
-# GitHub releases API `digest` field AND a download-and-sha256 of each asset.
-# Override with LINUXDEPLOY_VERSION + the four matching *_SHA_* env vars (all
-# required together) to pull a different snapshot; an override without its own
-# shas is rejected, mirroring the alejandra pin.
-LINUXDEPLOY_DEFAULT_VERSION="continuous"
-LINUXDEPLOY_DEFAULT_SHA_AMD64="514d4ffe2a2f757369b41863a4f63fbbb222c429652803ebc081cb16ba21ac25"
-LINUXDEPLOY_DEFAULT_SHA_ARM64="6d2f140cc8c3b07831b1011922ed453b34f7e90d21a4bfbc65e1ec99ca71b8f3"
-LINUXDEPLOY_PLUGIN_DEFAULT_SHA_AMD64="c603eb063609daa2cc953cfcf6e117cea13fa00c8bfcbbfa5efa88a205adc424"
-LINUXDEPLOY_PLUGIN_DEFAULT_SHA_ARM64="a8b267f2511389235729028590542c76f7212da8cf2b045b37fbe829b0e0c843"
+# linuxdeploy + its appimage output plugin drive anodizer's `appimages:` stage.
+# Both also publish a rolling `continuous` release that re-rolls its asset bytes
+# in place, so a sha pinned to `continuous` silently drifts the moment upstream
+# republishes — `sha256sum -c` then fails and the whole release errors. The
+# defaults below therefore pin the newest *immutable* dated tag each project
+# ships (they version independently — linuxdeploy and the plugin carry DIFFERENT
+# tags), with shas computed by download-and-sha256 of each pinned asset (no
+# upstream checksums file exists). Override the linuxdeploy binary with
+# LINUXDEPLOY_VERSION + LINUXDEPLOY_SHA256/LINUXDEPLOY_PLUGIN_SHA256 (the two
+# shas required together; an override without its own shas is rejected, mirroring
+# the alejandra pin); override the plugin tag independently with
+# LINUXDEPLOY_PLUGIN_VERSION.
+LINUXDEPLOY_DEFAULT_VERSION="1-alpha-20251107-1"
+LINUXDEPLOY_PLUGIN_DEFAULT_VERSION="1-alpha-20250213-1"
+LINUXDEPLOY_DEFAULT_SHA_AMD64="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+LINUXDEPLOY_DEFAULT_SHA_ARM64="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
+LINUXDEPLOY_PLUGIN_DEFAULT_SHA_AMD64="992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3"
+LINUXDEPLOY_PLUGIN_DEFAULT_SHA_ARM64="83c292149274965a865dcd44c135cfca8ba28c6b7de3eb628d4b8b5f248af17c"
 
 # rcodesign (the apple-codesign project, indygreg/apple-platform-rs) drives
 # anodizer's cross-platform `notarize.macos:` path. Release tarballs are named
@@ -66,7 +72,33 @@ WIX_DEFAULT_VERSION="4.0.6"
 # by the macOS brew path).
 SNAPCRAFT_DEFAULT_VERSION="8.14.5"
 
+# nfpm drives anodizer's deb/rpm/apk publishers. On Linux it installs via a
+# direct, checksum-verified GitHub-release download (mirroring cosign/syft)
+# rather than the goreleaser apt repo — keeping a third-party apt source out of
+# the runner and the single batched `apt-get update` honest. The release ships
+# a `checksums.txt`, so the tarball is verified against it (no hardcoded sha to
+# drift). Override with NFPM_VERSION (also honoured by the macOS brew path).
+NFPM_DEFAULT_VERSION="2.46.3"
+
 DEPS=()
+
+# Deps whose Linux installer only `apt_queue`s a stock package (no inline
+# flush, no direct download): their lifecycle is carried entirely by the single
+# "installing apt batch: …" header + the per-package `✓` apt_flush emits, so the
+# dispatch loop suppresses the generic per-tool "installing X" line for them to
+# avoid a duplicate. flatpak/pkgbuild also queue but flush inline and self-log,
+# so they are NOT listed here. Membership is only consulted on Linux.
+_APT_BATCHED_DEPS=" makeself rpmbuild upx nsis create-dmg wix "
+
+# True when $1's installer on this runner just queues a stock apt package
+# (so the batch header/✓ carry its log, not the generic per-tool lines).
+_is_apt_batched() {
+    [ "$RUNNER_OS" = "Linux" ] || return 1
+    case "$_APT_BATCHED_DEPS" in
+        *" $1 "*) return 0 ;;
+        *)        return 1 ;;
+    esac
+}
 
 # ── input merge + dedupe ─────────────────────────────────────────────
 
@@ -111,12 +143,23 @@ APT_NAMES=()
 apt_queue() {
     APT_PKGS+=("$1")
     APT_NAMES+=("$2")
-    anodizer::detail "${2} queued for batch apt install"
+}
+# Runs `apt-get update` at most once per process — the flag below latches on
+# the first flush (or any caller that needs a fresh index) so a batch and a
+# later snapcraft apt-needs install don't re-index every repo.
+_APT_UPDATED=""
+apt_update_once() {
+    [ -n "$_APT_UPDATED" ] && return 0
+    anodizer::run_quiet sudo apt-get update -q \
+        || gha_fail "apt-get update failed"
+    _APT_UPDATED=1
 }
 apt_flush() {
     [ "${#APT_PKGS[@]}" -eq 0 ] && return
     anodizer::step "installing apt batch: ${APT_NAMES[*]}"
-    sudo apt-get install -yq "${APT_PKGS[@]}" \
+    apt_update_once
+    DEBIAN_FRONTEND=noninteractive \
+        anodizer::run_quiet sudo apt-get install -yq "${APT_PKGS[@]}" < /dev/null \
         || gha_fail "apt batch install failed for: ${APT_NAMES[*]}"
     local name
     for name in "${APT_NAMES[@]}"; do
@@ -176,14 +219,41 @@ sha_from_checksums() {
 
 # ── per-dep installers ───────────────────────────────────────────────
 
+nfpm_install_linux() {
+    local version="${NFPM_VERSION:-$NFPM_DEFAULT_VERSION}"
+    local arch
+    case "$RUNNER_ARCH" in
+        # nfpm's release assets name x86_64 long-form but arm64 short-form
+        # (nfpm_<ver>_Linux_x86_64.tar.gz vs ..._Linux_arm64.tar.gz).
+        X64)   arch=x86_64 ;;
+        ARM64) arch=arm64 ;;
+        *)     gha_fail "Unsupported Linux arch for nfpm: $RUNNER_ARCH" ;;
+    esac
+    local base="https://github.com/goreleaser/nfpm/releases/download/v${version}"
+    local tarball="nfpm_${version}_Linux_${arch}.tar.gz"
+    local install_dir="${RUNNER_TEMP:-/tmp}/nfpm"
+    mkdir -p "$install_dir"
+
+    anodizer::run_quiet curl -sSfL "${base}/${tarball}" -o "${install_dir}/${tarball}"
+    anodizer::run_quiet curl -sSfL "${base}/checksums.txt" -o "${install_dir}/checksums.txt"
+    # Verify against the release's signed checksums.txt — no hardcoded sha to
+    # drift, the tag is immutable so the bytes are stable.
+    local expected
+    expected=$(sha_from_checksums "${install_dir}/checksums.txt" "$tarball")
+    anodizer::run_quiet bash -c "echo '${expected}  ${install_dir}/${tarball}' | sha256sum -c -"
+
+    # The tarball carries the bare `nfpm` binary at its root (verified via
+    # `tar -tzf`); extract just that onto PATH.
+    tar -xzf "${install_dir}/${tarball}" -C "$install_dir" nfpm
+    chmod +x "${install_dir}/nfpm"
+    gha_add_path "$install_dir"
+    anodizer::ok "nfpm ${version} (${arch}) installed at ${install_dir}/nfpm"
+    _INSTALLER_EMITTED_OK=1
+}
+
 install_nfpm() {
     case "$RUNNER_OS" in
-        Linux)
-            echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' \
-                | sudo tee /etc/apt/sources.list.d/goreleaser.list > /dev/null
-            sudo apt-get update -q
-            sudo apt-get install -yq nfpm
-            ;;
+        Linux)   nfpm_install_linux ;;
         macOS)   brew_install goreleaser/tap/nfpm NFPM_VERSION ;;
         Windows) choco_install nfpm NFPM_VERSION ;;
     esac
@@ -264,15 +334,15 @@ snapcraft_install_linux_pip() {
             gha_fail "snapcraft: no snapd, and the pip fallback needs ${apt_needs[*]} (no apt-get available to install them) — preinstall snapcraft in the runner image"
         fi
         anodizer::detail "installing ${apt_needs[*]} via apt for the pip fallback"
-        sudo apt-get update -q \
-            || gha_fail "snapcraft: apt-get update failed"
-        sudo apt-get install -yq "${apt_needs[@]}" \
+        apt_update_once
+        DEBIAN_FRONTEND=noninteractive \
+            anodizer::run_quiet sudo apt-get install -yq "${apt_needs[@]}" < /dev/null \
             || gha_fail "snapcraft: apt install of ${apt_needs[*]} failed — preinstall snapcraft (or these packages) in the runner image"
     fi
 
     local workdir="${RUNNER_TEMP:-/tmp}/snapcraft-pip"
     mkdir -p "$workdir"
-    curl -sSfL "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" \
+    anodizer::run_quiet curl -sSfL "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" \
         -o "${workdir}/uv.lock" \
         || gha_fail "snapcraft: failed to fetch uv.lock for tag ${version} — does the tag exist upstream?"
     snapcraft_lock_to_constraints "${workdir}/uv.lock" > "${workdir}/constraints.txt" \
@@ -357,21 +427,26 @@ cosign_install_linux() {
     local version="${COSIGN_VERSION:-v2.4.1}"
     local base="https://github.com/sigstore/cosign/releases/download/${version}"
     local bin="cosign-linux-amd64"
-    curl -sSfL "${base}/${bin}" -o /tmp/cosign
+    anodizer::run_quiet curl -sSfL "${base}/${bin}" -o /tmp/cosign
     # Sigstore publishes the keyless .pem and .sig as base64-encoded files
     # (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode before
     # handing to cosign — its PEM parser does not strip base64, so a raw
     # download fails verify-blob with a misleading "exactly one of: key
     # reference (--key), certificate (--cert)..." error (the cert IS
     # passed, but the file content can't be parsed).
-    curl -sSfL "${base}/${bin}-keyless.pem" | base64 -d > /tmp/cosign.pem
-    curl -sSfL "${base}/${bin}-keyless.sig" | base64 -d > /tmp/cosign.sig
-    curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
+    # The pem/sig downloads pipe curl's stdout into base64 -d, so run_quiet
+    # wraps the whole pipeline (capturing curl/base64 stderr) rather than the
+    # bare curl — wrapping curl alone would swallow the piped bytes. `set -o
+    # pipefail` inside the wrapped shell preserves the outer pipefail contract
+    # so a curl failure mid-pipe still aborts.
+    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.pem' | base64 -d > /tmp/cosign.pem"
+    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.sig' | base64 -d > /tmp/cosign.sig"
+    anodizer::run_quiet curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
 
     # SHA256 first — bootstraps trust without requiring cosign-to-verify-cosign.
     local expected
     expected=$(sha_from_checksums /tmp/cosign_checksums.txt "$bin")
-    echo "${expected}  /tmp/cosign" | sha256sum -c -
+    anodizer::run_quiet bash -c "echo '${expected}  /tmp/cosign' | sha256sum -c -"
     sudo install /tmp/cosign /usr/local/bin/cosign
 
     # Then keyless signature. Cosign releases are signed by the GCP service
@@ -390,7 +465,7 @@ cosign_install_linux() {
     # Sk, CertRef) check rejects the call with a misleading "exactly one
     # of --key/--cert/--sk must be provided" error before the cert file
     # is even parsed.
-    env -u COSIGN_KEY -u COSIGN_PUB_KEY cosign verify-blob \
+    anodizer::run_quiet env -u COSIGN_KEY -u COSIGN_PUB_KEY cosign verify-blob \
         --certificate /tmp/cosign.pem \
         --signature /tmp/cosign.sig \
         --certificate-identity keyless@projectsigstore.iam.gserviceaccount.com \
@@ -410,8 +485,8 @@ cosign_install_windows() {
     local bin="cosign-windows-amd64.exe"
     local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
     mkdir -p "$install_dir"
-    curl -sSfL "${base}/${bin}" -o "${install_dir}/cosign.exe"
-    curl -sSfL "${base}/cosign_checksums.txt" -o "${install_dir}/cosign_checksums.txt"
+    anodizer::run_quiet curl -sSfL "${base}/${bin}" -o "${install_dir}/cosign.exe"
+    anodizer::run_quiet curl -sSfL "${base}/cosign_checksums.txt" -o "${install_dir}/cosign_checksums.txt"
 
     local expected actual
     expected=$(sha_from_checksums "${install_dir}/cosign_checksums.txt" "$bin")
@@ -440,10 +515,10 @@ install_syft() {
     case "$RUNNER_OS" in
         Linux)
             local version="${SYFT_VERSION:-v1.18.0}"
-            curl -sSfL "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
+            anodizer::run_quiet curl -sSfL "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
                 -o /tmp/syft-install.sh
             chmod +x /tmp/syft-install.sh
-            sudo /tmp/syft-install.sh -b /usr/local/bin "${version}"
+            anodizer::run_quiet sudo /tmp/syft-install.sh -b /usr/local/bin "${version}"
             ;;
         macOS)   brew_install syft SYFT_VERSION ;;
         Windows) choco_install syft SYFT_VERSION ;;
@@ -464,14 +539,18 @@ install_zig() {
             local base="https://ziglang.org/download/${version}"
             # ziglang.org does not publish per-tarball .sha256 sidecars;
             # canonical shasums live in download/index.json.
-            curl -sSfL "${base}/${tarball}" -o /tmp/zig.tar.xz
+            anodizer::run_quiet curl -sSfL "${base}/${tarball}" -o /tmp/zig.tar.xz
             local expected
+            # NOT routed through run_quiet: this curl's stdout is consumed by the
+            # `$(... | jq ...)` capture, which run_quiet would redirect into its
+            # log file — swallowing the shasum. It is already quiet on success
+            # (stdout goes to jq, not the terminal).
             expected=$(curl -sSfL "https://ziglang.org/download/index.json" \
                 | jq -r --arg v "$version" --arg k "${arch}-linux" \
                     '.[$v][$k].shasum // empty')
             [ -n "$expected" ] \
                 || gha_fail "zig sha256 missing from index.json for ${version}/${arch}-linux"
-            echo "${expected}  /tmp/zig.tar.xz" | sha256sum -c -
+            anodizer::run_quiet bash -c "echo '${expected}  /tmp/zig.tar.xz' | sha256sum -c -"
             sudo mkdir -p /opt/zig
             sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
             sudo ln -sf /opt/zig/zig /usr/local/bin/zig
@@ -536,10 +615,10 @@ install_flatpak() {
             local runtime_version="${FLATPAK_RUNTIME_VERSION:-$FLATPAK_DEFAULT_RUNTIME_VERSION}"
             # System-wide remote + runtimes so a non-root `flatpak-builder` and
             # the later `anodizer release` step share one installation.
-            sudo flatpak remote-add --if-not-exists flathub \
+            anodizer::run_quiet sudo flatpak remote-add --if-not-exists flathub \
                 https://flathub.org/repo/flathub.flatpakrepo \
                 || gha_fail "flatpak: adding the flathub remote failed"
-            sudo flatpak install -y --noninteractive flathub \
+            anodizer::run_quiet sudo flatpak install -y --noninteractive flathub \
                 "org.freedesktop.Platform//${runtime_version}" \
                 "org.freedesktop.Sdk//${runtime_version}" \
                 || gha_fail "flatpak: installing org.freedesktop.Platform//${runtime_version} + Sdk failed"
@@ -599,8 +678,8 @@ install_alejandra() {
                 sha="$override_sha"
             fi
             local bin="alejandra-${arch}-unknown-linux-musl"
-            curl -sSfL "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" -o /tmp/alejandra
-            echo "${sha}  /tmp/alejandra" | sha256sum -c -
+            anodizer::run_quiet curl -sSfL "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" -o /tmp/alejandra
+            anodizer::run_quiet bash -c "echo '${sha}  /tmp/alejandra' | sha256sum -c -"
             sudo install -m 0755 /tmp/alejandra /usr/local/bin/alejandra
             rm -f /tmp/alejandra
             ;;
@@ -626,33 +705,37 @@ install_linuxdeploy() {
     case "$RUNNER_OS" in
         Linux)
             local version="${LINUXDEPLOY_VERSION:-$LINUXDEPLOY_DEFAULT_VERSION}"
+            # linuxdeploy and the plugin version independently (different dated
+            # tags upstream), so the plugin URL is built from its own tag.
+            local plugin_version="${LINUXDEPLOY_PLUGIN_VERSION:-$LINUXDEPLOY_PLUGIN_DEFAULT_VERSION}"
             local arch ld_sha plugin_sha
             case "$RUNNER_ARCH" in
                 X64)   arch=x86_64;  ld_sha="$LINUXDEPLOY_DEFAULT_SHA_AMD64"; plugin_sha="$LINUXDEPLOY_PLUGIN_DEFAULT_SHA_AMD64" ;;
                 ARM64) arch=aarch64; ld_sha="$LINUXDEPLOY_DEFAULT_SHA_ARM64"; plugin_sha="$LINUXDEPLOY_PLUGIN_DEFAULT_SHA_ARM64" ;;
                 *)     gha_fail "Unsupported Linux arch for linuxdeploy: $RUNNER_ARCH" ;;
             esac
-            if [ "$version" != "$LINUXDEPLOY_DEFAULT_VERSION" ]; then
-                # The `continuous` release rolls its assets in place, so a
-                # version override MUST carry its own shas — refusing
-                # unverified installs (no upstream checksums file exists).
+            if [ "$version" != "$LINUXDEPLOY_DEFAULT_VERSION" ] \
+                || [ "$plugin_version" != "$LINUXDEPLOY_PLUGIN_DEFAULT_VERSION" ]; then
+                # Any tag override moves off the verified default bytes, so it
+                # MUST carry its own shas — refusing unverified installs (no
+                # upstream checksums file exists).
                 ld_sha="${LINUXDEPLOY_SHA256:-}"
                 plugin_sha="${LINUXDEPLOY_PLUGIN_SHA256:-}"
                 { [ -n "$ld_sha" ] && [ -n "$plugin_sha" ]; } \
-                    || gha_fail "LINUXDEPLOY_VERSION=$version requires LINUXDEPLOY_SHA256 and LINUXDEPLOY_PLUGIN_SHA256 (upstream publishes no checksums file)"
+                    || gha_fail "LINUXDEPLOY_VERSION/LINUXDEPLOY_PLUGIN_VERSION override requires LINUXDEPLOY_SHA256 and LINUXDEPLOY_PLUGIN_SHA256 (upstream publishes no checksums file)"
             fi
 
             local install_dir="${RUNNER_TEMP:-/tmp}/linuxdeploy"
             mkdir -p "$install_dir"
 
             local ld_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/${version}/linuxdeploy-${arch}.AppImage"
-            curl -sSfL "$ld_url" -o "${install_dir}/linuxdeploy"
-            echo "${ld_sha}  ${install_dir}/linuxdeploy" | sha256sum -c -
+            anodizer::run_quiet curl -sSfL "$ld_url" -o "${install_dir}/linuxdeploy"
+            anodizer::run_quiet bash -c "echo '${ld_sha}  ${install_dir}/linuxdeploy' | sha256sum -c -"
             chmod +x "${install_dir}/linuxdeploy"
 
-            local plugin_url="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/${version}/linuxdeploy-plugin-appimage-${arch}.AppImage"
-            curl -sSfL "$plugin_url" -o "${install_dir}/linuxdeploy-plugin-appimage"
-            echo "${plugin_sha}  ${install_dir}/linuxdeploy-plugin-appimage" | sha256sum -c -
+            local plugin_url="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/${plugin_version}/linuxdeploy-plugin-appimage-${arch}.AppImage"
+            anodizer::run_quiet curl -sSfL "$plugin_url" -o "${install_dir}/linuxdeploy-plugin-appimage"
+            anodizer::run_quiet bash -c "echo '${plugin_sha}  ${install_dir}/linuxdeploy-plugin-appimage' | sha256sum -c -"
             chmod +x "${install_dir}/linuxdeploy-plugin-appimage"
 
             gha_add_path "$install_dir"
@@ -660,7 +743,7 @@ install_linuxdeploy() {
             # linuxdeploy itself) — $GITHUB_ENV survives across steps; a bare
             # `export` would not.
             gha_set_env APPIMAGE_EXTRACT_AND_RUN 1
-            anodizer::ok "linuxdeploy + appimage plugin (${version}/${arch}) installed at ${install_dir}"
+            anodizer::ok "linuxdeploy ${version} + appimage plugin ${plugin_version} (${arch}) installed at ${install_dir}"
             _INSTALLER_EMITTED_OK=1
             ;;
         macOS|Windows) skip_unsupported_os linuxdeploy "Linux-only (appimages: config requires a Linux runner)" ;;
@@ -706,8 +789,8 @@ install_rcodesign() {
             local tarball="apple-codesign-${version}-${triple}.tar.gz"
             # The release tag is URL-encoded (`apple-codesign/<ver>` → `%2F`).
             local url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${version}/${tarball}"
-            curl -sSfL "$url" -o "${install_dir}/${tarball}"
-            echo "${sha}  ${install_dir}/${tarball}" | sha256sum -c -
+            anodizer::run_quiet curl -sSfL "$url" -o "${install_dir}/${tarball}"
+            anodizer::run_quiet bash -c "echo '${sha}  ${install_dir}/${tarball}' | sha256sum -c -"
             # `rcodesign` sits one dir deep (apple-codesign-<ver>-<triple>/rcodesign);
             # strip the leading component and extract only the binary.
             tar -xzf "${install_dir}/${tarball}" -C "$install_dir" --strip-components=1 \
@@ -763,7 +846,10 @@ install_wix() {
 dispatch_install() {
     local dep pre_queue
     for dep in "${DEPS[@]}"; do
-        anodizer::step "installing ${dep}"
+        # Apt-batched deps are logged by the batch header + per-package `✓`; the
+        # generic per-tool "installing X" would duplicate that, so skip it for
+        # them. Every other tool gets its leading "installing X" up front.
+        _is_apt_batched "$dep" || anodizer::step "installing ${dep}"
         pre_queue=${#APT_PKGS[@]}
         # Self-logging installers set this to suppress the generic completion
         # line below. The apt-queue-delta heuristic alone is insufficient: an

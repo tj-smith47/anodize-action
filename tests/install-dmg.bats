@@ -38,6 +38,20 @@ echo "brew $*"
 exit 0
 STUB
     chmod +x "${FAKE_BIN}/brew"
+
+    # ── Stub: sudo / apt-get — apt_flush's batched update+install runs
+    #    hermetically (no real package manager, no network). ──
+    cat > "${FAKE_BIN}/sudo" <<'STUB'
+#!/usr/bin/env bash
+exec "$@"
+STUB
+    chmod +x "${FAKE_BIN}/sudo"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/apt-get"
+    chmod +x "${FAKE_BIN}/apt-get"
+
+    # Keep run_quiet's capture file inside the sandbox.
+    export RUNNER_TEMP="${_TEST_HOME}/runner-temp"
+    mkdir -p "$RUNNER_TEMP"
 }
 
 teardown() {
@@ -76,7 +90,10 @@ _run_install_create_dmg() {
 @test "create-dmg: Linux queues the genisoimage apt package, exits 0" {
     _run_install_create_dmg RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"genisoimage queued for batch apt install"* ]]
+    # genisoimage rides the single batched apt install — one batch header plus a
+    # per-package ✓ on flush, NOT a per-tool "queued"/"installing" line.
+    [[ "$output" == *"installing apt batch: genisoimage"* ]]
+    [[ "$output" == *"genisoimage installed"* ]]
     [[ "$output" != *"SKIPPED"* ]]
 }
 

@@ -38,6 +38,20 @@ echo "dotnet $*"
 exit 0
 STUB
     chmod +x "${FAKE_BIN}/dotnet"
+
+    # ── Stub: sudo / apt-get — apt_flush's batched update+install runs
+    #    hermetically (no real package manager, no network). ──
+    cat > "${FAKE_BIN}/sudo" <<'STUB'
+#!/usr/bin/env bash
+exec "$@"
+STUB
+    chmod +x "${FAKE_BIN}/sudo"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/apt-get"
+    chmod +x "${FAKE_BIN}/apt-get"
+
+    # Keep run_quiet's capture file inside the sandbox.
+    export RUNNER_TEMP="${_TEST_HOME}/runner-temp"
+    mkdir -p "$RUNNER_TEMP"
 }
 
 teardown() {
@@ -58,6 +72,7 @@ _run_install_wix() {
             source '${REPO_ROOT}/scripts/install/deps.sh'
             skip_unsupported_os() { echo \"SKIPPED: \$1\"; }
             install_wix
+            apt_flush
         "
 }
 
@@ -84,7 +99,10 @@ _run_install_wix() {
 @test "wix: Linux queues the wixl apt package, exits 0" {
     _run_install_wix RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"wixl queued for batch apt install"* ]]
+    # wixl rides the single batched apt install — one batch header plus a
+    # per-package ✓ on flush, NOT a per-tool "queued"/"installing" line.
+    [[ "$output" == *"installing apt batch: wixl"* ]]
+    [[ "$output" == *"wixl installed"* ]]
     [[ "$output" != *"SKIPPED"* ]]
 }
 
