@@ -635,11 +635,36 @@ install_pkgbuild() {
         macOS)   anodizer::detail "pkgbuild ships with Xcode CLT on macOS" ;;
         Linux)
             # The Linux .pkg path assembles the flat XAR package by hand:
-            # cpio+gzip (base image) for the Payload, xar (apt) to flatten, and
-            # mkbom for the Bom. bomutils is not packaged for Debian/Ubuntu, so
-            # build mkbom from source; it is a tiny CMake-free C project.
-            apt_queue xar xar
+            # cpio+gzip (base image) for the Payload, xar to flatten, and mkbom
+            # for the Bom. Neither is packaged for Ubuntu 24.04 — noble dropped
+            # the `xar` package and bomutils was never packaged — so build both
+            # from source. The command-v guards let a runner image that already
+            # ships them (e.g. the self-hosted base image) skip the build, and
+            # gate the autotools build-deps so they are only pulled when needed.
+            if ! command -v xar > /dev/null 2>&1; then
+                apt_queue libxml2-dev libxml2-dev
+                apt_queue libssl-dev libssl-dev
+                apt_queue zlib1g-dev zlib1g-dev
+                apt_queue autoconf autoconf
+                apt_queue automake automake
+                apt_queue libtool libtool
+                apt_queue pkg-config pkg-config
+            fi
             apt_flush
+            if ! command -v xar > /dev/null 2>&1; then
+                local xsrc="${RUNNER_TEMP:-/tmp}/xar"
+                rm -rf "$xsrc"
+                git clone --depth 1 https://github.com/mackyle/xar.git "$xsrc" \
+                    || gha_fail "xar clone failed"
+                ( cd "$xsrc/xar" && ./autogen.sh && ./configure && make ) \
+                    || gha_fail "xar build failed"
+                sudo make -C "$xsrc/xar" install \
+                    || gha_fail "xar install failed"
+                # libxar lands in /usr/local/lib; refresh the linker cache so the
+                # freshly built `xar` binary resolves it.
+                sudo ldconfig
+                rm -rf "$xsrc"
+            fi
             if ! command -v mkbom > /dev/null 2>&1; then
                 local src="${RUNNER_TEMP:-/tmp}/bomutils"
                 rm -rf "$src"

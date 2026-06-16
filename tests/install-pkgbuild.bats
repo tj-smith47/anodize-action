@@ -6,19 +6,23 @@
 # pkgbuild drives anodizer's `pkgs:` stage (crates/stage-pkg). On macOS the
 # native `pkgbuild` ships with the Xcode Command Line Tools (no install). On
 # Linux the stage assembles the flat XAR package by hand from `xar` + `mkbom`
-# + `cpio` (gzip in-process); `xar` comes from apt, but `mkbom` is not packaged
-# for Debian/Ubuntu so the installer builds it from the bomutils source. macOS
-# .pkg is a macOS installer format, so Windows is skipped (warn, don't fail).
+# + `cpio` (gzip in-process). Ubuntu 24.04 (noble) dropped the `xar` package
+# and bomutils was never packaged, so the installer builds BOTH from source
+# (mackyle/xar via autotools; bomutils via make), guarded by `command -v` so a
+# runner image that already ships them skips the build. macOS .pkg is a macOS
+# installer format, so Windows is skipped (warn, don't fail).
 #
-# Stubs sudo (which fronts `apt-get install`), git, make, and toggles `mkbom`
-# presence so no root, network, or compiler is needed. Covers:
+# Stubs sudo (apt-get / make install / ldconfig), git (clone), make, and the
+# autotools scripts, and toggles `xar`/`mkbom` presence so no root, network, or
+# compiler is needed. Covers:
 #
 #   1. macOS → no-op (pkgbuild ships with Xcode CLT), exits 0
-#   2. Linux, mkbom absent → xar apt-installed + bomutils cloned/built/installed
-#   3. Linux, mkbom found on PATH → xar installed, bomutils build skipped
-#   4. Windows → skipped (macOS installer format), exits 0
-#   5. auto-detect: pkgs: config on Linux/macOS emits the pkgbuild dep
-#   6. auto-detect: pkgs: config on Windows warns + omits it
+#   2. Linux, both absent → xar + bomutils built from source; build-deps apt'd
+#   3. Linux, both present → no build-deps, no clone, no build
+#   4. Linux, xar present + mkbom absent → only bomutils built (guards split)
+#   5. dispatch emits exactly one completion line (no duplicate)
+#   6. Windows → skipped (macOS installer format), exits 0
+#   7-9. auto-detect: pkgs: config emits/omits the pkgbuild dep per OS
 
 load test_helper
 
@@ -37,7 +41,8 @@ setup() {
     mkdir -p "$RUNNER_TEMP"
 
     # ── Stub: sudo — record argv, succeed. apt_flush calls `sudo apt-get
-    #    install ...`; the bomutils install calls `sudo make ... install`. ──
+    #    install ...`; the xar/bomutils installs call `sudo make ... install`
+    #    and `sudo ldconfig`. ──
     SUDO_LOG="${_TEST_HOME}/sudo.log"
     export SUDO_LOG
     cat > "${FAKE_BIN}/sudo" <<'STUB'
@@ -47,16 +52,27 @@ exit 0
 STUB
     chmod +x "${FAKE_BIN}/sudo"
 
-    # ── Stub: git — record argv (clone target), create the dir, succeed. ──
+    # ── Stub: git — record argv (clone target), create the dir, succeed. For
+    #    the mackyle/xar clone, also materialise the `xar/` source subdir with
+    #    executable autotools stubs so `cd "$dest/xar" && ./autogen.sh && …`
+    #    works without a network or real autotools. ──
     GIT_LOG="${_TEST_HOME}/git.log"
     export GIT_LOG
     cat > "${FAKE_BIN}/git" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$GIT_LOG"
-# `git clone --depth 1 <url> <dest>` → create <dest> so the later make -C works.
 if [ "$1" = "clone" ]; then
     dest="${@: -1}"
     mkdir -p "$dest"
+    case "$*" in
+        *mackyle/xar*)
+            mkdir -p "$dest/xar"
+            for s in autogen.sh configure; do
+                printf '#!/usr/bin/env bash\nexit 0\n' > "$dest/xar/$s"
+                chmod +x "$dest/xar/$s"
+            done
+            ;;
+    esac
 fi
 exit 0
 STUB
@@ -82,12 +98,12 @@ teardown() {
 # skip_unsupported_os is stubbed so the Windows arm can be exercised without
 # its real annotation side-effects.
 #
-# `command -v mkbom` is what the installer uses to decide whether to build
-# bomutils. The host running the suite may itself have an mkbom on PATH, so
-# the "mkbom absent" case overrides the `command` builtin to report mkbom as
-# missing (MASK_MKBOM=1); the "mkbom found" case overrides it to report mkbom
-# present (MASK_MKBOM=0). Both make the branch deterministic regardless of the
-# host. The override delegates to the real builtin for every other lookup.
+# `command -v xar` / `command -v mkbom` are what the installer uses to decide
+# whether to build each tool. The host running the suite may itself have either
+# on PATH, so MASK_XAR / MASK_MKBOM override the `command` builtin to report a
+# deterministic presence ("present" → found, "absent" → missing); an empty mask
+# falls through to the real builtin. The override delegates to the real builtin
+# for every other lookup.
 _run_install_pkgbuild() {
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
@@ -97,18 +113,20 @@ _run_install_pkgbuild() {
         MAKE_LOG="${MAKE_LOG}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         MASK_MKBOM="${MASK_MKBOM:-}" \
+        MASK_XAR="${MASK_XAR:-}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         "$@" \
         bash -c '
             source "${GITHUB_ACTION_PATH}/scripts/install/deps.sh"
             skip_unsupported_os() { echo "SKIPPED: $1"; }
-            # Deterministic mkbom presence for the bomutils branch.
-            if [ -n "${MASK_MKBOM}" ]; then
+            if [ -n "${MASK_MKBOM}" ] || [ -n "${MASK_XAR}" ]; then
                 command() {
-                    if [ "$1" = "-v" ] && [ "$2" = "mkbom" ]; then
-                        [ "${MASK_MKBOM}" = "present" ] && { echo mkbom; return 0; }
-                        return 1
+                    if [ "$1" = "-v" ]; then
+                        case "$2" in
+                            mkbom) case "${MASK_MKBOM}" in present) echo mkbom; return 0;; absent) return 1;; esac ;;
+                            xar)   case "${MASK_XAR}"   in present) echo xar;   return 0;; absent) return 1;; esac ;;
+                        esac
                     fi
                     builtin command "$@"
                 }
@@ -130,17 +148,20 @@ _run_dispatch() {
         MAKE_LOG="${MAKE_LOG}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         MASK_MKBOM="${MASK_MKBOM:-}" \
+        MASK_XAR="${MASK_XAR:-}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         "$@" \
         bash -c '
             source "${GITHUB_ACTION_PATH}/scripts/install/deps.sh"
             skip_unsupported_os() { echo "SKIPPED: $1"; }
-            if [ -n "${MASK_MKBOM}" ]; then
+            if [ -n "${MASK_MKBOM}" ] || [ -n "${MASK_XAR}" ]; then
                 command() {
-                    if [ "$1" = "-v" ] && [ "$2" = "mkbom" ]; then
-                        [ "${MASK_MKBOM}" = "present" ] && { echo mkbom; return 0; }
-                        return 1
+                    if [ "$1" = "-v" ]; then
+                        case "$2" in
+                            mkbom) case "${MASK_MKBOM}" in present) echo mkbom; return 0;; absent) return 1;; esac ;;
+                            xar)   case "${MASK_XAR}"   in present) echo xar;   return 0;; absent) return 1;; esac ;;
+                        esac
                     fi
                     builtin command "$@"
                 }
@@ -161,39 +182,59 @@ _run_dispatch() {
     [ ! -s "$GIT_LOG" ]
 }
 
-# ── Test 2: Linux, mkbom absent → xar + bomutils from source ───────────────
+# ── Test 2: Linux, both absent → xar + bomutils built from source ──────────
 
-@test "pkgbuild: Linux installs xar via apt and builds mkbom from bomutils" {
-    MASK_MKBOM="absent" _run_install_pkgbuild RUNNER_OS="Linux"
+@test "pkgbuild: Linux builds xar and mkbom from source when both absent" {
+    MASK_XAR="absent" MASK_MKBOM="absent" _run_install_pkgbuild RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
-    # xar queued and apt-installed.
-    grep -q 'apt-get install .*xar' "$SUDO_LOG"
+    # Autotools build-deps apt-installed (xar needs libxml2/openssl/zlib + tools).
+    grep -q 'apt-get install .*libxml2-dev' "$SUDO_LOG"
+    grep -q 'apt-get install .*libssl-dev' "$SUDO_LOG"
+    grep -q 'apt-get install .*zlib1g-dev' "$SUDO_LOG"
+    # The `xar` apt PACKAGE is never installed — it is gone from noble.
+    ! grep -qE 'apt-get install [^|]* xar( |$)' "$SUDO_LOG"
+    # xar cloned from the maintained fork, built, installed, linker cache refreshed.
+    grep -q 'clone .*mackyle/xar' "$GIT_LOG"
+    grep -q 'make -C .*xar install' "$SUDO_LOG"
+    grep -q 'ldconfig' "$SUDO_LOG"
     # bomutils cloned, built, and installed (sudo make install).
     grep -q 'clone .*bomutils' "$GIT_LOG"
     grep -q '\-C .*bomutils' "$MAKE_LOG"
     grep -q 'make -C .*bomutils install' "$SUDO_LOG"
 }
 
-# ── Test 3: Linux, mkbom found on PATH → skip the bomutils build ───────────
+# ── Test 3: Linux, both present → skip all builds and build-deps ───────────
 
-@test "pkgbuild: Linux skips the bomutils build when mkbom is found on PATH" {
-    # An mkbom found on PATH short-circuits the `command -v mkbom` gate.
-    MASK_MKBOM="present" _run_install_pkgbuild RUNNER_OS="Linux"
+@test "pkgbuild: Linux skips builds entirely when xar and mkbom are present" {
+    MASK_XAR="present" MASK_MKBOM="present" _run_install_pkgbuild RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
-    # xar is still installed.
-    grep -q 'apt-get install .*xar' "$SUDO_LOG"
-    # But bomutils is NOT cloned or built.
+    # Nothing cloned or built.
     [ ! -s "$GIT_LOG" ]
     [ ! -s "$MAKE_LOG" ]
+    # No autotools build-deps pulled (the xar-absent guard short-circuits).
+    [ ! -s "$SUDO_LOG" ] || ! grep -q 'libxml2-dev' "$SUDO_LOG"
 }
 
-# ── Test 4: dispatch emits exactly ONE completion line (no duplicate) ──────
+# ── Test 4: guards split — xar present, mkbom absent → only bomutils built ──
+
+@test "pkgbuild: Linux builds only bomutils when xar present but mkbom absent" {
+    MASK_XAR="present" MASK_MKBOM="absent" _run_install_pkgbuild RUNNER_OS="Linux"
+    [ "$status" -eq 0 ]
+    # xar present → no build-deps, no xar clone/build.
+    [ ! -s "$SUDO_LOG" ] || ! grep -q 'libxml2-dev' "$SUDO_LOG"
+    ! grep -q 'mackyle/xar' "$GIT_LOG"
+    # bomutils still built.
+    grep -q 'clone .*bomutils' "$GIT_LOG"
+    grep -q 'make -C .*bomutils install' "$SUDO_LOG"
+}
+
+# ── Test 5: dispatch emits exactly ONE completion line (no duplicate) ──────
 
 @test "pkgbuild: Linux dispatch emits exactly one completion line, not two" {
     # install_pkgbuild flushes apt internally and prints its own completion
     # line, so the generic "pkgbuild installed" must be suppressed — one line,
     # not two.
-    DISPATCH_DEP="pkgbuild" MASK_MKBOM="absent" _run_dispatch RUNNER_OS="Linux"
+    DISPATCH_DEP="pkgbuild" MASK_XAR="absent" MASK_MKBOM="absent" _run_dispatch RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
     # Snapshot the dispatch output — the `run` below clobbers $output.
     local out="$output"
@@ -208,7 +249,7 @@ _run_dispatch() {
     [ "$output" -eq 1 ]
 }
 
-# ── Test 5: Windows is skipped (macOS installer format) ────────────────────
+# ── Test 6: Windows is skipped (macOS installer format) ────────────────────
 
 @test "pkgbuild: Windows is skipped, exits 0" {
     _run_install_pkgbuild RUNNER_OS="Windows"
