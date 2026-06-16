@@ -666,10 +666,14 @@ install_pkgbuild() {
                 # form. Prime the autoconf cache to skip the bogus probe (the
                 # standard distro fix) and silence the deprecation warnings the
                 # legacy macros emit so a -Werror default cannot fail the build.
+                # EXPORT the override (xar's autogen.sh runs ./configure itself,
+                # which must inherit it) and pass --noconfigure so autogen only
+                # generates configure — we run the primed configure exactly once.
                 ( cd "$xsrc/xar" \
-                    && ./autogen.sh \
-                    && ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes \
-                       CFLAGS="-O2 -Wno-deprecated-declarations" ./configure \
+                    && export ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes \
+                              CFLAGS="-O2 -Wno-deprecated-declarations" \
+                    && ./autogen.sh --noconfigure \
+                    && ./configure \
                     && make ) \
                     || gha_fail "xar build failed"
                 sudo make -C "$xsrc/xar" install \

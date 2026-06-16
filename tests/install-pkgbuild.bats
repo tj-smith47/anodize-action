@@ -46,6 +46,14 @@ setup() {
     export CONFIGURE_LOG
     : > "$CONFIGURE_LOG"
 
+    # The autogen.sh stub records its args. The real xar autogen.sh runs
+    # ./configure itself unless --noconfigure is passed; the stub mirrors that
+    # so the test catches a regression where autogen's own (unprimed) configure
+    # runs before the primed one.
+    AUTOGEN_LOG="${_TEST_HOME}/autogen.log"
+    export AUTOGEN_LOG
+    : > "$AUTOGEN_LOG"
+
     # ── Stub: sudo — record argv, succeed. apt_flush calls `sudo apt-get
     #    install ...`; the xar/bomutils installs call `sudo make ... install`
     #    and `sudo ldconfig`. ──
@@ -73,9 +81,11 @@ if [ "$1" = "clone" ]; then
     case "$*" in
         *mackyle/xar*)
             mkdir -p "$dest/xar"
-            printf '#!/usr/bin/env bash\nexit 0\n' > "$dest/xar/autogen.sh"
-            # configure records the OpenSSL autoconf-cache override it was run
-            # with, so the test can prove the OpenSSL-3 build fix stays wired.
+            # autogen records its args and — like the real script — runs
+            # ./configure itself UNLESS --noconfigure is passed.
+            printf '#!/usr/bin/env bash\necho "$*" >> "$AUTOGEN_LOG"\n[ "$1" = "--noconfigure" ] || ./configure\nexit 0\n' > "$dest/xar/autogen.sh"
+            # configure records the OpenSSL autoconf-cache override it inherited,
+            # so the test can prove the OpenSSL-3 build fix stays wired.
             printf '#!/usr/bin/env bash\necho "ac_cv_lib_crypto_OpenSSL_add_all_ciphers=${ac_cv_lib_crypto_OpenSSL_add_all_ciphers:-UNSET}" >> "$CONFIGURE_LOG"\nexit 0\n' > "$dest/xar/configure"
             chmod +x "$dest/xar/autogen.sh" "$dest/xar/configure"
             ;;
@@ -119,6 +129,7 @@ _run_install_pkgbuild() {
         GIT_LOG="${GIT_LOG}" \
         MAKE_LOG="${MAKE_LOG}" \
         CONFIGURE_LOG="${CONFIGURE_LOG}" \
+        AUTOGEN_LOG="${AUTOGEN_LOG}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         MASK_MKBOM="${MASK_MKBOM:-}" \
         MASK_XAR="${MASK_XAR:-}" \
@@ -155,6 +166,7 @@ _run_dispatch() {
         GIT_LOG="${GIT_LOG}" \
         MAKE_LOG="${MAKE_LOG}" \
         CONFIGURE_LOG="${CONFIGURE_LOG}" \
+        AUTOGEN_LOG="${AUTOGEN_LOG}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         MASK_MKBOM="${MASK_MKBOM:-}" \
         MASK_XAR="${MASK_XAR:-}" \
@@ -206,9 +218,13 @@ _run_dispatch() {
     grep -q 'clone .*mackyle/xar' "$GIT_LOG"
     grep -q 'make -C .*xar install' "$SUDO_LOG"
     grep -q 'ldconfig' "$SUDO_LOG"
-    # The OpenSSL-3 build fix is wired: configure ran with the autoconf-cache
-    # override that skips xar's broken OpenSSL_add_all_ciphers link probe.
+    # The OpenSSL-3 build fix is wired: autogen is told --noconfigure (so its
+    # own unprimed configure can't run first), and every configure invocation
+    # carries the autoconf-cache override that skips xar's broken
+    # OpenSSL_add_all_ciphers link probe — no unprimed (UNSET) configure ran.
+    grep -q -- '--noconfigure' "$AUTOGEN_LOG"
     grep -q 'ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes' "$CONFIGURE_LOG"
+    ! grep -q 'UNSET' "$CONFIGURE_LOG"
     # bomutils cloned, built, and installed (sudo make install).
     grep -q 'clone .*bomutils' "$GIT_LOG"
     grep -q '\-C .*bomutils' "$MAKE_LOG"
