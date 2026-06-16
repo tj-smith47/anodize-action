@@ -656,7 +656,21 @@ install_pkgbuild() {
                 rm -rf "$xsrc"
                 git clone --depth 1 https://github.com/mackyle/xar.git "$xsrc" \
                     || gha_fail "xar clone failed"
-                ( cd "$xsrc/xar" && ./autogen.sh && ./configure && make ) \
+                # OpenSSL >= 1.1 turned OpenSSL_add_all_ciphers (and the digest /
+                # EVP_MD_CTX_create helpers xar uses) into header MACROS, so no
+                # such symbol is exported by libcrypto. xar's autoconf probe
+                # AC_CHECK_LIB([crypto],[OpenSSL_add_all_ciphers]) is a link test
+                # that ignores the macro and aborts configure ("Cannot build
+                # without libcrypto") on Ubuntu 24.04's OpenSSL 3 — even though
+                # libcrypto is present and the sources compile against the macro
+                # form. Prime the autoconf cache to skip the bogus probe (the
+                # standard distro fix) and silence the deprecation warnings the
+                # legacy macros emit so a -Werror default cannot fail the build.
+                ( cd "$xsrc/xar" \
+                    && ./autogen.sh \
+                    && ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes \
+                       CFLAGS="-O2 -Wno-deprecated-declarations" ./configure \
+                    && make ) \
                     || gha_fail "xar build failed"
                 sudo make -C "$xsrc/xar" install \
                     || gha_fail "xar install failed"

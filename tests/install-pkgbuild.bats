@@ -40,6 +40,12 @@ setup() {
     export RUNNER_TEMP="${_TEST_HOME}/runner-temp"
     mkdir -p "$RUNNER_TEMP"
 
+    # The xar `configure` stub records whether the OpenSSL autoconf-cache
+    # override reached it, so we can assert the OpenSSL-3 build fix stays wired.
+    CONFIGURE_LOG="${_TEST_HOME}/configure.log"
+    export CONFIGURE_LOG
+    : > "$CONFIGURE_LOG"
+
     # ── Stub: sudo — record argv, succeed. apt_flush calls `sudo apt-get
     #    install ...`; the xar/bomutils installs call `sudo make ... install`
     #    and `sudo ldconfig`. ──
@@ -67,10 +73,11 @@ if [ "$1" = "clone" ]; then
     case "$*" in
         *mackyle/xar*)
             mkdir -p "$dest/xar"
-            for s in autogen.sh configure; do
-                printf '#!/usr/bin/env bash\nexit 0\n' > "$dest/xar/$s"
-                chmod +x "$dest/xar/$s"
-            done
+            printf '#!/usr/bin/env bash\nexit 0\n' > "$dest/xar/autogen.sh"
+            # configure records the OpenSSL autoconf-cache override it was run
+            # with, so the test can prove the OpenSSL-3 build fix stays wired.
+            printf '#!/usr/bin/env bash\necho "ac_cv_lib_crypto_OpenSSL_add_all_ciphers=${ac_cv_lib_crypto_OpenSSL_add_all_ciphers:-UNSET}" >> "$CONFIGURE_LOG"\nexit 0\n' > "$dest/xar/configure"
+            chmod +x "$dest/xar/autogen.sh" "$dest/xar/configure"
             ;;
     esac
 fi
@@ -111,6 +118,7 @@ _run_install_pkgbuild() {
         SUDO_LOG="${SUDO_LOG}" \
         GIT_LOG="${GIT_LOG}" \
         MAKE_LOG="${MAKE_LOG}" \
+        CONFIGURE_LOG="${CONFIGURE_LOG}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         MASK_MKBOM="${MASK_MKBOM:-}" \
         MASK_XAR="${MASK_XAR:-}" \
@@ -146,6 +154,7 @@ _run_dispatch() {
         SUDO_LOG="${SUDO_LOG}" \
         GIT_LOG="${GIT_LOG}" \
         MAKE_LOG="${MAKE_LOG}" \
+        CONFIGURE_LOG="${CONFIGURE_LOG}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         MASK_MKBOM="${MASK_MKBOM:-}" \
         MASK_XAR="${MASK_XAR:-}" \
@@ -197,6 +206,9 @@ _run_dispatch() {
     grep -q 'clone .*mackyle/xar' "$GIT_LOG"
     grep -q 'make -C .*xar install' "$SUDO_LOG"
     grep -q 'ldconfig' "$SUDO_LOG"
+    # The OpenSSL-3 build fix is wired: configure ran with the autoconf-cache
+    # override that skips xar's broken OpenSSL_add_all_ciphers link probe.
+    grep -q 'ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes' "$CONFIGURE_LOG"
     # bomutils cloned, built, and installed (sudo make install).
     grep -q 'clone .*bomutils' "$GIT_LOG"
     grep -q '\-C .*bomutils' "$MAKE_LOG"
