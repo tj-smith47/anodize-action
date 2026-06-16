@@ -84,6 +84,10 @@ notarize_macos_configured() {
 if notarize_macos_configured; then
     deps+=("rcodesign")
 fi
+# npms: publishes an npm metapackage via `npm publish` (Trusted Publishing
+# OIDC), which needs node/npm on PATH. npm publish runs on any runner OS, so
+# no OS guard.
+has_top_key npms && deps+=("node") || true
 has_top_key sboms && deps+=("syft") || true
 has_top_key upx && deps+=("upx") || true
 # nsis builds on every platform (makensis: nsis apt on Linux, brew on macOS,

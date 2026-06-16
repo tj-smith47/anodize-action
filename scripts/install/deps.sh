@@ -5,7 +5,7 @@
 # separated lists), dedupes, and installs each requested dep.
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
-# cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
+# node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
 # rcodesign, wix, pkgbuild.
 set -euo pipefail
 
@@ -71,6 +71,16 @@ WIX_DEFAULT_VERSION="4.0.6"
 # `snap install snapcraft`. Override with SNAPCRAFT_VERSION (also honoured
 # by the macOS brew path).
 SNAPCRAFT_DEFAULT_VERSION="8.14.5"
+
+# node/npm back the `npms:` publisher, which publishes anodizer's npm
+# metapackage via npm Trusted Publishing (OIDC) — that handshake needs
+# Node >= 22.14.0 / npm >= 11.5.1, so the pin tracks the newest v22 LTS line
+# (npm ships bundled with node, so a recent-enough node satisfies both). The
+# Linux installer verifies the tarball against nodejs.org's published
+# SHASUMS256.txt (no hardcoded sha to drift; the dated dist dir is immutable).
+# Override with NODE_VERSION (also honoured by the macOS brew + Windows choco
+# paths).
+NODE_DEFAULT_VERSION="22.22.3"
 
 # nfpm drives anodizer's deb/rpm/apk publishers. On Linux it installs via a
 # direct, checksum-verified GitHub-release download (mirroring cosign/syft)
@@ -560,6 +570,44 @@ install_zig() {
     esac
 }
 
+install_node() {
+    case "$RUNNER_OS" in
+        Linux)
+            local version="${NODE_VERSION:-$NODE_DEFAULT_VERSION}"
+            local arch
+            case "$RUNNER_ARCH" in
+                # Node names its Linux assets x64/arm64, not x86_64/aarch64.
+                X64)   arch=x64 ;;
+                ARM64) arch=arm64 ;;
+                *)     gha_fail "Unsupported Linux arch for node: $RUNNER_ARCH" ;;
+            esac
+            local tarball="node-v${version}-linux-${arch}.tar.xz"
+            local base="https://nodejs.org/dist/v${version}"
+            # nodejs.org publishes per-release SHASUMS256.txt (`<sha>  <file>`
+            # per line) rather than per-tarball sidecars; verify against it so
+            # no sha is hardcoded — the dated dist dir is immutable.
+            anodizer::run_quiet curl -sSfL "${base}/${tarball}" -o /tmp/node.tar.xz
+            local expected
+            # NOT routed through run_quiet: this curl's stdout feeds the
+            # `$(... | grep ...)` capture, which run_quiet would redirect into
+            # its log file — swallowing the shasum. It is already quiet on
+            # success (stdout goes to grep, not the terminal).
+            expected=$(curl -sSfL "${base}/SHASUMS256.txt" \
+                | grep " ${tarball}\$" | awk '{print $1}')
+            [ -n "$expected" ] \
+                || gha_fail "node sha256 missing from SHASUMS256.txt for ${tarball}"
+            anodizer::run_quiet bash -c "echo '${expected}  /tmp/node.tar.xz' | sha256sum -c -"
+            sudo mkdir -p /opt/node
+            sudo tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
+            sudo ln -sf /opt/node/bin/node /usr/local/bin/node
+            sudo ln -sf /opt/node/bin/npm /usr/local/bin/npm
+            sudo ln -sf /opt/node/bin/npx /usr/local/bin/npx
+            ;;
+        macOS)   brew_install node NODE_VERSION ;;
+        Windows) choco_install nodejs NODE_VERSION ;;
+    esac
+}
+
 install_cargo_zigbuild() {
     command -v cargo > /dev/null 2>&1 \
         || gha_fail "cargo-zigbuild requires Rust; set install-rust: true"
@@ -909,6 +957,7 @@ dispatch_install() {
             cosign)         install_cosign ;;
             syft)           install_syft ;;
             zig)            install_zig ;;
+            node)           install_node ;;
             cargo-zigbuild) install_cargo_zigbuild ;;
             upx)            install_upx ;;
             nsis)           install_nsis ;;
@@ -919,7 +968,7 @@ dispatch_install() {
             rcodesign)      install_rcodesign ;;
             wix)            install_wix ;;
             pkgbuild)       install_pkgbuild ;;
-            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild)" ;;
+            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild)" ;;
         esac
         # Skip the generic "installed" line when either (a) the installer left
         # something apt-queued — apt_flush emits one line per package after the
