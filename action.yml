@@ -194,8 +194,11 @@ inputs:
   determinism:
     description: >
       Run the determinism harness (`anodizer check determinism`) on this shard.
-      When true, the action: installs Rust (if not already), builds anodizer
-      from source, installs the harness dependency set (zig, cargo-zigbuild,
+      When true, the action: installs Rust (if not already), provisions the
+      `anodizer` binary — built from source by default, or downloaded when
+      `version` names an explicit tag (a consumer validating its own release
+      reproducibility runs the same released binary that will publish it) —
+      installs the harness dependency set (zig, cargo-zigbuild,
       upx, nfpm, makeself, snapcraft, syft, cosign on Linux; upx, syft,
       cosign on macOS/Windows), derives the configured-target CSV for the
       current RUNNER_OS via
@@ -388,8 +391,7 @@ runs:
 
     # -------------------------------------------------------------------------
     # Rust toolchain — prereq for from-source, from-branch, cargo-zigbuild,
-    # and the determinism harness (which builds anodizer from source so it
-    # tests the actual code under review, not a stale release).
+    # and the determinism harness (which rebuilds the release repeatedly).
     # -------------------------------------------------------------------------
     - name: Install Rust toolchain
       if: inputs.install-rust == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
@@ -519,7 +521,7 @@ runs:
     # Installation — Path B: from GitHub release
     # -------------------------------------------------------------------------
     - name: Resolve version
-      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true' && inputs.from-branch == ''
+      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.from-branch == '' && (inputs.determinism != 'true' || (inputs.version != '' && inputs.version != 'latest'))
       id: version
       shell: bash
       env:
@@ -528,7 +530,7 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/install/resolve-version.sh"
 
     - name: Download release
-      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.determinism != 'true' && inputs.from-branch == ''
+      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.from-branch == '' && (inputs.determinism != 'true' || (inputs.version != '' && inputs.version != 'latest'))
       shell: bash
       env:
         TAG: ${{ steps.version.outputs.tag }}
@@ -555,7 +557,7 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/install/from-branch.sh"
 
     - name: Build anodizer from source
-      if: inputs.from-source == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
+      if: inputs.from-source == 'true' || inputs.from-branch != '' || (inputs.determinism == 'true' && (inputs.version == '' || inputs.version == 'latest'))
       shell: bash
       working-directory: ${{ env.ANODIZER_SRC_DIR || inputs.workdir }}
       env:
@@ -629,8 +631,8 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/workspace/split-matrix.sh"
 
     # -------------------------------------------------------------------------
-    # Determinism harness — runs after the from-source build (so `anodizer`
-    # is on PATH) and after install-deps (so zig / cargo-zigbuild / upx are
+    # Determinism harness — runs after `anodizer` is on PATH (source build or
+    # pinned-release download) and after install-deps (so zig / cargo-zigbuild / upx are
     # available for the per-target rebuilds the harness drives).
     # -------------------------------------------------------------------------
     - name: Resolve determinism target CSV
