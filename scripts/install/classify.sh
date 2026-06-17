@@ -47,7 +47,7 @@ emit_bool() {
 }
 
 needs_rust=false
-if [ "$INSTALL_RUST" = "true" ] || [ "$DETERMINISM" = "true" ] || [ -n "$FROM_BRANCH" ]; then
+if [ "$INSTALL_RUST" = "true" ] || [ "$DETERMINISM" = "true" ] || [ "$FROM_SOURCE" = "true" ] || [ -n "$FROM_BRANCH" ]; then
     needs_rust=true
 fi
 
