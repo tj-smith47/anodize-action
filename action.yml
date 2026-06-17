@@ -358,6 +358,27 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/platform/detect.sh"
 
     # -------------------------------------------------------------------------
+    # Install-method classifier — single source of truth for the install path
+    # and the toolchain/run gating booleans, so the long `if:` conditionals
+    # below collapse to `steps.plan.outputs.*` lookups. Pure input arithmetic;
+    # no network or toolchain, so it runs right after platform detection and
+    # ahead of every step that gates on it.
+    # -------------------------------------------------------------------------
+    - name: Classify install method
+      id: plan
+      shell: bash
+      env:
+        FROM_ARTIFACT: ${{ inputs.from-artifact }}
+        FROM_BRANCH: ${{ inputs.from-branch }}
+        FROM_SOURCE: ${{ inputs.from-source }}
+        DETERMINISM: ${{ inputs.determinism }}
+        VERSION: ${{ inputs.version }}
+        INSTALL_RUST: ${{ inputs.install-rust }}
+        INSTALL_ONLY: ${{ inputs.install-only }}
+        ARGS: ${{ inputs.args }}
+      run: "${GITHUB_ACTION_PATH}/scripts/install/classify.sh"
+
+    # -------------------------------------------------------------------------
     # Input validation
     # -------------------------------------------------------------------------
     - name: Validate determinism inputs
@@ -394,7 +415,7 @@ runs:
     # and the determinism harness (which rebuilds the release repeatedly).
     # -------------------------------------------------------------------------
     - name: Install Rust toolchain
-      if: inputs.install-rust == 'true' || inputs.determinism == 'true' || inputs.from-branch != ''
+      if: steps.plan.outputs.needs_rust == 'true'
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
     # -------------------------------------------------------------------------
@@ -404,7 +425,7 @@ runs:
     # target/ is wiped between runs). Layered, not replacing.
     # -------------------------------------------------------------------------
     - name: Compute cache key suffix
-      if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
+      if: steps.plan.outputs.needs_cargo_cache == 'true'
       id: cache-key
       shell: bash
       env:
@@ -414,14 +435,14 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/rust/cache-key.sh"
 
     - name: Cache cargo target dir
-      if: inputs.determinism == 'true' || inputs.from-source == 'true' || inputs.from-branch != ''
+      if: steps.plan.outputs.needs_cargo_cache == 'true'
       uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       with:
         key: anodizer-action-${{ steps.cache-key.outputs.suffix }}
         workspaces: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
 
     - name: Set up sccache
-      if: inputs.determinism == 'true' || inputs.from-source == 'true'
+      if: steps.plan.outputs.needs_sccache == 'true'
       uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.9
 
     # sccache is armed only for determinism / from-source. from-branch clones
@@ -430,7 +451,7 @@ runs:
     # ("Our services aren't available right now") — every rustc call would
     # exit 101.
     - name: Enable sccache wrapper (with health probe)
-      if: inputs.determinism == 'true' || inputs.from-source == 'true'
+      if: steps.plan.outputs.needs_sccache == 'true'
       shell: bash
       run: "${GITHUB_ACTION_PATH}/scripts/rust/sccache-probe.sh"
 
@@ -489,7 +510,7 @@ runs:
     # Installation — Path A: from workflow artifact
     # -------------------------------------------------------------------------
     - name: Resolve artifact run ID
-      if: inputs.from-artifact != '' && inputs.artifact-run-id != ''
+      if: steps.plan.outputs.install_method == 'artifact' && inputs.artifact-run-id != ''
       id: resolve-run
       shell: bash
       env:
@@ -502,7 +523,7 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/install/resolve-artifact-id.sh"
 
     - name: Download artifact
-      if: inputs.from-artifact != ''
+      if: steps.plan.outputs.install_method == 'artifact'
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
         name: ${{ inputs.from-artifact }}
@@ -511,7 +532,7 @@ runs:
         run-id: ${{ steps.resolve-run.outputs.run_id || '' }}
 
     - name: Install from artifact
-      if: inputs.from-artifact != ''
+      if: steps.plan.outputs.install_method == 'artifact'
       shell: bash
       env:
         BIN: ${{ steps.platform.outputs.bin }}
@@ -521,7 +542,7 @@ runs:
     # Installation — Path B: from GitHub release
     # -------------------------------------------------------------------------
     - name: Resolve version
-      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.from-branch == '' && (inputs.determinism != 'true' || (inputs.version != '' && inputs.version != 'latest'))
+      if: steps.plan.outputs.install_method == 'release'
       id: version
       shell: bash
       env:
@@ -530,7 +551,7 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/install/resolve-version.sh"
 
     - name: Download release
-      if: inputs.from-artifact == '' && inputs.from-source != 'true' && inputs.from-branch == '' && (inputs.determinism != 'true' || (inputs.version != '' && inputs.version != 'latest'))
+      if: steps.plan.outputs.install_method == 'release'
       shell: bash
       env:
         TAG: ${{ steps.version.outputs.tag }}
@@ -549,7 +570,7 @@ runs:
     # rather than inputs.workdir, so the user's checkout is never touched.
     # -------------------------------------------------------------------------
     - name: Clone anodizer branch
-      if: inputs.from-branch != ''
+      if: steps.plan.outputs.install_method == 'branch'
       id: clone-branch
       shell: bash
       env:
@@ -557,7 +578,7 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/install/from-branch.sh"
 
     - name: Build anodizer from source
-      if: inputs.from-source == 'true' || inputs.from-branch != '' || (inputs.determinism == 'true' && (inputs.version == '' || inputs.version == 'latest'))
+      if: steps.plan.outputs.install_method == 'source' || steps.plan.outputs.install_method == 'branch'
       shell: bash
       working-directory: ${{ env.ANODIZER_SRC_DIR || inputs.workdir }}
       env:
@@ -676,7 +697,7 @@ runs:
     # Run anodizer
     # -------------------------------------------------------------------------
     - name: Run anodizer
-      if: inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
+      if: steps.plan.outputs.run_anodizer == 'true'
       shell: bash
       working-directory: ${{ inputs.workdir }}
       env:
@@ -695,7 +716,7 @@ runs:
     # `irreversibly_published` empty, which a rollback gate reads as
     # "nothing burned".
     - name: Collect outputs
-      if: always() && inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
+      if: always() && steps.plan.outputs.run_anodizer == 'true'
       id: outputs
       shell: bash
       working-directory: ${{ inputs.workdir }}
@@ -713,7 +734,7 @@ runs:
     # `id-token: write` and `attestations: write`.
     # -------------------------------------------------------------------------
     - name: Collect attestation subjects
-      if: inputs.install-only != 'true' && inputs.args != '' && inputs.determinism != 'true'
+      if: steps.plan.outputs.run_anodizer == 'true'
       id: attest-subjects
       shell: bash
       working-directory: ${{ inputs.workdir }}
