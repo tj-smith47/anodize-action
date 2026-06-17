@@ -240,5 +240,5 @@ _run_auto_detect() {
     _run_auto_detect $'npms:\n  - name: anodizer\n    scope: tj-smith47' "Linux"
     [ "$status" -eq 0 ]
     grep -q '^deps=.*node' "$GITHUB_OUTPUT"
-    [[ "$output" == *"auto-install detected:"*"node"* ]]
+    [[ "$output" == *"detected"*"node"* ]]
 }

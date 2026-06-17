@@ -16,4 +16,5 @@ case "$dist" in
 esac
 gha_set_output dist "$dist"
 gha_set_output path "$abs"
-anodizer::step "dist directory resolved to ${dist}"
+anodizer::verb Resolving "dist directory"
+anodizer::detail "${abs}"

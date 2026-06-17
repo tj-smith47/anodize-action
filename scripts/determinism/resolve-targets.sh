@@ -29,10 +29,12 @@ emit_csv() {
 }
 
 if [ -n "$OVERRIDE" ]; then
-    gha_notice "Determinism targets (override): $OVERRIDE"
+    anodizer::verb Resolving "determinism targets (override)"
     emit_csv "$OVERRIDE"
     exit 0
 fi
+
+anodizer::verb Resolving "determinism targets"
 
 case "$RUNNER_OS" in
     Linux)   want=ubuntu-latest ;;
@@ -58,5 +60,5 @@ csv=$(printf '%s' "$json" \
 [ -n "$csv" ] \
     || gha_fail "No targets match RUNNER_OS=$RUNNER_OS (looked for os=$want in \`anodizer targets --json\`)"
 
-gha_notice "Determinism targets: $csv"
+anodizer::kv targets "$csv" >&2
 emit_csv "$csv"

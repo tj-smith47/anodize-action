@@ -10,11 +10,14 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
+anodizer::verb Probing "sccache backend"
+
 export SCCACHE_GHA_ENABLED=true
 if sccache "$(rustup which rustc)" -vV >/dev/null 2>&1; then
-    gha_notice "sccache backend reachable; wrapping rustc"
     gha_set_env SCCACHE_GHA_ENABLED true
     gha_set_env RUSTC_WRAPPER sccache
+    anodizer::ok "sccache backend reachable; wrapping rustc"
 else
     gha_warning "sccache backend unreachable (likely GHA cache outage); building without wrapper"
+    anodizer::warn "sccache backend unreachable (likely GHA cache outage); building without wrapper"
 fi

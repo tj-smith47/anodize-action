@@ -18,6 +18,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
 
+anodizer::verb Collecting "attestation subjects"
+
 dist=$(resolve_dist_dir)
 
 shopt -s nullglob

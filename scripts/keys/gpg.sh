@@ -13,6 +13,7 @@ set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 source "${GITHUB_ACTION_PATH}/scripts/lib/mask-secret.sh"
 
+anodizer::verb Importing "GPG signing key"
 anodizer::mask_lines "$GPG_PRIVATE_KEY"
 
 echo "$GPG_PRIVATE_KEY" | gpg --batch --import
@@ -30,5 +31,4 @@ grep -qxF 'pinentry-mode loopback' "${HOME}/.gnupg/gpg.conf" 2>/dev/null \
     || echo 'pinentry-mode loopback' >> "${HOME}/.gnupg/gpg.conf"
 gpgconf --kill gpg-agent || true
 
-gha_notice "GPG private key imported"
 anodizer::ok "GPG private key imported (keyring + GPG_KEY_PATH for nfpm)"

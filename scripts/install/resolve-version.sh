@@ -49,5 +49,4 @@ case "$INPUT_VERSION" in
 esac
 
 gha_set_output tag "$tag"
-gha_notice "Installing anodizer $tag"
 anodizer::verb Installing "anodizer ${tag}"

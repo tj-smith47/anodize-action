@@ -7,6 +7,8 @@
 set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
+anodizer::verb Adding "rust targets"
+
 IFS=',' read -ra triples <<< "$TARGETS"
 for t in "${triples[@]}"; do
     t=$(printf '%s' "$t" | xargs)

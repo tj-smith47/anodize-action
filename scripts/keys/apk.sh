@@ -14,6 +14,7 @@ set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 source "${GITHUB_ACTION_PATH}/scripts/lib/mask-secret.sh"
 
+anodizer::verb Writing "apk signing keys"
 anodizer::mask_lines "$APK_PRIVATE_KEY_INPUT"
 
 privfile="${RUNNER_TEMP}/anodizer-apk.rsa"
@@ -30,5 +31,4 @@ cp "$pubfile" "./dist/${GITHUB_REPOSITORY##*/}-apk-signing-key.rsa.pub"
 
 gha_set_env APK_PRIVATE_KEY_PATH "$privfile"
 gha_set_env APK_PUBLIC_KEY_PATH "$pubfile"
-gha_notice "apk signing keys written"
 anodizer::ok "apk signing keys written (APK_PRIVATE_KEY_PATH for nfpm; pub key staged in dist/)"

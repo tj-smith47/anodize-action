@@ -16,7 +16,6 @@ has_builds=$(echo "$output" | grep '^has-builds=' | cut -d= -f2)
 gha_set_output crate "$crate"
 gha_set_output path "$path"
 gha_set_output has-builds "$has_builds"
-gha_notice "Tag '$TAG' → crate '$crate' (path=$path, has-builds=$has_builds)"
 anodizer::verb Resolving "'$TAG' → $crate"
 anodizer::kv path "$path"
 anodizer::kv has-builds "$has_builds"

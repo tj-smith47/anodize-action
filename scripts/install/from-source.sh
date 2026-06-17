@@ -28,7 +28,6 @@ mkdir -p "$install_dir"
 cp "target/release/${BIN}" "${install_dir}/${BIN}"
 chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
 gha_add_path "$install_dir"
-gha_notice "anodizer built from source and installed to ${install_dir}"
 gha_group_end
 anodizer::ok "anodizer built from source"
 anodizer::detail "${install_dir}/${BIN}"

@@ -11,6 +11,8 @@ set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 source "${GITHUB_ACTION_PATH}/scripts/lib/config.sh"
 
+anodizer::verb Verifying "split context manifests"
+
 dist=$(resolve_dist_dir)
 
 count=$(find "$dist" -maxdepth 2 -type f \

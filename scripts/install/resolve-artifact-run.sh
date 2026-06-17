@@ -64,8 +64,8 @@ run_has_artifact() {
 }
 
 # Each resolver returns its result in RUN_ID rather than on stdout: the
-# resolvers emit ::notice:: lines, and a command substitution would capture
-# those into the value (the runner then queries runs/NaN/artifacts).
+# resolvers emit progress child lines, and a command substitution would
+# capture those into the value (the runner then queries runs/NaN/artifacts).
 RUN_ID=""
 
 # Phase 1 — exact-SHA fast path.
@@ -78,14 +78,14 @@ resolve_fast() {
 # where rev-parse SHA~1 has nothing to resolve against.
 resolve_parents() {
     local depth cur="$deref_sha" id
-    gha_notice "No CI run for exact SHA; checking parent commits"
+    anodizer::step "no CI run for exact SHA; checking parent commits"
     for depth in 1 2 3 4 5; do
         cur=$(gh api "repos/${REPO}/commits/${cur}" --jq '.parents[0].sha // empty' \
             2>/dev/null || echo "")
         [ -z "$cur" ] && break
         id=$(find_run '.conclusion=="success"' "$cur" "")
         if [ -n "$id" ]; then
-            gha_notice "Found CI run ${id} at parent ~${depth} (${cur})"
+            anodizer::step "found CI run ${id} at parent ~${depth} (${cur})"
             RUN_ID="$id"
             return 0
         fi
@@ -111,12 +111,12 @@ resolve_polling() {
 
         in_progress=$(find_run '(.status=="in_progress" or .status=="queued") and (.conclusion==null or .conclusion=="")' "$COMMIT_SHA" "$deref_sha")
         if [ -n "$in_progress" ] && run_has_artifact "$in_progress"; then
-            gha_notice "Accepting in-progress run $in_progress (artifact $FROM_ARTIFACT already uploaded)"
+            anodizer::step "accepting in-progress run $in_progress (artifact $FROM_ARTIFACT already uploaded)"
             RUN_ID="$in_progress"
             return 0
         fi
 
-        gha_notice "Waiting for ${ARTIFACT_WORKFLOW} run on ${COMMIT_SHA} (attempt ${attempt}/${max_attempts}, next check in ${sleep_secs}s)"
+        anodizer::step "waiting for ${ARTIFACT_WORKFLOW} run on ${COMMIT_SHA} (attempt ${attempt}/${max_attempts}, next check in ${sleep_secs}s)"
         sleep "$sleep_secs"
         attempt=$((attempt + 1))
         next=$((sleep_secs * 2))
@@ -141,7 +141,6 @@ if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
     gha_fail "Could not find a successful or artifact-ready ${ARTIFACT_WORKFLOW} run for ${COMMIT_SHA}"
 fi
 
-gha_notice "Resolved artifact-run-id=auto to run ${run_id}"
 gha_group_end
 anodizer::ok "resolved to run ${run_id}"
 gha_set_output run_id "$run_id"

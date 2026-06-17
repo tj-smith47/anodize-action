@@ -6,6 +6,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
 
+anodizer::verb Deriving "build matrix from anodizer targets"
+
 command -v anodizer > /dev/null 2>&1 \
     || gha_fail "split-matrix: anodizer not found on PATH — the install step must run before the matrix can be derived"
 
@@ -13,7 +15,7 @@ command -v anodizer > /dev/null 2>&1 \
 # — an `install-only: true` step in a config-less workdir is a legitimate
 # "just install the binary" use, not a probe failure.
 if ! find_anodizer_config > /dev/null && [ ! -f Cargo.toml ]; then
-    gha_notice "split-matrix: no anodizer config (or Cargo.toml fallback) in the workdir; emitting an empty matrix"
+    anodizer::warn "no anodizer config (or Cargo.toml fallback) in the workdir; emitting an empty matrix"
     gha_set_output matrix ""
     exit 0
 fi
@@ -23,4 +25,4 @@ fi
 targets=$(anodizer targets --json) \
     || gha_fail "split-matrix: 'anodizer targets --json' failed — cannot derive the build matrix"
 gha_set_output matrix "$targets"
-gha_notice "split-matrix output populated from anodizer targets --json"
+anodizer::ok "build matrix derived from anodizer targets --json"

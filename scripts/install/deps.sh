@@ -990,7 +990,9 @@ main() {
         exit 0
     fi
 
-    anodizer::verb Installing "${#DEPS[@]} dependencies"
+    local noun=dependencies
+    [ "${#DEPS[@]}" -eq 1 ] && noun=dependency
+    anodizer::verb Installing "${#DEPS[@]} ${noun}"
     dispatch_install
     apt_flush
 }

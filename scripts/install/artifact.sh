@@ -9,6 +9,6 @@ install_dir="${RUNNER_TOOL_CACHE}/anodizer/artifact"
 chmod +x "${install_dir}/${BIN}" 2>/dev/null || true
 gha_add_path "$install_dir"
 
-gha_notice "anodizer installed from artifact to ${install_dir}"
+anodizer::verb Installing "anodizer from artifact"
 anodizer::ok "anodizer installed from artifact"
 anodizer::detail "${install_dir}/${BIN}"

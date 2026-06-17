@@ -16,6 +16,8 @@ source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
 [ -n "$SHARD_LABEL" ] || gha_fail "preserve-dist requires shard-label input"
 
+anodizer::verb Labelling "preserved-dist manifests for shard ${SHARD_LABEL}"
+
 if [ ! -d preserved-dist ]; then
     anodizer::warn "preserved-dist/ missing — nothing to rename"
     exit 0

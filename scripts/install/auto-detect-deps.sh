@@ -6,9 +6,12 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
 
+anodizer::verb Detecting "pipeline dependencies"
+
 deps=()
 if ! cfg=$(find_anodizer_config); then
     gha_warning "auto-install: no anodizer config found, skipping"
+    anodizer::warn "no anodizer config found; nothing to auto-install"
     gha_set_output deps ""
     exit 0
 fi
@@ -156,5 +159,5 @@ else
 fi
 
 joined=$(IFS=','; echo "${deps[*]}")
-gha_notice "auto-install detected: ${joined:-none}"
+anodizer::kv detected "${joined:-none}"
 gha_set_output deps "$joined"
