@@ -90,6 +90,17 @@ _anodizer_indent() {
     printf '%s' "$base"
 }
 
+# Section header string (format B): a bold-green present-participle verb,
+# ONE space, then the title — returned on stdout with NO trailing newline so
+# it is safe to capture inside `$(...)` (e.g. as a `::group::` title).
+#   anodizer::verb_str Building "source"
+#   → Building source         (no newline)
+anodizer::verb_str() {
+    local verb="$1"
+    shift
+    printf "%s%s%s %s" "${_ANODIZER_BOLD_GREEN}" "${verb}" "${_ANODIZER_RESET}" "$*"
+}
+
 # Section header (format B): a bold-green present-participle verb at the
 # left margin, ONE space, then the title. The only thing at column 0.
 #   anodizer::verb Building "source"
@@ -97,9 +108,7 @@ _anodizer_indent() {
 # Diagnostic, so it writes to stderr: a sibling helper's stdout may be
 # captured via $(...) and must not ingest this colored line.
 anodizer::verb() {
-    local verb="$1"
-    shift
-    printf "%s%s%s %s\n" "${_ANODIZER_BOLD_GREEN}" "${verb}" "${_ANODIZER_RESET}" "$*" >&2
+    printf '%s\n' "$(anodizer::verb_str "$@")" >&2
 }
 
 # Detail / info child line — `•` marker, dimmed-cyan, optional dimmed

@@ -415,7 +415,7 @@ install_snapcraft() {
             # snapd socket; a bare `command -v snap` would wrongly take the
             # snap path in containers that ship the client without snapd.
             if command -v snap > /dev/null 2>&1 && snap version > /dev/null 2>&1; then
-                sudo snap install snapcraft --classic
+                anodizer::run_quiet sudo snap install snapcraft --classic
             else
                 snapcraft_install_linux_pip
             fi
@@ -611,7 +611,7 @@ install_node() {
 install_cargo_zigbuild() {
     command -v cargo > /dev/null 2>&1 \
         || gha_fail "cargo-zigbuild requires Rust; set install-rust: true"
-    cargo install --locked cargo-zigbuild
+    anodizer::run_quiet cargo install --locked cargo-zigbuild
 }
 
 install_upx() {
@@ -702,7 +702,7 @@ install_pkgbuild() {
             if ! command -v xar > /dev/null 2>&1; then
                 local xsrc="${RUNNER_TEMP:-/tmp}/xar"
                 rm -rf "$xsrc"
-                git clone --depth 1 https://github.com/mackyle/xar.git "$xsrc" \
+                anodizer::run_quiet git clone --depth 1 https://github.com/mackyle/xar.git "$xsrc" \
                     || gha_fail "xar clone failed"
                 # OpenSSL >= 1.1 turned OpenSSL_add_all_ciphers (and the digest /
                 # EVP_MD_CTX_create helpers xar uses) into header MACROS, so no
@@ -717,14 +717,18 @@ install_pkgbuild() {
                 # EXPORT the override (xar's autogen.sh runs ./configure itself,
                 # which must inherit it) and pass --noconfigure so autogen only
                 # generates configure — we run the primed configure exactly once.
-                ( cd "$xsrc/xar" \
-                    && export ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes \
-                              CFLAGS="-O2 -Wno-deprecated-declarations" \
-                    && ./autogen.sh --noconfigure \
-                    && ./configure \
-                    && make ) \
+                # Single-quoted body: $1 must expand in the spawned bash (xsrc
+                # is passed as a positional arg), not the parent shell.
+                # shellcheck disable=SC2016
+                anodizer::run_quiet bash -c '
+                    cd "$1/xar" \
+                        && export ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes \
+                                  CFLAGS="-O2 -Wno-deprecated-declarations" \
+                        && ./autogen.sh --noconfigure \
+                        && ./configure \
+                        && make' _ "$xsrc" \
                     || gha_fail "xar build failed"
-                sudo make -C "$xsrc/xar" install \
+                anodizer::run_quiet sudo make -C "$xsrc/xar" install \
                     || gha_fail "xar install failed"
                 # libxar lands in /usr/local/lib; refresh the linker cache so the
                 # freshly built `xar` binary resolves it.
@@ -734,11 +738,11 @@ install_pkgbuild() {
             if ! command -v mkbom > /dev/null 2>&1; then
                 local src="${RUNNER_TEMP:-/tmp}/bomutils"
                 rm -rf "$src"
-                git clone --depth 1 https://github.com/hogliux/bomutils.git "$src" \
+                anodizer::run_quiet git clone --depth 1 https://github.com/hogliux/bomutils.git "$src" \
                     || gha_fail "bomutils clone failed"
-                make -C "$src" \
+                anodizer::run_quiet make -C "$src" \
                     || gha_fail "bomutils build failed"
-                sudo make -C "$src" install \
+                anodizer::run_quiet sudo make -C "$src" install \
                     || gha_fail "bomutils install failed"
                 rm -rf "$src"
             fi
@@ -899,7 +903,7 @@ install_rcodesign() {
             command -v cargo > /dev/null 2>&1 \
                 || gha_fail "rcodesign on Windows requires Rust; set install-rust: true"
             local version="${RCODESIGN_VERSION:-$RCODESIGN_DEFAULT_VERSION}"
-            cargo install apple-codesign --locked --version "$version"
+            anodizer::run_quiet cargo install apple-codesign --locked --version "$version"
             ;;
     esac
 }

@@ -24,8 +24,11 @@ ANODIZE_BIN="${ANODIZE_BIN:-anodizer}"
 
 emit_csv() {
     local csv="$1"
-    [ -n "${GITHUB_OUTPUT:-}" ] && gha_set_output csv "$csv"
-    printf '%s\n' "$csv"
+    if [ -n "${GITHUB_OUTPUT:-}" ]; then
+        gha_set_output csv "$csv"
+    else
+        printf '%s\n' "$csv"
+    fi
 }
 
 if [ -n "$OVERRIDE" ]; then

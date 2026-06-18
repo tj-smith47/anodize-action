@@ -83,9 +83,14 @@ exit 0
 STUB
     chmod +x "${FAKE_BIN}/tar"
 
-    # ── Stub: cargo — record the install invocation, succeed. ─────────────
+    # ── Stub: cargo — record the install invocation to a log AND echo it,
+    #    succeed. The installer wraps the real call in anodizer::run_quiet,
+    #    which swallows stdout on success, so assert on the log file (a
+    #    side-effect run_quiet cannot suppress), not on captured output. ────
+    export CARGO_LOG="${_TEST_HOME}/cargo-invocations.log"
     cat > "${FAKE_BIN}/cargo" <<'STUB'
 #!/usr/bin/env bash
+echo "cargo $*" >> "$CARGO_LOG"
 echo "cargo $*"
 exit 0
 STUB
@@ -105,6 +110,7 @@ _run_install_rcodesign() {
         GITHUB_PATH="${GITHUB_PATH}" \
         GITHUB_ENV="${GITHUB_ENV}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
+        CARGO_LOG="${CARGO_LOG}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         "$@" \
@@ -181,7 +187,7 @@ _run_install_rcodesign_no_cargo() {
 @test "rcodesign: Windows uses cargo install fallback" {
     _run_install_rcodesign RUNNER_OS="Windows" RUNNER_ARCH="X64"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"cargo install apple-codesign"* ]]
+    grep -q "cargo install apple-codesign" "$CARGO_LOG"
 }
 
 # ── Test 6: Windows without cargo → loud failure (Rust required) ───────────

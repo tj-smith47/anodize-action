@@ -74,8 +74,18 @@ teardown() {
         ANODIZE_BIN=fake-anodizer \
         run "$SCRIPT"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"custom-triple-1,custom-triple-2"* ]]
+    # With GITHUB_OUTPUT set, the CSV is written there only (no duplicate
+    # stdout echo); the bare-stdout contract is covered by the unset case.
     grep -qx 'csv=custom-triple-1,custom-triple-2' "$GITHUB_OUTPUT"
+}
+
+@test "no GITHUB_OUTPUT — CSV falls back to stdout for non-GHA callers" {
+    unset GITHUB_OUTPUT
+    RUNNER_OS=Linux OVERRIDE='only-stdout-1,only-stdout-2' \
+        ANODIZE_BIN=fake-anodizer \
+        run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"only-stdout-1,only-stdout-2"* ]]
 }
 
 @test "RUNNER_OS=Linux → joins ubuntu-latest entries" {
