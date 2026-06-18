@@ -31,9 +31,14 @@ setup() {
     : > "$GITHUB_PATH"
     : > "$GITHUB_OUTPUT"
 
-    # ── Stub: brew — echo the invocation so tests can assert on it. ──
+    # ── Stub: brew — record the invocation to a log AND echo it. The
+    #    installer wraps brew in anodizer::run_quiet, which swallows stdout
+    #    on success, so assert on the log file (a side-effect run_quiet
+    #    cannot suppress), not on captured output. ──
+    export BREW_LOG="${_TEST_HOME}/brew.log"
     cat > "${FAKE_BIN}/brew" <<'STUB'
 #!/usr/bin/env bash
+echo "brew $*" >> "$BREW_LOG"
 echo "brew $*"
 exit 0
 STUB
@@ -65,6 +70,7 @@ _run_install_create_dmg() {
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
         GITHUB_PATH="${GITHUB_PATH}" \
+        BREW_LOG="${BREW_LOG}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         "$@" \
@@ -81,7 +87,7 @@ _run_install_create_dmg() {
 @test "create-dmg: macOS installs create-dmg via brew, exits 0" {
     _run_install_create_dmg RUNNER_OS="macOS"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"brew install create-dmg"* ]]
+    grep -q "brew install create-dmg" "$BREW_LOG"
     [[ "$output" != *"SKIPPED"* ]]
 }
 

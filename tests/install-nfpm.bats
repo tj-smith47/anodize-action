@@ -84,15 +84,22 @@ exit 0
 STUB
     chmod +x "${FAKE_BIN}/tar"
 
-    # ── Stub: brew / choco — echo the invocation so tests can assert on it ─
+    # ── Stub: brew / choco — record the invocation to a log AND echo it.
+    #    The installer wraps these in anodizer::run_quiet, which swallows
+    #    stdout on success, so assert on the log file (a side-effect
+    #    run_quiet cannot suppress), not on captured output. ─
+    export BREW_LOG="${_TEST_HOME}/brew.log"
+    export CHOCO_LOG="${_TEST_HOME}/choco.log"
     cat > "${FAKE_BIN}/brew" <<'STUB'
 #!/usr/bin/env bash
+echo "brew $*" >> "$BREW_LOG"
 echo "brew $*"
 exit 0
 STUB
     chmod +x "${FAKE_BIN}/brew"
     cat > "${FAKE_BIN}/choco" <<'STUB'
 #!/usr/bin/env bash
+echo "choco $*" >> "$CHOCO_LOG"
 echo "choco $*"
 exit 0
 STUB
@@ -109,6 +116,8 @@ _run_install_nfpm() {
         GITHUB_PATH="${GITHUB_PATH}" \
         RUNNER_TEMP="${RUNNER_TEMP}" \
         CURL_LOG="${CURL_LOG}" \
+        BREW_LOG="${BREW_LOG}" \
+        CHOCO_LOG="${CHOCO_LOG}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         "$@" \
@@ -165,7 +174,7 @@ _run_install_nfpm() {
 @test "nfpm: macOS installs via the goreleaser brew tap" {
     _run_install_nfpm RUNNER_OS="macOS" RUNNER_ARCH="ARM64"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"brew install goreleaser/tap/nfpm"* ]]
+    grep -q "brew install goreleaser/tap/nfpm" "$BREW_LOG"
 }
 
 # ── Test 5: Windows → choco ───────────────────────────────────────────────
@@ -173,5 +182,5 @@ _run_install_nfpm() {
 @test "nfpm: Windows installs via choco" {
     _run_install_nfpm RUNNER_OS="Windows" RUNNER_ARCH="X64"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"choco install nfpm"* ]]
+    grep -q "choco install nfpm" "$CHOCO_LOG"
 }

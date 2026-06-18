@@ -201,9 +201,9 @@ brew_install() {
     # shellcheck disable=SC2034
     local formula="$1" var="$2" version="${!2:-}"
     if [ -n "$version" ]; then
-        brew install "${formula}@${version}"
+        anodizer::run_quiet brew install "${formula}@${version}"
     else
-        brew install "$formula"
+        anodizer::run_quiet brew install "$formula"
     fi
 }
 
@@ -212,9 +212,9 @@ choco_install() {
     # shellcheck disable=SC2034
     local pkg="$1" var="$2" version="${!2:-}"
     if [ -n "$version" ]; then
-        choco install "$pkg" -y --no-progress --version="$version"
+        anodizer::run_quiet choco install "$pkg" -y --no-progress --version="$version"
     else
-        choco install "$pkg" -y --no-progress
+        anodizer::run_quiet choco install "$pkg" -y --no-progress
     fi
 }
 
@@ -368,7 +368,7 @@ snapcraft_install_linux_pip() {
         # the whole dependency resolve (--pip-args would not).
         # --system-site-packages keeps the distro's python-apt visible —
         # an isolated venv breaks snapcraft at import.
-        PIP_CONSTRAINT="${workdir}/constraints.txt" \
+        anodizer::run_quiet env PIP_CONSTRAINT="${workdir}/constraints.txt" \
             pipx install --system-site-packages "$spec" \
             || gha_fail "snapcraft: pipx install failed for ${spec}"
     else
