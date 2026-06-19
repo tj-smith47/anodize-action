@@ -715,6 +715,7 @@ runs:
         # genuine deprecations in any child still surface. Requires node >=
         # 21.3 for the per-code flag; the npm path provisions node >= 22.14.
         NODE_OPTIONS: --disable-warning=DEP0040
+      run: "${GITHUB_ACTION_PATH}/scripts/run/anodizer.sh"
 
     # -------------------------------------------------------------------------
     # Outputs
