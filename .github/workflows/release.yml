@@ -15,8 +15,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate the release (and the v1 retag below) on the action manifest being
+  # loadable. release.yml runs on every push to master independently of the
+  # Test workflow, so without this a broken action.yml would retag the
+  # floating major tag and break every consumer before any check caught it.
+  validate:
+    name: Validate action.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate action.yml manifest
+        run: bash scripts/validate/action-manifest.sh action.yml
+
   release:
     name: semantic-release
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

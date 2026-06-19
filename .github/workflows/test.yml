@@ -41,17 +41,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Parse action.yml
+      # Asserts the top-level keys AND that every composite step has
+      # run-or-uses (+ shell where run) — the step-level check actionlint
+      # skips for composite actions and a YAML syntax check cannot catch.
+      - name: Validate action.yml manifest
+        run: bash scripts/validate/action-manifest.sh action.yml
+
+  bats:
+    name: bats
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # The tests/*.bats suite exercises the real install/run/validate scripts
+      # in isolated throwaway dirs; it had no CI job, so regressions in the
+      # scripts shipped uncaught. Pin bats-core by tag so the runner matches
+      # local dev.
+      - name: Install bats
         run: |
-          python3 - <<'PY'
-          import sys, yaml
-          with open('action.yml', 'r') as f:
-              data = yaml.safe_load(f)
-          required = ['name', 'description', 'runs']
-          missing = [k for k in required if k not in data]
-          if missing:
-              sys.exit(f"action.yml missing required keys: {missing}")
-          if data['runs'].get('using') != 'composite':
-              sys.exit(f"expected runs.using=composite, got {data['runs'].get('using')}")
-          print(f"action.yml OK: name={data['name']!r}, steps={len(data['runs'].get('steps', []))}")
-          PY
+          git clone --depth 1 --branch v1.11.1 \
+            https://github.com/bats-core/bats-core.git "${RUNNER_TEMP}/bats-core"
+          sudo "${RUNNER_TEMP}/bats-core/install.sh" /usr/local
+
+      - name: Run bats suite
+        run: bats tests/
