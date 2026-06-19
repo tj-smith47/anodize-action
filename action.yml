@@ -709,7 +709,12 @@ runs:
       env:
         ANODIZER_ARGS: ${{ inputs.args }}
         ANODIZER_STDOUT_LOG: ${{ runner.temp }}/anodizer-stdout.log
-      run: "${GITHUB_ACTION_PATH}/scripts/run/anodizer.sh"
+        # The npm publisher spawns `npm publish`, whose bundled deps load the
+        # deprecated `punycode` core module → a DEP0040 line we cannot action
+        # (it is npm-internal, not anodizer code). Silence only that code so
+        # genuine deprecations in any child still surface. Requires node >=
+        # 21.3 for the per-code flag; the npm path provisions node >= 22.14.
+        NODE_OPTIONS: --disable-warning=DEP0040
 
     # -------------------------------------------------------------------------
     # Outputs
