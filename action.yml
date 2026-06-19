@@ -43,7 +43,7 @@ inputs:
   from-source:
     description: >
       Build anodizer from source in the current workdir (bootstrap mode).
-      Requires a Rust toolchain — combine with `install-rust: true` if needed.
+      Rust is auto-installed; you do not need to also set `install-rust: true`.
       Useful when `from-artifact` is only available for one platform and the
       current runner needs a platform-native binary.
     default: "false"
@@ -65,7 +65,7 @@ inputs:
   install:
     description: >
       Comma-separated list of build/pipeline dependencies to install.
-      Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
+      Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node,
       cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
       rcodesign, wix, pkgbuild.
       Uses the platform's native package manager (apt on Linux, brew on macOS,
@@ -418,6 +418,19 @@ runs:
       if: steps.plan.outputs.needs_rust == 'true'
       uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
+    # Clone the from-branch tree BEFORE the cargo cache step. rust-cache runs
+    # `cargo metadata` against the workspace to scope itself, so the cloned
+    # Cargo.toml must already exist — otherwise the cache neither restores nor
+    # saves and every from-branch build is cold (the backfill iterate loop
+    # re-dispatches the same branch and depends on that reuse).
+    - name: Clone anodizer branch
+      if: steps.plan.outputs.install_method == 'branch'
+      id: clone-branch
+      shell: bash
+      env:
+        FROM_BRANCH: ${{ inputs.from-branch }}
+      run: "${GITHUB_ACTION_PATH}/scripts/install/from-branch.sh"
+
     # -------------------------------------------------------------------------
     # Cargo build cache (from-source / determinism / from-branch paths).
     # rust-cache covers Cargo.lock-stable runs; sccache covers Cargo.lock
@@ -563,20 +576,13 @@ runs:
 
     # -------------------------------------------------------------------------
     # Installation — Path C: from source (bootstrap)
-    # Installation — Path D: clone branch of tj-smith47/anodizer, then build
+    # Installation — Path D: build the from-branch tree cloned above.
     #
-    # After the clone, the from-source build step takes over and finds the
-    # cloned tree via $ANODIZER_SRC_DIR (env-written by the clone step)
-    # rather than inputs.workdir, so the user's checkout is never touched.
+    # The clone runs earlier (before the cargo cache) so rust-cache can scope
+    # itself to the cloned tree. The build step finds it via $ANODIZER_SRC_DIR
+    # (env-written by the clone step) rather than inputs.workdir, so the user's
+    # checkout is never touched.
     # -------------------------------------------------------------------------
-    - name: Clone anodizer branch
-      if: steps.plan.outputs.install_method == 'branch'
-      id: clone-branch
-      shell: bash
-      env:
-        FROM_BRANCH: ${{ inputs.from-branch }}
-      run: "${GITHUB_ACTION_PATH}/scripts/install/from-branch.sh"
-
     - name: Build anodizer from source
       if: steps.plan.outputs.install_method == 'source' || steps.plan.outputs.install_method == 'branch'
       shell: bash
