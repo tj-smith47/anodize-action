@@ -483,7 +483,7 @@ shown in YAML form; the TOML equivalents (`key = ...` assignments,
 | `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
 | `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
 | `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing (uses macOS-runner `codesign`/`xcrun`). |
-| `npms:` | `node` | All platforms. The npm publisher uses Trusted Publishing (OIDC), which needs Node ≥ 22.14.0 / npm ≥ 11.5.1; the pin (default `22.22.3`) tracks the v22 LTS line and ships npm bundled. |
+| `npms:` | `node` | All platforms. The npm publisher uses Trusted Publishing (OIDC), which needs Node ≥ 22.14.0 / npm ≥ 11.5.1. `NODE_VERSION` (default `22.22.3`) satisfies the Node floor; the npm node bundles (10.9.x on the whole 22.x line) is **below** the npm floor, so the installer additionally upgrades npm to `NPM_VERSION` (default `11.5.1`) after node install. |
 | `pkgs:` | `pkgbuild` | macOS uses native `pkgbuild` (Xcode CLT); Linux installs the flat-package toolchain (`xar` + `mkbom` from bomutils, built from source). |
 | `msis:` | `wix` | Windows: WiX v4 `wix` dotnet global tool. Linux: `wixl` (msitools), which the msi stage drives directly from the v3-dialect `.wxs`. |
 | `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
@@ -513,7 +513,8 @@ bump) the version it installs. Pass them via the job/step `env:` block:
 | `LINUXDEPLOY_PLUGIN_VERSION` | `1-alpha-20250213-1` | Pins the appimage output plugin's dated tag independently of `LINUXDEPLOY_VERSION` (the two projects ship different tags). Overriding it also **requires** `LINUXDEPLOY_PLUGIN_SHA256`. |
 | `RCODESIGN_VERSION` | `0.29.0` | rcodesign (apple-codesign) version — direct download on Linux/macOS, `cargo install` on Windows. Overriding **requires** `RCODESIGN_SHA256` on Linux/macOS. |
 | `RCODESIGN_SHA256` | (built-in for the default version) | SHA256 of the rcodesign archive; required alongside an `RCODESIGN_VERSION` override on Linux/macOS. |
-| `NODE_VERSION` | `22.22.3` | Node/npm version backing the `npms:` publisher. Direct download on Linux (verified against nodejs.org's `SHASUMS256.txt`); pins brew on macOS and choco (`nodejs`) on Windows. |
+| `NODE_VERSION` | `22.22.3` | Node version backing the `npms:` publisher. Direct download on Linux (verified against nodejs.org's `SHASUMS256.txt`); pins brew on macOS and choco (`nodejs`) on Windows. Satisfies the Node ≥ 22.14.0 OIDC floor; npm is pinned separately via `NPM_VERSION`. |
+| `NPM_VERSION` | `11.5.1` | npm version installed (via `npm install -g npm@…`) after node, on all platforms. node bundles npm 10.9.x on the entire 22.x line — below the npm ≥ 11.5.1 floor that npm Trusted Publishing (OIDC) requires — so the active npm is upgraded to meet the floor. Bump to track the current 11.x line. |
 | `WIX_VERSION` | `4.0.6` | Version of the WiX v4 `wix` dotnet global tool (Windows). |
 | `ANODIZER_ACTION_SKIP_COSIGN_VERIFY` | (unset) | Set to `1` to skip the keyless signature verification of the downloaded cosign binary (the SHA256 check still runs). Escape hatch for environments that can't reach Sigstore. |
 

@@ -22,6 +22,9 @@
 #   4. macOS  → node via brew
 #   5. Windows → choco install nodejs
 #   6. auto-detect: `npms:` config emits the node dep
+#   7. npm floor: every install_node path upgrades npm to >= 11.5.1 via
+#      `npm install -g npm@$NPM_VERSION` (the npm node bundles is below the
+#      Trusted-Publishing OIDC floor), with NPM_VERSION honoured as an override
 
 load test_helper
 
@@ -121,6 +124,18 @@ echo "choco $*"
 exit 0
 STUB
     chmod +x "${FAKE_BIN}/choco"
+
+    # ── Stub: npm — record argv (the post-node `npm install -g npm@<ver>`
+    #    floor upgrade) and succeed. On Linux the upgrade runs under sudo, so
+    #    the sudo stub captures that argv; the npm stub itself fires on the
+    #    macOS/Windows paths (and is harmless on Linux). ──
+    export NPM_LOG="${_TEST_HOME}/npm.log"
+    cat > "${FAKE_BIN}/npm" <<'STUB'
+#!/usr/bin/env bash
+echo "npm $*" >> "$NPM_LOG"
+exit 0
+STUB
+    chmod +x "${FAKE_BIN}/npm"
 }
 
 teardown() {
@@ -138,6 +153,7 @@ _run_install_node() {
         SHA_LOG="${SHA_LOG}" \
         BREW_LOG="${BREW_LOG}" \
         CHOCO_LOG="${CHOCO_LOG}" \
+        NPM_LOG="${NPM_LOG}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         "$@" \
@@ -166,6 +182,10 @@ _run_install_node() {
     grep -q 'ln -sf /opt/node/bin/node /usr/local/bin/node' "$SUDO_LOG"
     grep -q 'ln -sf /opt/node/bin/npm /usr/local/bin/npm' "$SUDO_LOG"
     grep -q 'ln -sf /opt/node/bin/npx /usr/local/bin/npx' "$SUDO_LOG"
+    # The bundled npm (10.9.x on the 22.x line) is below the 11.5.1 OIDC floor,
+    # so the active npm is upgraded in place. On Linux the upgrade runs under
+    # sudo (the /opt/node global prefix is root-owned), so it lands in SUDO_LOG.
+    grep -q 'npm install -g npm@11.5.1' "$SUDO_LOG"
     # No apt repo / apt-get is involved.
     [[ "$output" != *"apt-get"* ]]
 }
@@ -188,6 +208,9 @@ _run_install_node() {
         ! grep -q 'tar' "$SUDO_LOG"
         ! grep -q '/opt/node' "$SUDO_LOG"
         ! grep -q 'ln -sf' "$SUDO_LOG"
+        # The npm floor upgrade is part of install_node and must not run after
+        # the gate aborts (set -e bails before it).
+        ! grep -q 'npm install' "$SUDO_LOG"
     fi
 }
 
@@ -218,6 +241,9 @@ _run_install_node() {
     _run_install_node RUNNER_OS="macOS" RUNNER_ARCH="ARM64"
     [ "$status" -eq 0 ]
     grep -q "brew install node" "$BREW_LOG"
+    # macOS upgrades npm to the floor without sudo (brew installs are
+    # user-writable), so the npm stub fires directly.
+    grep -q 'npm install -g npm@11.5.1' "$NPM_LOG"
 }
 
 # ── Test 5: Windows → choco (chocolatey package id is nodejs) ──────────────
@@ -226,6 +252,51 @@ _run_install_node() {
     _run_install_node RUNNER_OS="Windows" RUNNER_ARCH="X64"
     [ "$status" -eq 0 ]
     grep -q "choco install nodejs" "$CHOCO_LOG"
+    # Windows (choco) likewise upgrades npm without sudo.
+    grep -q 'npm install -g npm@11.5.1' "$NPM_LOG"
+}
+
+# ── npm floor: default meets the 11.5.1 OIDC floor, override is honoured ────
+
+@test "node: default npm floor is at least 11.5.1 (Trusted Publishing)" {
+    # The default NPM_DEFAULT_VERSION pin must not regress below the documented
+    # floor — a node-bundled npm (10.9.x) would silently break OIDC publishing.
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        RUNNER_OS="Linux" \
+        NO_COLOR=1 \
+        bash -c "
+            source '${REPO_ROOT}/scripts/install/deps.sh'
+            echo \"\$NPM_DEFAULT_VERSION\"
+        "
+    [ "$status" -eq 0 ]
+    # Floor is 11.5.1; assert major>=11 and (major>11 OR minor>=5 reaching .1).
+    local v="${output}"
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$v"
+    [ "$major" -ge 11 ]
+    # When exactly major 11, minor must be >= 5 (and at 11.5, patch >= 1).
+    if [ "$major" -eq 11 ]; then
+        [ "$minor" -ge 5 ]
+        if [ "$minor" -eq 5 ]; then [ "$patch" -ge 1 ]; fi
+    fi
+}
+
+@test "node: NPM_VERSION override flows into the npm upgrade (Linux, under sudo)" {
+    _run_install_node RUNNER_OS="Linux" RUNNER_ARCH="X64" \
+        NODE_EXPECT_TARBALL="node-v22.22.3-linux-x64.tar.xz" \
+        NPM_VERSION="11.9.0"
+    [ "$status" -eq 0 ]
+    grep -q 'npm install -g npm@11.9.0' "$SUDO_LOG"
+    # The default pin must not also have fired.
+    ! grep -q 'npm install -g npm@11.5.1' "$SUDO_LOG"
+}
+
+@test "node: NPM_VERSION override flows into the npm upgrade (macOS, no sudo)" {
+    _run_install_node RUNNER_OS="macOS" RUNNER_ARCH="ARM64" \
+        NPM_VERSION="11.9.0"
+    [ "$status" -eq 0 ]
+    grep -q 'npm install -g npm@11.9.0' "$NPM_LOG"
 }
 
 # ── auto-detect wiring ─────────────────────────────────────────────────────

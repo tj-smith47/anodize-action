@@ -74,13 +74,19 @@ SNAPCRAFT_DEFAULT_VERSION="8.14.5"
 
 # node/npm back the `npms:` publisher, which publishes anodizer's npm
 # metapackage via npm Trusted Publishing (OIDC) — that handshake needs
-# Node >= 22.14.0 / npm >= 11.5.1, so the pin tracks the newest v22 LTS line
-# (npm ships bundled with node, so a recent-enough node satisfies both). The
-# Linux installer verifies the tarball against nodejs.org's published
-# SHASUMS256.txt (no hardcoded sha to drift; the dated dist dir is immutable).
-# Override with NODE_VERSION (also honoured by the macOS brew + Windows choco
-# paths).
+# Node >= 22.14.0 / npm >= 11.5.1. The node pin tracks the v22 LTS line, which
+# satisfies the Node floor; the npm it BUNDLES does NOT — the entire 22.x line
+# ships npm 10.9.x (and even Node 24.0.0 bundles only 11.3.0), all below the
+# 11.5.1 OIDC floor. So npm is pinned and upgraded independently of node's
+# bundled copy (`npm install -g npm@$NPM_VERSION`) rather than relying on the
+# bundle. The Linux node installer verifies the tarball against nodejs.org's
+# published SHASUMS256.txt (no hardcoded sha to drift; the dated dist dir is
+# immutable). Override either independently with NODE_VERSION / NPM_VERSION
+# (both honoured across the Linux + macOS brew + Windows choco paths).
 NODE_DEFAULT_VERSION="22.22.3"
+# Floor is npm >= 11.5.1 (Trusted Publishing OIDC). Keep the default at or above
+# that floor; bumping it tracks the current 11.x line.
+NPM_DEFAULT_VERSION="11.5.1"
 
 # nfpm drives anodizer's deb/rpm/apk publishers. On Linux it installs via a
 # direct, checksum-verified GitHub-release download (mirroring cosign/syft)
@@ -606,6 +612,26 @@ install_node() {
         macOS)   brew_install node NODE_VERSION ;;
         Windows) choco_install nodejs NODE_VERSION ;;
     esac
+    # node's bundled npm is below the 11.5.1 Trusted-Publishing floor on every
+    # supported node line; upgrade the active npm so OIDC publishing works.
+    install_npm_floor
+}
+
+# Upgrade the active npm to NPM_VERSION (>= the 11.5.1 OIDC floor). Runs after
+# every install_node path so `npm --version` meets the floor regardless of
+# which npm node bundled. `npm install -g npm@...` rewrites npm in place using
+# the just-installed node, so no node-line-specific bundle quirk leaks through.
+install_npm_floor() {
+    local version="${NPM_VERSION:-$NPM_DEFAULT_VERSION}"
+    case "$RUNNER_OS" in
+        # The Linux node tree lives at /opt/node owned by root (symlinked into
+        # /usr/local/bin); the global npm prefix is under it, so the self-update
+        # needs sudo. macOS brew / Windows choco install npm writable by the
+        # job user, so a plain `npm install -g` suffices there.
+        Linux)   anodizer::run_quiet sudo npm install -g "npm@${version}" ;;
+        *)       anodizer::run_quiet npm install -g "npm@${version}" ;;
+    esac
+    anodizer::ok "npm ${version} active (>= 11.5.1 Trusted-Publishing floor)"
 }
 
 install_cargo_zigbuild() {
