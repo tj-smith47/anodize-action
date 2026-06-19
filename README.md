@@ -4,7 +4,7 @@ GitHub Action for [Anodizer](https://github.com/tj-smith47/anodizer), a
 Rust-native release automation tool inspired by GoReleaser.
 
 The action installs anodizer (cached per version), auto-installs pipeline
-dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
+dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node,
 cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
 rcodesign, wix, pkgbuild) based on your
 anodizer config (`.anodizer.yaml` or any of the binary's other discovery
@@ -452,14 +452,14 @@ exact tag instead:
 | `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
-| `from-source` | `false` | Build anodizer from source in the workdir. Requires a Rust toolchain (`install-rust: true`). |
+| `from-source` | `false` | Build anodizer from source in the workdir. Auto-installs the stable Rust toolchain; you don't need `install-rust: true`. |
 | `from-branch` | | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Accepts a branch name only — the repo is hardcoded. Auto-installs the stable Rust toolchain; you don't need `install-rust: true`. Mutually exclusive with `version`, `from-artifact`, and `from-source`. |
 
 ### Dependency setup
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `pkgbuild`. |
+| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `pkgbuild`. |
 | `auto-install` | `false` | Parse the anodizer config (YAML or TOML, same discovery order as the binary: `.anodizer.yaml`, `.anodizer.yml`, `.anodizer.toml`, `anodizer.yaml`, `anodizer.yml`, `anodizer.toml`) and auto-install whatever the configured stages need. |
 | `install-rust` | `false` | Install the stable Rust toolchain. |
 
@@ -483,6 +483,7 @@ shown in YAML form; the TOML equivalents (`key = ...` assignments,
 | `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
 | `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
 | `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing (uses macOS-runner `codesign`/`xcrun`). |
+| `npms:` | `node` | All platforms. The npm publisher uses Trusted Publishing (OIDC), which needs Node ≥ 22.14.0 / npm ≥ 11.5.1; the pin (default `22.22.3`) tracks the v22 LTS line and ships npm bundled. |
 | `pkgs:` | `pkgbuild` | macOS uses native `pkgbuild` (Xcode CLT); Linux installs the flat-package toolchain (`xar` + `mkbom` from bomutils, built from source). |
 | `msis:` | `wix` | Windows: WiX v4 `wix` dotnet global tool. Linux: `wixl` (msitools), which the msi stage drives directly from the v3-dialect `.wxs`. |
 | `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
@@ -494,7 +495,7 @@ bump) the version it installs. Pass them via the job/step `env:` block:
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `NFPM_VERSION` | (unpinned) | Pins nfpm on macOS (brew) / Windows (choco). The Linux install comes from the GoReleaser apt repo and is not pinned. |
+| `NFPM_VERSION` | `2.46.3` | Pins nfpm on all platforms. Linux installs a checksum-verified GitHub-release download (the tarball is verified against the release's `checksums.txt`, mirroring cosign/syft — no GoReleaser apt repo); macOS pins the brew formula, Windows the choco package. |
 | `MAKESELF_VERSION` | (unpinned) | Pins makeself on macOS (brew). Linux installs via apt, unpinned. |
 | `SNAPCRAFT_VERSION` | `8.14.5` | Version for the pip fallback on snapd-less Linux runners; also pins the macOS brew formula. |
 | `RPM_VERSION` | (unpinned) | Pins the rpm formula on macOS (brew). Linux installs via apt, unpinned. |
@@ -504,12 +505,15 @@ bump) the version it installs. Pass them via the job/step `env:` block:
 | `UPX_VERSION` | (unpinned) | Pins upx on macOS (brew) / Windows (choco). Linux installs via apt, unpinned. |
 | `NSIS_VERSION` | (unpinned) | Pins makensis on macOS (brew) / nsis on Windows (choco). Linux installs via apt, unpinned. |
 | `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew). On Linux the dmg stage uses apt `genisoimage` (unpinned). |
+| `FLATPAK_RUNTIME_VERSION` | `24.08` | Branch of the freedesktop runtime + SDK (`org.freedesktop.Platform` / `org.freedesktop.Sdk`) pre-staged from flathub before `flatpak-builder` runs (Linux). Tracks the branch `flatpaks:` blocks pin via `runtime_version`. |
 | `ALEJANDRA_VERSION` | `4.0.0` | Linux direct-download version. Overriding **requires** `ALEJANDRA_SHA256` (upstream publishes no checksums file). Pins brew on macOS. |
 | `ALEJANDRA_SHA256` | (built-in for the default version) | SHA256 of the alejandra binary; required alongside an `ALEJANDRA_VERSION` override. |
 | `LINUXDEPLOY_VERSION` | `continuous` | linuxdeploy + appimage-plugin download version. Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |
 | `LINUXDEPLOY_SHA256` / `LINUXDEPLOY_PLUGIN_SHA256` | (built-in for the default version) | SHA256 of the linuxdeploy binary / its appimage plugin; required alongside a `LINUXDEPLOY_VERSION` override. |
+| `LINUXDEPLOY_PLUGIN_VERSION` | `1-alpha-20250213-1` | Pins the appimage output plugin's dated tag independently of `LINUXDEPLOY_VERSION` (the two projects ship different tags). Overriding it also **requires** `LINUXDEPLOY_PLUGIN_SHA256`. |
 | `RCODESIGN_VERSION` | `0.29.0` | rcodesign (apple-codesign) version — direct download on Linux/macOS, `cargo install` on Windows. Overriding **requires** `RCODESIGN_SHA256` on Linux/macOS. |
 | `RCODESIGN_SHA256` | (built-in for the default version) | SHA256 of the rcodesign archive; required alongside an `RCODESIGN_VERSION` override on Linux/macOS. |
+| `NODE_VERSION` | `22.22.3` | Node/npm version backing the `npms:` publisher. Direct download on Linux (verified against nodejs.org's `SHASUMS256.txt`); pins brew on macOS and choco (`nodejs`) on Windows. |
 | `WIX_VERSION` | `4.0.6` | Version of the WiX v4 `wix` dotnet global tool (Windows). |
 | `ANODIZER_ACTION_SKIP_COSIGN_VERIFY` | (unset) | Set to `1` to skip the keyless signature verification of the downloaded cosign binary (the SHA256 check still runs). Escape hatch for environments that can't reach Sigstore. |
 
@@ -550,7 +554,7 @@ When `docker-registry` is set, the action logs in to the registry, configures QE
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `args` | | Arguments to pass to anodizer (e.g. `release --snapshot`). |
+| `args` | | Arguments to pass to anodizer (e.g. `release --snapshot`). Do **not** embed secrets or tokens here — this value appears in workflow logs; pass secrets via the `env:` block (e.g. `GITHUB_TOKEN`, `COSIGN_PASSWORD`). |
 | `workdir` | `.` | Working directory (relative to repo root). |
 | `install-only` | `false` | Only install anodizer (and any requested dependencies/keys); skip running. |
 
