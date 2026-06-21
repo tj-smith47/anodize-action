@@ -141,14 +141,97 @@ if has_top_key pkgs; then
         deps+=("pkgbuild")
     fi
 fi
+# Print only the lines belonging to the top-level `msis:` block (from the
+# `msis:` header to the next top-level / column-0 key), so a `version:` or
+# `wxs:` sniff cannot pick up an unrelated block's key.
+msis_block() {
+    awk '
+        /^msis:/        { inblock=1; next }
+        inblock && /^[^[:space:]]/ { inblock=0 }
+        inblock         { print }
+    ' "$cfg"
+}
+
+# Resolve the WiX dialect of a SINGLE `msis:` list entry, mirroring
+# crates/stage-msi's WixVersion logic so the Windows install matches the
+# toolchain the stage actually runs:
+#   - explicit `version: v3` / `wixl` / `linux`  → `wix3` (candle+light)
+#   - explicit `version: v4`                     → `wix`  (v4 `wix build`)
+#   - no version → sniff the referenced `wxs:` file's XML namespace:
+#       `http://schemas.microsoft.com/wix/2006/wi` (v3) → `wix3`, else `wix`
+# Linux installs `wixl` for either token, so the distinction only changes the
+# Windows toolchain. anodizer's msis: is a YAML-only block in practice, so the
+# sniff reads the YAML shape. `$1` is the entry's text (version/wxs lines).
+detect_entry_dialect() {
+    local entry="$1" version wxs
+    version=$(printf '%s\n' "$entry" \
+        | grep -E '^[[:space:]]*(-[[:space:]]+)?version:[[:space:]]*' \
+        | sed -E 's/^[[:space:]]*(-[[:space:]]+)?version:[[:space:]]*//' \
+        | tr -d '"' | tr -d "'" | head -1 | xargs || true)
+    case "$(printf '%s' "$version" | tr '[:upper:]' '[:lower:]')" in
+        v3|3|wixl|linux) echo "wix3"; return ;;
+        v4|4)            echo "wix";  return ;;
+    esac
+    # No explicit version — sniff the referenced .wxs namespace.
+    wxs=$(printf '%s\n' "$entry" \
+        | grep -E '^[[:space:]]*(-[[:space:]]+)?wxs:[[:space:]]*' \
+        | sed -E 's/^[[:space:]]*(-[[:space:]]+)?wxs:[[:space:]]*//' \
+        | tr -d '"' | tr -d "'" | head -1 | xargs || true)
+    if [ -n "$wxs" ] && [ -f "$wxs" ] \
+        && grep -q 'http://schemas.microsoft.com/wix/2006/wi' "$wxs"; then
+        echo "wix3"; return
+    fi
+    # v4 namespace, unknown, or unreadable .wxs all default to v4, matching
+    # WixVersion::detect_from_wxs.
+    echo "wix"
+}
+
+# Resolve the DISTINCT WiX dialect tokens the whole `msis:` block needs. anodizer
+# resolves WiX version per `msis:` entry (crates/stage-msi env_requirements loops
+# per entry), so a mixed v3+v4 block needs BOTH toolchains. Split the block on
+# the YAML `- ` list markers, resolve each entry, and print each distinct token
+# (`wix` and/or `wix3`) on its own line. The dispatch loop + _APT_BATCHED_DEPS
+# tolerate both.
+detect_msi_dialects() {
+    local block emitted_wix="" emitted_wix3=""
+    block=$(msis_block)
+    # Group the block into per-entry chunks: a line starting (after indent) with
+    # the `- ` list marker opens a new entry; intervening indented lines belong
+    # to it. A block with no `- ` marker is treated as a single entry.
+    local token
+    while IFS= read -r token; do
+        case "$token" in
+            wix3) emitted_wix3=1 ;;
+            wix)  emitted_wix=1 ;;
+        esac
+    done < <(
+        printf '%s\n' "$block" | awk '
+            /^[[:space:]]*-[[:space:]]/ {
+                if (entry != "") print entry "\036"
+                entry = $0 "\n"; next
+            }
+            { entry = entry $0 "\n" }
+            END { if (entry != "") print entry "\036" }
+        ' | while IFS= read -r -d $'\036' entry; do
+            [ -n "$entry" ] && detect_entry_dialect "$entry"
+        done
+    )
+    [ -n "$emitted_wix3" ] && echo "wix3"
+    [ -n "$emitted_wix" ] && echo "wix"
+}
+
 # msis: builds MSIs. WiX itself is Windows-only and EULA-gated, so on Linux the
 # msi stage uses `wixl` (msitools) from the v3-dialect .wxs. Both Windows (WiX)
-# and Linux (wixl) can produce the artifact; only macOS lacks a path.
+# and Linux (wixl) can produce the artifact; only macOS lacks a path. The
+# emitted token is dialect-aware (wix3 = v3 candle+light, wix = v4 wix build).
 if has_top_key msis; then
     if [ "${RUNNER_OS:-}" = "macOS" ]; then
         gha_warning "auto-install: msis: needs WiX (Windows) or wixl (Linux) — got macOS; skipping"
     else
-        deps+=("wix")
+        # A mixed-dialect block emits both tokens (one per line); append each.
+        while IFS= read -r _msi_tok; do
+            [ -n "$_msi_tok" ] && deps+=("$_msi_tok")
+        done < <(detect_msi_dialects)
     fi
 fi
 

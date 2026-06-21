@@ -6,7 +6,9 @@
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-# rcodesign, wix, pkgbuild.
+# rcodesign, wix, wix3, pkgbuild. (`wix` is the v4 dialect — `wix build` /
+# dotnet global tool; `wix3` is the v3 dialect — candle+light via choco
+# wixtoolset. Both fall back to wixl on Linux.)
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -63,6 +65,11 @@ RCODESIGN_DEFAULT_SHA_MACOS_ARM64="d1a532150adaf90048260d76359261aa716abafc45c53
 # GitHub windows runner images.
 WIX_DEFAULT_VERSION="4.0.6"
 
+# WiX v3 (candle+light) is the toolchain for v3-dialect .wxs files on Windows,
+# installed via the `wixtoolset` choco package. Override the choco package
+# version with WIX3_VERSION; unset lets choco resolve its latest. The v3
+# toolset ships candle.exe/light.exe — the v4 `wix` dotnet tool does not.
+
 # snapcraft's PyPI releases stopped at 4.8.1 (June 2021 — pre-dates
 # SNAPCRAFT_STORE_CREDENTIALS), so the no-snapd fallback installs from the
 # upstream git tag instead, constrained to that tag's own uv.lock. The pin
@@ -104,7 +111,7 @@ DEPS=()
 # dispatch loop suppresses the generic per-tool "installing X" line for them to
 # avoid a duplicate. flatpak/pkgbuild also queue but flush inline and self-log,
 # so they are NOT listed here. Membership is only consulted on Linux.
-_APT_BATCHED_DEPS=" makeself rpmbuild upx nsis create-dmg wix "
+_APT_BATCHED_DEPS=" makeself rpmbuild upx nsis create-dmg wix wix3 "
 
 # True when $1's installer on this runner just queues a stock apt package
 # (so the batch header/✓ carry its log, not the generic per-tool lines).
@@ -940,6 +947,9 @@ install_rcodesign() {
 # `%USERPROFILE%\.dotnet\tools`, which the dotnet installer adds to PATH on the
 # hosted images; we add it explicitly so a fresh shell in the same job sees it.
 # Pin the version with WIX_VERSION (default tracks WiX v4, anodizer's default).
+# WiX v4 dialect (default): the `wix build` CLI is the `wix` dotnet global
+# tool on Windows; Linux uses `wixl` (msitools), which consumes a v3-dialect
+# .wxs but is also the only Linux MSI path regardless of dialect.
 install_wix() {
     case "$RUNNER_OS" in
         Windows)
@@ -959,6 +969,57 @@ install_wix() {
             apt_queue wixl wixl
             ;;
         macOS) skip_unsupported_os wix "Windows/Linux only (msis: needs wixl on macOS, not packaged)" ;;
+    esac
+}
+
+# WiX v3 dialect: anodizer's msi stage selects candle+light (not `wix build`)
+# when the .wxs uses the v3 namespace or the config pins `version: v3`/`wixl`.
+# On Windows the WiX v3 toolset ships candle.exe/light.exe — installed via
+# the `wixtoolset` choco package, NOT the `wix` dotnet global tool (v4). The
+# toolset's versioned bin dir is discovered at runtime (the major version is
+# not hardcoded) and surfaced on PATH. On Linux the path is `wixl` (msitools),
+# identical to the v4 arm since wixl consumes the v3-dialect .wxs either way.
+install_wix3() {
+    case "$RUNNER_OS" in
+        Windows)
+            choco_install wixtoolset WIX3_VERSION
+            # candle.exe/light.exe land under "WiX Toolset v<major>.<minor>\bin".
+            # Discover that dir robustly rather than hardcoding a version: prefer
+            # the shim choco drops on PATH, then a `where` lookup, then a glob of
+            # the toolset install root.
+            local bindir=""
+            if command -v candle > /dev/null 2>&1; then
+                bindir="$(dirname "$(command -v candle)")"
+            elif command -v where.exe > /dev/null 2>&1; then
+                # `dirname ""` returns ".", which would poison PATH with the
+                # cwd; only resolve a dir when the lookup actually found candle,
+                # else fall through to the glob fallback below.
+                local found
+                found="$(where.exe candle 2>/dev/null | head -1 | tr -d '\r')"
+                [ -n "$found" ] && bindir="$(dirname "$found")"
+            fi
+            if [ -z "$bindir" ]; then
+                local candidate
+                for candidate in "/c/Program Files (x86)/WiX Toolset v"*/bin \
+                                 "/c/Program Files/WiX Toolset v"*/bin; do
+                    if [ -x "${candidate}/candle.exe" ]; then
+                        bindir="$candidate"
+                        break
+                    fi
+                done
+            fi
+            if [ -n "$bindir" ]; then
+                gha_add_path "$bindir"
+            else
+                gha_warning "wix3: candle/light bin dir not found after install; relying on choco's PATH shims"
+            fi
+            anodizer::ok "WiX v3 (candle+light) installed via choco wixtoolset"
+            _INSTALLER_EMITTED_OK=1
+            ;;
+        Linux)
+            apt_queue wixl wixl
+            ;;
+        macOS) skip_unsupported_os wix3 "Windows/Linux only (msis: needs wixl on macOS, not packaged)" ;;
     esac
 }
 
@@ -997,8 +1058,9 @@ dispatch_install() {
             linuxdeploy)    install_linuxdeploy ;;
             rcodesign)      install_rcodesign ;;
             wix)            install_wix ;;
+            wix3)           install_wix3 ;;
             pkgbuild)       install_pkgbuild ;;
-            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild)" ;;
+            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix, wix3, pkgbuild)" ;;
         esac
         # Skip the generic "installed" line when either (a) the installer left
         # something apt-queued — apt_flush emits one line per package after the

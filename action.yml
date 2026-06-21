@@ -67,7 +67,10 @@ inputs:
       Comma-separated list of build/pipeline dependencies to install.
       Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node,
       cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-      rcodesign, wix, pkgbuild.
+      rcodesign, wix, wix3, pkgbuild.
+      `wix` is the WiX v4 dialect (`wix build`, the dotnet global tool on
+      Windows); `wix3` is the WiX v3 dialect (candle+light via the choco
+      wixtoolset package). Both install `wixl` (msitools) on Linux.
       Uses the platform's native package manager (apt on Linux, brew on macOS,
       choco on Windows); some deps fall back to direct downloads when no
       packaged version exists.
@@ -82,9 +85,12 @@ inputs:
       docker_signs:, syft for sboms, nsis, create-dmg (genisoimage on Linux),
       flatpak-builder, upx, zig+cargo-zigbuild for cross-compilation, alejandra
       when the nix publisher requests it as the formatter, linuxdeploy + its
-      appimage plugin for appimages:, rcodesign for notarize.macos:, wix for
-      msis: — wixl on Linux, WiX on Windows — and pkgbuild for pkgs: — native
-      pkgbuild on macOS, the xar+mkbom flat-package toolchain on Linux).
+      appimage plugin for appimages:, rcodesign for notarize.macos:, WiX for
+      msis: (dialect-aware — wixl on Linux; on Windows the v3 dialect installs
+      candle+light via choco wixtoolset, the v4 dialect installs the `wix`
+      dotnet global tool, selected from the msis: `version:` or, when unset,
+      the referenced .wxs file's XML namespace) — and pkgbuild for pkgs: —
+      native pkgbuild on macOS, the xar+mkbom flat-package toolchain on Linux).
     default: "false"
     required: false
   install-rust:
