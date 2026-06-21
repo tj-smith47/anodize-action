@@ -1,0 +1,29 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  lint:
+    desc: "Pre-commit gate: shellcheck over scripts/, then the bats suite."
+    cmds:
+      # --severity=warning matches CI: it drops SC1091 info noise from the
+      # dynamic `source "$SCRIPT_DIR/lib/…"` indirection shellcheck can't follow.
+      - find scripts -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning -x
+      - bats tests/
+
+  test:
+    desc: Run the bats test suite
+    cmds:
+      - bats tests/
+
+  commit:
+    desc: "Lint, then commit. Usage: task commit -- -m 'message'"
+    preconditions:
+      - sh: test -n "$(git diff --cached --name-only)"
+        msg: "Nothing staged. Run git add <files> before task commit."
+    cmds:
+      - task: lint
+      - git commit {{.CLI_ARGS}}
