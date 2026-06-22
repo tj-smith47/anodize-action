@@ -19,24 +19,30 @@ fi
 is_toml=false
 anodizer_config_is_toml "$cfg" && is_toml=true
 
-# True when the config declares top-level key `$1` — YAML `key:` at column
-# 0; TOML `key =` at column 0, or a `[key]` / `[[key]]` / `[key.sub]`
-# table header.
-has_top_key() {
+# True when the config declares the installer/packager BLOCK `$1` either at
+# top level (single-crate flat config) OR nested under a crate entry
+# (workspace per-crate config: `crates:` → crate → indented `key:` in YAML,
+# `[[crates.<name>.key]]` / `[crates.<name>.key]` table headers in TOML).
+# The key is anchored right after the leading whitespace (YAML) or bracket /
+# `crates.<name>.` prefix (TOML) so e.g. `signs` never matches `binary_signs:`
+# / `docker_signs:` and `pkgs` never matches a longer key like `app_bundles:`.
+has_cfg_block() {
     if [ "$is_toml" = true ]; then
-        grep -qE "^${1}[[:space:]]*=|^\[\[?${1}[].]" "$cfg"
+        grep -qE "^${1}[[:space:]]*=|^\[\[?${1}[].]|^\[\[?crates\.[^]]*\.${1}[].]" "$cfg"
     else
-        grep -qE "^${1}:" "$cfg"
+        grep -qE "^[[:space:]]*${1}:" "$cfg"
     fi
 }
 
 # True when `$1` is assigned value `$2` anywhere in the config — YAML
-# `key: value` / TOML `key = "value"` — at any nesting depth.
+# `key: value` / TOML `key = "value"` — at any nesting depth. The value is
+# end-anchored (closing quote, whitespace, or EOL) so a prefix match never
+# fires: `cmd: cosignx` / `cmd: cosign-foo` must NOT pull `cosign`.
 has_kv() {
     if [ "$is_toml" = true ]; then
-        grep -qE "${1}[[:space:]]*=[[:space:]]*\"?${2}\"?" "$cfg"
+        grep -qE "${1}[[:space:]]*=[[:space:]]*\"?${2}(\"|[[:space:]]|$)" "$cfg"
     else
-        grep -qE "${1}:[[:space:]]*\"?${2}\"?" "$cfg"
+        grep -qE "${1}:[[:space:]]*\"?${2}(\"|[[:space:]]|$)" "$cfg"
     fi
 }
 
@@ -55,10 +61,10 @@ add_linux_pkg_dep() {
         gha_warning "auto-install: $1: builds a Linux-only package format (got ${RUNNER_OS:-unset}); skipping"
     fi
 }
-if has_top_key nfpm || has_kv name anodizer-stage-nfpm; then add_linux_pkg_dep nfpm; fi
-has_top_key makeselfs && add_linux_pkg_dep makeself || true
-has_top_key snapcrafts && add_linux_pkg_dep snapcraft || true
-has_top_key srpm && add_linux_pkg_dep rpmbuild || true
+if has_cfg_block nfpm || has_kv name anodizer-stage-nfpm; then add_linux_pkg_dep nfpm; fi
+has_cfg_block makeselfs && add_linux_pkg_dep makeself || true
+has_cfg_block snapcrafts && add_linux_pkg_dep snapcraft || true
+has_cfg_block srpm && add_linux_pkg_dep rpmbuild || true
 # cosign is the signing backend only for blocks that actually target it.
 # anodizer's per-block default `cmd:` differs by sign type (verified against
 # crates/core/src/signing.rs + crates/stage-sign/src/helpers.rs):
@@ -74,7 +80,7 @@ has_top_key srpm && add_linux_pkg_dep rpmbuild || true
 # `binary_signs:` with `cmd: gpg` correctly pulls nothing.
 need_cosign=""
 has_kv cmd cosign && need_cosign=1
-[ -z "$need_cosign" ] && has_top_key docker_signs && need_cosign=1
+[ -z "$need_cosign" ] && has_cfg_block docker_signs && need_cosign=1
 [ -n "$need_cosign" ] && deps+=("cosign") || true
 # notarize.macos:[] drives the CROSS-PLATFORM signing/notarization path, which
 # shells out to `rcodesign` (the apple-codesign project) — verified against
@@ -103,15 +109,15 @@ fi
 # npms: publishes an npm metapackage via `npm publish` (Trusted Publishing
 # OIDC), which needs node/npm on PATH. npm publish runs on any runner OS, so
 # no OS guard.
-has_top_key npms && deps+=("node") || true
-has_top_key sboms && deps+=("syft") || true
-has_top_key upx && deps+=("upx") || true
+has_cfg_block npms && deps+=("node") || true
+has_cfg_block sboms && deps+=("syft") || true
+has_cfg_block upx && deps+=("upx") || true
 # nsis builds on every platform (makensis: nsis apt on Linux, brew on macOS,
 # choco on Windows), so it emits unconditionally.
-has_top_key nsis && deps+=("nsis") || true
+has_cfg_block nsis && deps+=("nsis") || true
 # dmgs: a .dmg builds on macOS (hdiutil) and Linux (genisoimage) but has no
 # Windows path — warn (don't fail) and omit there, like pkgs.
-if has_top_key dmgs; then
+if has_cfg_block dmgs; then
     if [ "${RUNNER_OS:-}" = "Windows" ]; then
         gha_warning "auto-install: dmgs: needs macOS hdiutil or Linux genisoimage (got Windows); skipping"
     else
@@ -120,7 +126,7 @@ if has_top_key dmgs; then
 fi
 # flatpaks: Flatpak is Linux-only — emit on Linux, warn (don't fail) elsewhere,
 # like appimages.
-if has_top_key flatpaks; then
+if has_cfg_block flatpaks; then
     if [ "${RUNNER_OS:-}" = "Linux" ]; then
         deps+=("flatpak")
     else
@@ -129,7 +135,7 @@ if has_top_key flatpaks; then
 fi
 # appimages: shells out to linuxdeploy + its appimage output plugin, both
 # Linux-only AppImages — emit the dep on Linux, warn (don't fail) elsewhere.
-if has_top_key appimages; then
+if has_cfg_block appimages; then
     if [ "${RUNNER_OS:-}" = "Linux" ]; then
         deps+=("linuxdeploy")
     else
@@ -147,21 +153,30 @@ fi
 # pkgs: builds macOS .pkg installers — native pkgbuild on macOS, the Linux flat
 # XAR toolchain (xar + mkbom) on Linux. Either host can produce the artifact, so
 # emit the dep on both; only Windows lacks a path.
-if has_top_key pkgs; then
+if has_cfg_block pkgs; then
     if [ "${RUNNER_OS:-}" = "Windows" ]; then
         gha_warning "auto-install: pkgs: needs macOS pkgbuild or the Linux flat-package toolchain (got Windows); skipping"
     else
         deps+=("pkgbuild")
     fi
 fi
-# Print only the lines belonging to the top-level `msis:` block (from the
-# `msis:` header to the next top-level / column-0 key), so a `version:` or
-# `wxs:` sniff cannot pick up an unrelated block's key.
+# Print only the lines belonging to a `msis:` block, whether it sits at the
+# top level (single-crate flat config) or nested under a crate entry (workspace
+# per-crate config). The block runs from the `msis:` header to the next line
+# indented at or below the header's own indentation, so a `version:` or `wxs:`
+# sniff cannot pick up a sibling block's key. The leading-whitespace anchor
+# requires `msis:` immediately after the indent, so a longer key never matches.
 msis_block() {
     awk '
-        /^msis:/        { inblock=1; next }
-        inblock && /^[^[:space:]]/ { inblock=0 }
-        inblock         { print }
+        !inblock && /^[[:space:]]*msis:/ {
+            match($0, /^[[:space:]]*/); hdr = RLENGTH
+            inblock = 1; next
+        }
+        inblock {
+            match($0, /^[[:space:]]*/)
+            if ($0 ~ /[^[:space:]]/ && RLENGTH <= hdr) { inblock = 0 }
+        }
+        inblock { print }
     ' "$cfg"
 }
 
@@ -237,9 +252,15 @@ detect_msi_dialects() {
 # msi stage uses `wixl` (msitools) from the v3-dialect .wxs. Both Windows (WiX)
 # and Linux (wixl) can produce the artifact; only macOS lacks a path. The
 # emitted token is dialect-aware (wix3 = v3 candle+light, wix = v4 wix build).
-if has_top_key msis; then
+if has_cfg_block msis; then
     if [ "${RUNNER_OS:-}" = "macOS" ]; then
         gha_warning "auto-install: msis: needs WiX (Windows) or wixl (Linux) — got macOS; skipping"
+    elif [ "$is_toml" = true ]; then
+        # The per-entry dialect resolver is YAML-shaped (`version:` / `wxs:`),
+        # so a TOML `[[crates.<n>.msis]]` block's dialect can't be read here;
+        # emit BOTH WiX majors so whichever the stage selects is on PATH (Linux
+        # uses wixl for either, so the superset only adds one Windows install).
+        deps+=("wix3" "wix")
     else
         # A mixed-dialect block emits both tokens (one per line); append each.
         while IFS= read -r _msi_tok; do
