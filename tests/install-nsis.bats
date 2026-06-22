@@ -129,7 +129,11 @@ _curated_bin_without_makensis() {
 _run_install_nsis_no_makensis() {
     local empty_where_dir="${_TEST_HOME}/empty-where"
     mkdir -p "$empty_where_dir"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "${empty_where_dir}/where.exe"
+    # Real Windows `where.exe` exits 1 (not 0) when it finds nothing — the
+    # state right after `choco install` before the shim reaches PATH. Modelling
+    # exit 1 is load-bearing: it proves the lookup stays set -e-safe (`|| true`),
+    # else pipefail would abort the whole install (the v0.12.0 CI failure).
+    printf '#!/usr/bin/env bash\nexit 1\n' > "${empty_where_dir}/where.exe"
     chmod +x "${empty_where_dir}/where.exe"
     local curated
     curated="$(_curated_bin_without_makensis)"
@@ -172,7 +176,11 @@ _run_install_nsis_no_makensis() {
 
     local empty_where_dir="${_TEST_HOME}/empty-where"
     mkdir -p "$empty_where_dir"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "${empty_where_dir}/where.exe"
+    # Real Windows `where.exe` exits 1 (not 0) when it finds nothing — the
+    # state right after `choco install` before the shim reaches PATH. Modelling
+    # exit 1 is load-bearing: it proves the lookup stays set -e-safe (`|| true`),
+    # else pipefail would abort the whole install (the v0.12.0 CI failure).
+    printf '#!/usr/bin/env bash\nexit 1\n' > "${empty_where_dir}/where.exe"
     chmod +x "${empty_where_dir}/where.exe"
     local curated
     curated="$(_curated_bin_without_makensis)"

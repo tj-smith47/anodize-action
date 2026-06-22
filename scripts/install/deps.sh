@@ -674,9 +674,13 @@ install_nsis() {
                 # `dirname ""` returns ".", which would poison PATH with the
                 # cwd; only resolve a dir when the lookup actually found
                 # makensis, else fall through to the glob fallback below.
+                # `|| true` + an explicit `if` keep the lookup set -e-safe:
+                # right after the choco install makensis is not yet on PATH, so
+                # `where.exe` exits non-zero — without the guard pipefail would
+                # abort the whole install before the glob fallback below runs.
                 local found
-                found="$(where.exe makensis 2>/dev/null | head -1 | tr -d '\r')"
-                [ -n "$found" ] && nsisdir="$(dirname "$found")"
+                found="$(where.exe makensis 2>/dev/null | head -1 | tr -d '\r' || true)"
+                if [ -n "$found" ]; then nsisdir="$(dirname "$found")"; fi
             fi
             if [ -z "$nsisdir" ]; then
                 # NSIS_GLOB_ROOT_PREFIX rebases the search roots for hermetic
@@ -1034,9 +1038,13 @@ install_wix3() {
                 # `dirname ""` returns ".", which would poison PATH with the
                 # cwd; only resolve a dir when the lookup actually found candle,
                 # else fall through to the glob fallback below.
+                # `|| true` + an explicit `if` keep the lookup set -e-safe:
+                # right after the choco install candle is not yet on PATH, so
+                # `where.exe` exits non-zero — without the guard pipefail would
+                # abort the whole install before the glob fallback below runs.
                 local found
-                found="$(where.exe candle 2>/dev/null | head -1 | tr -d '\r')"
-                [ -n "$found" ] && bindir="$(dirname "$found")"
+                found="$(where.exe candle 2>/dev/null | head -1 | tr -d '\r' || true)"
+                if [ -n "$found" ]; then bindir="$(dirname "$found")"; fi
             fi
             if [ -z "$bindir" ]; then
                 # WIX_GLOB_ROOT_PREFIX rebases the search roots for hermetic

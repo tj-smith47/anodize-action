@@ -211,11 +211,12 @@ _run_install_wix3() {
 # yield "." — adding cwd to GITHUB_PATH instead of the WiX bin dir. The fix
 # leaves $bindir empty so the glob fallback runs (or a warning is emitted).
 _run_install_wix3_no_candle() {
-    # A fake `where.exe` that finds nothing (empty stdout, exit 0), and NO
-    # `candle` anywhere on PATH — the post-choco-install state the bug hits.
+    # A fake `where.exe` that finds nothing (real where.exe exits 1, not 0),
+    # and NO `candle` anywhere on PATH — the post-choco-install state the bug
+    # hits. The exit-1 model proves the lookup stays set -e-safe under pipefail.
     local empty_where_dir="${_TEST_HOME}/empty-where"
     mkdir -p "$empty_where_dir"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "${empty_where_dir}/where.exe"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "${empty_where_dir}/where.exe"
     chmod +x "${empty_where_dir}/where.exe"
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
@@ -274,7 +275,7 @@ _curated_bin_without_candle() {
 
     local empty_where_dir="${_TEST_HOME}/empty-where"
     mkdir -p "$empty_where_dir"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "${empty_where_dir}/where.exe"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "${empty_where_dir}/where.exe"
     chmod +x "${empty_where_dir}/where.exe"
     local curated
     curated="$(_curated_bin_without_candle)"
