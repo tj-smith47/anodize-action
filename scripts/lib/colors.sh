@@ -178,6 +178,17 @@ anodizer::run_quiet() {
     return "$status"
 }
 
+# Download a URL to a path, quietly. The single sanctioned way to fetch a file:
+# it wraps curl in run_quiet so progress/redirect chatter never reaches the log
+# on success, while a real failure still surfaces curl's full output and
+# propagates its non-zero exit (so a trailing `|| gha_fail …` fires). Callers
+# never open-code `curl … -o …`, keeping the quiet-on-success guarantee — and
+# the `-sSfL` flag set — in exactly one place.
+#   anodizer::fetch "https://example.com/x.tar.gz" "${dir}/x.tar.gz"
+anodizer::fetch() {
+    anodizer::run_quiet curl -sSfL "$1" -o "$2"
+}
+
 # Dimmed key/value detail child — a `•` line whose dimmed key is separated
 # from the value by two spaces (no glyph), matching the CLI's `kv` row.
 #   anodizer::kv targets "x86_64-unknown-linux-gnu"

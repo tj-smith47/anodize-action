@@ -7,11 +7,14 @@ tasks:
       - task --list
 
   lint:
-    desc: "Pre-commit gate: shellcheck over scripts/, then the bats suite."
+    desc: "Pre-commit gate: shellcheck, output-discipline audit, then the bats suite."
     cmds:
       # --severity=warning matches CI: it drops SC1091 info noise from the
       # dynamic `source "$SCRIPT_DIR/lib/…"` indirection shellcheck can't follow.
       - find scripts -name '*.sh' -print0 | xargs -0 shellcheck --severity=warning -x
+      # Fail if any chatty subprocess is invoked bare — regression guard for the
+      # `info: component rust-std is up to date`-class leak.
+      - bash scripts/validate/output-discipline.sh scripts
       - bats tests/
 
   test:

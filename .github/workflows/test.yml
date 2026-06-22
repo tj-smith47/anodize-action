@@ -24,6 +24,19 @@ jobs:
           # runtime). Real bugs surface as warning or error.
           shellcheck --severity=warning -x scripts/**/*.sh
 
+  output-discipline:
+    name: Output discipline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Fail if a chatty-on-success subprocess is invoked bare (not via
+      # anodizer::run_quiet, a gha_section group, output redirect/capture, or a
+      # `# bare-ok:` marker). Regression guard for the leak class where rustup /
+      # apt-get / cargo chatter bleeds into the log at default verbosity.
+      - name: Audit output discipline
+        run: bash scripts/validate/output-discipline.sh scripts
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest

@@ -14,6 +14,6 @@ for t in "${triples[@]}"; do
     t=$(printf '%s' "$t" | xargs)
     [ -z "$t" ] && continue
     anodizer::step "adding rust target $t"
-    rustup target add "$t"
+    anodizer::run_quiet rustup target add "$t"
 done
 anodizer::ok "rust targets installed: ${TARGETS}"

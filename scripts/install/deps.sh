@@ -257,8 +257,8 @@ nfpm_install_linux() {
     local install_dir="${RUNNER_TEMP:-/tmp}/nfpm"
     mkdir -p "$install_dir"
 
-    anodizer::run_quiet curl -sSfL "${base}/${tarball}" -o "${install_dir}/${tarball}"
-    anodizer::run_quiet curl -sSfL "${base}/checksums.txt" -o "${install_dir}/checksums.txt"
+    anodizer::fetch "${base}/${tarball}" "${install_dir}/${tarball}"
+    anodizer::fetch "${base}/checksums.txt" "${install_dir}/checksums.txt"
     # Verify against the release's signed checksums.txt — no hardcoded sha to
     # drift, the tag is immutable so the bytes are stable.
     local expected
@@ -365,8 +365,7 @@ snapcraft_install_linux_pip() {
 
     local workdir="${RUNNER_TEMP:-/tmp}/snapcraft-pip"
     mkdir -p "$workdir"
-    anodizer::run_quiet curl -sSfL "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" \
-        -o "${workdir}/uv.lock" \
+    anodizer::fetch "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" "${workdir}/uv.lock" \
         || gha_fail "snapcraft: failed to fetch uv.lock for tag ${version} — does the tag exist upstream?"
     snapcraft_lock_to_constraints "${workdir}/uv.lock" > "${workdir}/constraints.txt" \
         || gha_fail "snapcraft: could not derive pip constraints from uv.lock for ${version}"
@@ -450,7 +449,7 @@ cosign_install_linux() {
     local version="${COSIGN_VERSION:-v2.4.1}"
     local base="https://github.com/sigstore/cosign/releases/download/${version}"
     local bin="cosign-linux-amd64"
-    anodizer::run_quiet curl -sSfL "${base}/${bin}" -o /tmp/cosign
+    anodizer::fetch "${base}/${bin}" /tmp/cosign
     # Sigstore publishes the keyless .pem and .sig as base64-encoded files
     # (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode before
     # handing to cosign — its PEM parser does not strip base64, so a raw
@@ -464,7 +463,7 @@ cosign_install_linux() {
     # so a curl failure mid-pipe still aborts.
     anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.pem' | base64 -d > /tmp/cosign.pem"
     anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.sig' | base64 -d > /tmp/cosign.sig"
-    anodizer::run_quiet curl -sSfL "${base}/cosign_checksums.txt" -o /tmp/cosign_checksums.txt
+    anodizer::fetch "${base}/cosign_checksums.txt" /tmp/cosign_checksums.txt
 
     # SHA256 first — bootstraps trust without requiring cosign-to-verify-cosign.
     local expected
@@ -508,8 +507,8 @@ cosign_install_windows() {
     local bin="cosign-windows-amd64.exe"
     local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
     mkdir -p "$install_dir"
-    anodizer::run_quiet curl -sSfL "${base}/${bin}" -o "${install_dir}/cosign.exe"
-    anodizer::run_quiet curl -sSfL "${base}/cosign_checksums.txt" -o "${install_dir}/cosign_checksums.txt"
+    anodizer::fetch "${base}/${bin}" "${install_dir}/cosign.exe"
+    anodizer::fetch "${base}/cosign_checksums.txt" "${install_dir}/cosign_checksums.txt"
 
     local expected actual
     expected=$(sha_from_checksums "${install_dir}/cosign_checksums.txt" "$bin")
@@ -538,8 +537,7 @@ install_syft() {
     case "$RUNNER_OS" in
         Linux)
             local version="${SYFT_VERSION:-v1.18.0}"
-            anodizer::run_quiet curl -sSfL "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
-                -o /tmp/syft-install.sh
+            anodizer::fetch "https://raw.githubusercontent.com/anchore/syft/main/install.sh" /tmp/syft-install.sh
             chmod +x /tmp/syft-install.sh
             anodizer::run_quiet sudo /tmp/syft-install.sh -b /usr/local/bin "${version}"
             ;;
@@ -562,7 +560,7 @@ install_zig() {
             local base="https://ziglang.org/download/${version}"
             # ziglang.org does not publish per-tarball .sha256 sidecars;
             # canonical shasums live in download/index.json.
-            anodizer::run_quiet curl -sSfL "${base}/${tarball}" -o /tmp/zig.tar.xz
+            anodizer::fetch "${base}/${tarball}" /tmp/zig.tar.xz
             local expected
             # NOT routed through run_quiet: this curl's stdout is consumed by the
             # `$(... | jq ...)` capture, which run_quiet would redirect into its
@@ -599,7 +597,7 @@ install_node() {
             # nodejs.org publishes per-release SHASUMS256.txt (`<sha>  <file>`
             # per line) rather than per-tarball sidecars; verify against it so
             # no sha is hardcoded — the dated dist dir is immutable.
-            anodizer::run_quiet curl -sSfL "${base}/${tarball}" -o /tmp/node.tar.xz
+            anodizer::fetch "${base}/${tarball}" /tmp/node.tar.xz
             local expected
             # NOT routed through run_quiet: this curl's stdout feeds the
             # `$(... | grep ...)` capture, which run_quiet would redirect into
@@ -850,7 +848,7 @@ install_alejandra() {
                 sha="$override_sha"
             fi
             local bin="alejandra-${arch}-unknown-linux-musl"
-            anodizer::run_quiet curl -sSfL "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" -o /tmp/alejandra
+            anodizer::fetch "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" /tmp/alejandra
             anodizer::run_quiet bash -c "echo '${sha}  /tmp/alejandra' | sha256sum -c -"
             sudo install -m 0755 /tmp/alejandra /usr/local/bin/alejandra
             rm -f /tmp/alejandra
@@ -901,12 +899,12 @@ install_linuxdeploy() {
             mkdir -p "$install_dir"
 
             local ld_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/${version}/linuxdeploy-${arch}.AppImage"
-            anodizer::run_quiet curl -sSfL "$ld_url" -o "${install_dir}/linuxdeploy"
+            anodizer::fetch "$ld_url" "${install_dir}/linuxdeploy"
             anodizer::run_quiet bash -c "echo '${ld_sha}  ${install_dir}/linuxdeploy' | sha256sum -c -"
             chmod +x "${install_dir}/linuxdeploy"
 
             local plugin_url="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/${plugin_version}/linuxdeploy-plugin-appimage-${arch}.AppImage"
-            anodizer::run_quiet curl -sSfL "$plugin_url" -o "${install_dir}/linuxdeploy-plugin-appimage"
+            anodizer::fetch "$plugin_url" "${install_dir}/linuxdeploy-plugin-appimage"
             anodizer::run_quiet bash -c "echo '${plugin_sha}  ${install_dir}/linuxdeploy-plugin-appimage' | sha256sum -c -"
             chmod +x "${install_dir}/linuxdeploy-plugin-appimage"
 
@@ -961,7 +959,7 @@ install_rcodesign() {
             local tarball="apple-codesign-${version}-${triple}.tar.gz"
             # The release tag is URL-encoded (`apple-codesign/<ver>` → `%2F`).
             local url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${version}/${tarball}"
-            anodizer::run_quiet curl -sSfL "$url" -o "${install_dir}/${tarball}"
+            anodizer::fetch "$url" "${install_dir}/${tarball}"
             anodizer::run_quiet bash -c "echo '${sha}  ${install_dir}/${tarball}' | sha256sum -c -"
             # `rcodesign` sits one dir deep (apple-codesign-<ver>-<triple>/rcodesign);
             # strip the leading component and extract only the binary.
