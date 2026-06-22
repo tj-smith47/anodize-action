@@ -40,12 +40,25 @@ has_kv() {
     fi
 }
 
-if has_top_key nfpm || has_kv name anodizer-stage-nfpm; then
-    deps+=("nfpm")
-fi
-has_top_key makeselfs && deps+=("makeself") || true
-has_top_key snapcrafts && deps+=("snapcraft") || true
-has_top_key srpm && deps+=("rpmbuild") || true
+# nfpm (deb/rpm/apk), makeself (.run self-extractor), snapcraft (snap) and
+# rpmbuild (source RPM) all produce Linux-only package formats and are
+# provisioned via Linux package managers — none has a Windows path, and the
+# determinism Windows/macOS shards never run these stages. Emit the dep on
+# Linux; warn (don't fail) elsewhere, mirroring flatpaks/appimages. (A Windows
+# shard with auto-install previously emitted `nfpm` unconditionally, which the
+# dispatcher tried to `choco install` — nfpm has no choco package — and the
+# install hard-failed before anodizer ran.)
+add_linux_pkg_dep() {
+    if [ "${RUNNER_OS:-}" = "Linux" ]; then
+        deps+=("$1")
+    else
+        gha_warning "auto-install: $1: builds a Linux-only package format (got ${RUNNER_OS:-unset}); skipping"
+    fi
+}
+if has_top_key nfpm || has_kv name anodizer-stage-nfpm; then add_linux_pkg_dep nfpm; fi
+has_top_key makeselfs && add_linux_pkg_dep makeself || true
+has_top_key snapcrafts && add_linux_pkg_dep snapcraft || true
+has_top_key srpm && add_linux_pkg_dep rpmbuild || true
 # cosign is the signing backend only for blocks that actually target it.
 # anodizer's per-block default `cmd:` differs by sign type (verified against
 # crates/core/src/signing.rs + crates/stage-sign/src/helpers.rs):
