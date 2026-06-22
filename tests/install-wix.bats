@@ -241,6 +241,61 @@ _run_install_wix3_no_candle() {
     [[ "$output" == *"candle/light bin dir not found"* ]]
 }
 
+# A curated bin dir that symlinks every standard tool EXCEPT candle, so a real
+# host `candle` cannot leak into the `command -v candle` fast path and mask the
+# where.exe / glob branches (mirrors install-nsis.bats's makensis curation).
+_curated_bin_without_candle() {
+    local dir="${_TEST_HOME}/curated-bin"
+    mkdir -p "$dir"
+    local d f base
+    for d in /usr/bin /bin /usr/local/bin; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*; do
+            base="$(basename "$f")"
+            case "$base" in candle|candle.exe) continue ;; esac
+            [ -e "${dir}/${base}" ] || ln -s "$f" "${dir}/${base}" 2>/dev/null || true
+        done
+    done
+    printf '%s' "$dir"
+}
+
+# ── Test: glob fallback resolves the WiX v3 toolset bin dir ───────────────
+# command -v / where.exe both miss; candle.exe lives under the versioned
+# "WiX Toolset v<major>.<minor>\bin" subdir. WIX_GLOB_ROOT_PREFIX rebases the
+# search under the sandbox where a fake bin dir exists, so the glob resolves and
+# that dir is appended to GITHUB_PATH. This is the production path that actually
+# fires on the real windows runner (candle IS found via the glob there).
+@test "wix3: glob fallback appends the WiX bin dir containing candle.exe" {
+    local prefix="${_TEST_HOME}/glob-prefix"
+    local wix_bin="${prefix}/c/Program Files (x86)/WiX Toolset v3.14/bin"
+    mkdir -p "$wix_bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${wix_bin}/candle.exe"
+    chmod +x "${wix_bin}/candle.exe"
+
+    local empty_where_dir="${_TEST_HOME}/empty-where"
+    mkdir -p "$empty_where_dir"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${empty_where_dir}/where.exe"
+    chmod +x "${empty_where_dir}/where.exe"
+    local curated
+    curated="$(_curated_bin_without_candle)"
+
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        GITHUB_PATH="${GITHUB_PATH}" \
+        NO_COLOR=1 \
+        WIX_GLOB_ROOT_PREFIX="${prefix}" \
+        PATH="${empty_where_dir}:${FAKE_BIN}:${curated}" \
+        RUNNER_OS="Windows" \
+        bash -c '
+            source "'"${REPO_ROOT}"'/scripts/install/deps.sh"
+            skip_unsupported_os() { echo "SKIPPED: $1"; }
+            install_wix3
+            apt_flush
+        '
+    [ "$status" -eq 0 ]
+    grep -qxF "${wix_bin}" "$GITHUB_PATH"
+}
+
 @test "wix3: Linux queues wixl (msitools) — same as the v4 arm" {
     _run_install_wix3 RUNNER_OS="Linux"
     [ "$status" -eq 0 ]

@@ -655,11 +655,51 @@ install_upx() {
     esac
 }
 
+# nsis drives anodizer's `nsis:` (Windows installer) stage, which shells out to
+# `makensis`. The choco `nsis` package installs makensis.exe into the NSIS ROOT
+# (e.g. C:\Program Files (x86)\NSIS\makensis.exe — no `bin` subdir, unlike WiX)
+# but drops no PATH shim, and NSIS is not pre-installed on the windows runner
+# image, so a later step can't find makensis. Discover the root and surface it
+# on PATH, mirroring install_wix3.
 install_nsis() {
     case "$RUNNER_OS" in
         Linux)   apt_queue nsis nsis ;;
         macOS)   brew_install makensis NSIS_VERSION ;;
-        Windows) choco_install nsis NSIS_VERSION ;;
+        Windows)
+            choco_install nsis NSIS_VERSION
+            local nsisdir=""
+            if command -v makensis > /dev/null 2>&1; then
+                nsisdir="$(dirname "$(command -v makensis)")"
+            elif command -v where.exe > /dev/null 2>&1; then
+                # `dirname ""` returns ".", which would poison PATH with the
+                # cwd; only resolve a dir when the lookup actually found
+                # makensis, else fall through to the glob fallback below.
+                local found
+                found="$(where.exe makensis 2>/dev/null | head -1 | tr -d '\r')"
+                [ -n "$found" ] && nsisdir="$(dirname "$found")"
+            fi
+            if [ -z "$nsisdir" ]; then
+                # NSIS_GLOB_ROOT_PREFIX rebases the search roots for hermetic
+                # tests (empty in production); the makensis.exe lives directly in
+                # the NSIS install root, with no `bin` subdir.
+                local prefix="${NSIS_GLOB_ROOT_PREFIX:-}"
+                local candidate
+                for candidate in "${prefix}/c/Program Files (x86)/NSIS" \
+                                 "${prefix}/c/Program Files/NSIS"; do
+                    if [ -x "${candidate}/makensis.exe" ]; then
+                        nsisdir="$candidate"
+                        break
+                    fi
+                done
+            fi
+            if [ -n "$nsisdir" ]; then
+                gha_add_path "$nsisdir"
+            else
+                gha_warning "nsis: makensis dir not found after install; relying on choco's PATH shims"
+            fi
+            anodizer::ok "NSIS (makensis) installed via choco nsis"
+            _INSTALLER_EMITTED_OK=1
+            ;;
     esac
 }
 
@@ -999,9 +1039,13 @@ install_wix3() {
                 [ -n "$found" ] && bindir="$(dirname "$found")"
             fi
             if [ -z "$bindir" ]; then
+                # WIX_GLOB_ROOT_PREFIX rebases the search roots for hermetic
+                # tests (empty in production); candle.exe/light.exe live under
+                # the versioned "WiX Toolset v<major>.<minor>\bin" subdir.
+                local prefix="${WIX_GLOB_ROOT_PREFIX:-}"
                 local candidate
-                for candidate in "/c/Program Files (x86)/WiX Toolset v"*/bin \
-                                 "/c/Program Files/WiX Toolset v"*/bin; do
+                for candidate in "${prefix}/c/Program Files (x86)/WiX Toolset v"*/bin \
+                                 "${prefix}/c/Program Files/WiX Toolset v"*/bin; do
                     if [ -x "${candidate}/candle.exe" ]; then
                         bindir="$candidate"
                         break
