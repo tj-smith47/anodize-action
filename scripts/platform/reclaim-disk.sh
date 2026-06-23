@@ -51,8 +51,7 @@ _rm() {
 # Windows git-bash; only emit the freed-space summary when both reads are
 # integers and the delta is meaningful.
 before=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
-
-anodizer::vdetail "disk available: $(df -h / 2>/dev/null | awk 'NR==2{print $4}')" || true
+before_h=$(df -h / 2>/dev/null | awk 'NR==2{print $4}') || true
 
 case "${RUNNER_OS:-}" in
     macOS)
@@ -86,6 +85,20 @@ case "${RUNNER_OS:-}" in
                 _rm "$app"
             done
         fi
+        # Large preinstalled cross-platform toolchains a Rust release/installer
+        # pipeline never links against — the active Xcode SDK + /usr/bin tools
+        # are all it needs. Freeing these (~13 GB Android, several GB .NET/GHC,
+        # plus stale DerivedData) gives `hdiutil create` reliable headroom so
+        # the first DMG of the two-build determinism harness stops landing on
+        # the disk-full edge. Never touch ~/.rustup, ~/.cargo, sccache, or the
+        # active Xcode.
+        [ -n "${ANDROID_SDK_ROOT:-}" ] && _rm "$ANDROID_SDK_ROOT"
+        [ -n "${ANDROID_HOME:-}" ] && _rm "$ANDROID_HOME"
+        _rm "/Users/runner/Library/Android"
+        _rm "/Users/runner/.dotnet"
+        _rm "/usr/local/share/dotnet"
+        _rm "/Users/runner/Library/Developer/Xcode/DerivedData"
+        _rm "/Users/runner/.ghcup"
         ;;
     Linux)
         # Large preinstalled SDKs a Rust release pipeline never compiles against.
@@ -101,11 +114,18 @@ case "${RUNNER_OS:-}" in
 esac
 
 after=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
+after_h=$(df -h / 2>/dev/null | awk 'NR==2{print $4}') || true
 
-anodizer::vdetail "disk available: $(df -h / 2>/dev/null | awk 'NR==2{print $4}')" || true
+# Surface the absolute free-disk numbers at DEFAULT level — when "No space left
+# on device" strikes the harness, the failing run must show the real before/after
+# available, not hide it behind RUNNER_DEBUG. Best-effort: only when both
+# human-readable reads are non-empty (Windows git-bash df can be unreliable).
+if [ -n "${before_h:-}" ] && [ -n "${after_h:-}" ]; then
+    anodizer::kv "disk free" "${before_h} → ${after_h} available" || true
+fi
 
-# Both reads must be plain integers (Windows git-bash df can be unreliable —
-# skip the summary silently rather than error). Report only a meaningful gain.
+# Both -k reads must be plain integers (Windows git-bash df can be unreliable —
+# skip the freed summary silently rather than error). Report only a meaningful gain.
 if [[ "$before" =~ ^[0-9]+$ ]] && [[ "$after" =~ ^[0-9]+$ ]] && [ "$after" -gt "$before" ]; then
     freed_mb=$(( (after - before) / 1024 ))
     if [ "$freed_mb" -ge 100 ]; then

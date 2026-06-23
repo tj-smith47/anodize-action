@@ -6,12 +6,17 @@
 # ever deleted. The rm-stub (invoked via the sudo-stub, which records and
 # forwards) appends its argv to RM_LOG, which the assertions inspect.
 #
-# Covers six behaviours:
+# Covers:
 #
 #   1. RECLAIM_DISK=false                       → exit 0, no rm
 #   2. auto + self-hosted                       → exit 0, no rm (CRITICAL guard)
 #   3. auto + self-hosted + verbose             → prints "skipped: not github-hosted"
 #   4. auto + github-hosted + macOS             → rm targets CoreSimulator runtimes
+#   4a. macOS                                   → rm targets Android/.NET/DerivedData/GHC
+#   4e. macOS + ANDROID_SDK_ROOT/ANDROID_HOME   → env-var Android paths reclaimed
+#   4f. macOS + empty Android env vars          → guard skips _rm of empty string
+#   4g. macOS                                   → default-level `disk free` summary line
+#   4b–4d. macOS Xcode sweep                    → keep active, no-op empty, skip CLT
 #   5. true + RUNNER_ENVIRONMENT unset + Linux  → forces; rm targets /usr/local/lib/android
 #   6. RECLAIM_DISK=bogus                        → non-zero exit (gha_fail)
 
@@ -112,6 +117,49 @@ _run_reclaim() {
     _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted"
     [ "$status" -eq 0 ]
     grep -q 'CoreSimulator/Profiles/Runtimes' "$RM_LOG"
+}
+
+# ── Test 4a: macOS also reclaims the big Rust-irrelevant toolchains ─────
+
+@test "reclaim: auto on github-hosted macOS reclaims Android/.NET/DerivedData/GHC" {
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted"
+    [ "$status" -eq 0 ]
+    grep -q 'Library/Android' "$RM_LOG"
+    grep -q '.dotnet' "$RM_LOG"
+    grep -q 'share/dotnet' "$RM_LOG"
+    grep -q 'Xcode/DerivedData' "$RM_LOG"
+    grep -q '.ghcup' "$RM_LOG"
+}
+
+# ── Test 4e: macOS honours ANDROID_SDK_ROOT/ANDROID_HOME env overrides ──
+
+@test "reclaim: macOS reclaims Android SDK env-var paths when set" {
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted" \
+        ANDROID_SDK_ROOT="/opt/android-sdk-custom" ANDROID_HOME="/opt/android-home-custom"
+    [ "$status" -eq 0 ]
+    grep -q '/opt/android-sdk-custom' "$RM_LOG"
+    grep -q '/opt/android-home-custom' "$RM_LOG"
+}
+
+# ── Test 4f: empty Android env vars are not _rm'd (guard) ───────────────
+
+@test "reclaim: macOS skips empty Android env vars (no _rm of empty string)" {
+    # With both vars unset the env-var guards must not fire; the canonical
+    # /Users/runner/Library/Android delete still happens.
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted"
+    [ "$status" -eq 0 ]
+    grep -q '/Users/runner/Library/Android' "$RM_LOG"
+    # No bare `-rf` line with an empty trailing path from a `_rm ""`.
+    ! grep -qx -- '-rf' "$RM_LOG"
+}
+
+# ── Test 4g: a default-level `disk free` summary is emitted ─────────────
+
+@test "reclaim: emits absolute disk-free summary at default level" {
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"disk free"* ]]
+    [[ "$output" == *"available"* ]]
 }
 
 # ── Test 4b: macOS deletes non-active Xcodes, keeps the active one ──────
