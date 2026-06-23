@@ -97,6 +97,18 @@ inputs:
     description: "Install the stable Rust toolchain (dtolnay/rust-toolchain)."
     default: "false"
     required: false
+  reclaim-disk:
+    description: >
+      Reclaim large, build-irrelevant runner caches before heavy
+      build/packaging so disk-tight runners don't fail with "No space left on
+      device" (the macOS determinism harness assembles installers twice plus
+      hdiutil scratch volumes). "auto" (default) reclaims the preinstalled
+      caches a Rust release pipeline never uses — iOS/tvOS/watchOS simulator
+      runtimes on macOS, large preinstalled SDKs on Linux — but ONLY on
+      GitHub-hosted runners; a self-hosted runner's disk is never touched.
+      "true" forces reclamation on any runner; "false" disables it.
+    default: "auto"
+    required: false
 
   # ---------------------------------------------------------------------------
   # Workspace resolution (monorepo tag → crate mapping)
@@ -383,6 +395,21 @@ runs:
         INSTALL_ONLY: ${{ inputs.install-only }}
         ARGS: ${{ inputs.args }}
       run: "${GITHUB_ACTION_PATH}/scripts/install/classify.sh"
+
+    # -------------------------------------------------------------------------
+    # Disk reclamation — runs before any toolchain/build/packaging step that
+    # consumes scratch space, gated on a build actually being needed so a
+    # pure install run never disturbs the runner.
+    # -------------------------------------------------------------------------
+    - name: Reclaim runner disk
+      if: >-
+        inputs.reclaim-disk == 'true' ||
+        (inputs.reclaim-disk == 'auto' &&
+         (steps.plan.outputs.needs_rust == 'true' || inputs.determinism == 'true' || inputs.auto-install == 'true'))
+      shell: bash
+      env:
+        RECLAIM_DISK: ${{ inputs.reclaim-disk }}
+      run: "${GITHUB_ACTION_PATH}/scripts/platform/reclaim-disk.sh"
 
     # -------------------------------------------------------------------------
     # Input validation
