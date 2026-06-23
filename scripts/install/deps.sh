@@ -447,10 +447,22 @@ install_rpmbuild() {
     esac
 }
 
-cosign_install_linux() {
+# Download, SHA256-check, install to /usr/local/bin, and keyless-verify a
+# cosign release binary. Shared by the Linux and macOS arms, which differ only
+# in the release asset name, the checksum tool, and the base64 decoder:
+#   $1 bin        release asset basename (e.g. cosign-linux-amd64)
+#   $2 sha_cmd    checksum verifier reading "HASH  PATH" on stdin
+#                 (Linux: `sha256sum -c -`; macOS has no sha256sum, so
+#                 `shasum -a 256 -c -`)
+#   $3 b64_decode base64 decoder reading stdin, writing stdout (Linux:
+#                 `base64 -d`; macOS BSD `base64 -d` is unreliable, so
+#                 `openssl base64 -d -A`, present on both platforms)
+# Installs to /usr/local/bin/cosign (on PATH on GH Linux + macOS runners) so a
+# bare `cosign` works for the verify step here and for downstream sign stages.
+cosign_install_download_verify() {
+    local bin="$1" sha_cmd="$2" b64_decode="$3"
     local version="${COSIGN_VERSION:-v2.4.1}"
     local base="https://github.com/sigstore/cosign/releases/download/${version}"
-    local bin="cosign-linux-amd64"
     anodizer::fetch "${base}/${bin}" /tmp/cosign
     # Sigstore publishes the keyless .pem and .sig as base64-encoded files
     # (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode before
@@ -458,19 +470,19 @@ cosign_install_linux() {
     # download fails verify-blob with a misleading "exactly one of: key
     # reference (--key), certificate (--cert)..." error (the cert IS
     # passed, but the file content can't be parsed).
-    # The pem/sig downloads pipe curl's stdout into base64 -d, so run_quiet
-    # wraps the whole pipeline (capturing curl/base64 stderr) rather than the
+    # The pem/sig downloads pipe curl's stdout into the decoder, so run_quiet
+    # wraps the whole pipeline (capturing curl/decoder stderr) rather than the
     # bare curl — wrapping curl alone would swallow the piped bytes. `set -o
     # pipefail` inside the wrapped shell preserves the outer pipefail contract
     # so a curl failure mid-pipe still aborts.
-    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.pem' | base64 -d > /tmp/cosign.pem"
-    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.sig' | base64 -d > /tmp/cosign.sig"
+    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.pem' | ${b64_decode} > /tmp/cosign.pem"
+    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.sig' | ${b64_decode} > /tmp/cosign.sig"
     anodizer::fetch "${base}/cosign_checksums.txt" /tmp/cosign_checksums.txt
 
     # SHA256 first — bootstraps trust without requiring cosign-to-verify-cosign.
     local expected
     expected=$(sha_from_checksums /tmp/cosign_checksums.txt "$bin")
-    anodizer::run_quiet bash -c "echo '${expected}  /tmp/cosign' | sha256sum -c -"
+    anodizer::run_quiet bash -c "echo '${expected}  /tmp/cosign' | ${sha_cmd}"
     sudo install /tmp/cosign /usr/local/bin/cosign
 
     # Then keyless signature. Cosign releases are signed by the GCP service
@@ -497,6 +509,30 @@ cosign_install_linux() {
         /tmp/cosign \
         || gha_fail "cosign keyless signature verification FAILED — refusing to install unverified binary"
     anodizer::vok "cosign keyless signature verified"
+}
+
+cosign_install_linux() {
+    cosign_install_download_verify cosign-linux-amd64 'sha256sum -c -' 'base64 -d'
+}
+
+cosign_install_macos() {
+    # Homebrew installs the LATEST cosign (2.6+), bypassing the COSIGN_VERSION
+    # pin; that newer cosign turned `--tlog-upload=false` into a hard error
+    # under the now-default signing-config, which breaks the determinism
+    # harness's offline keyed sign-blob. Direct download honours the pin (the
+    # pinned 2.4.x still accepts `--tlog-upload=false`), matching the Linux and
+    # Windows arms.
+    local arch asset
+    arch="$(uname -m)"
+    case "$arch" in
+        arm64)  asset="cosign-darwin-arm64" ;;
+        x86_64) asset="cosign-darwin-amd64" ;;
+        *)      gha_fail "Unsupported macOS arch for cosign: ${arch}" ;;
+    esac
+    # macOS has no sha256sum; `shasum -a 256 -c -` is the BSD equivalent. BSD
+    # `base64 -d` is unreliable, so decode the keyless pem/sig with
+    # `openssl base64 -d -A` (present on macOS and Linux).
+    cosign_install_download_verify "$asset" 'shasum -a 256 -c -' 'openssl base64 -d -A'
 }
 
 cosign_install_windows() {
@@ -530,7 +566,7 @@ cosign_install_windows() {
 install_cosign() {
     case "$RUNNER_OS" in
         Linux)   cosign_install_linux ;;
-        macOS)   brew_install cosign COSIGN_VERSION ;;
+        macOS)   cosign_install_macos ;;
         Windows) cosign_install_windows ;;
     esac
 }
