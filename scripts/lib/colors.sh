@@ -150,18 +150,37 @@ anodizer::detail() {
         "${_ANODIZER_DIM}" "$(anodizer::norm_path "$1")" "${_ANODIZER_RESET}"
 }
 
+# True when the run is in verbose/debug mode: GitHub Actions step-debug
+# (RUNNER_DEBUG=1) or an explicit ANODIZER_VERBOSE. The single gate behind
+# every "quiet on a green run, full detail when debugging" decision — both the
+# run_quiet output capture and the ::v* verbose-only log lines consult it.
+anodizer::verbose() {
+    [ "${RUNNER_DEBUG:-}" = "1" ] || [ -n "${ANODIZER_VERBOSE:-}" ]
+}
+
+# Verbose-only variants of ::step / ::ok / ::detail. Identical output, but
+# emitted ONLY under anodizer::verbose — for EXPECTED plumbing that is pure
+# noise on a green run yet useful when debugging: per-tool auto-install
+# progress, and benign skips (an OS-incompatible packager omitted on this
+# runner). A skip like that is a correct routing decision, NOT a warning, so it
+# must never reach gha_warning / a GitHub ::warning:: annotation. Each returns 0
+# whether or not it printed, so a bare `anodizer::vok …` is `set -e`-safe.
+anodizer::vstep()   { anodizer::verbose && anodizer::step "$@"   || return 0; }
+anodizer::vok()     { anodizer::verbose && anodizer::ok "$@"     || return 0; }
+anodizer::vdetail() { anodizer::verbose && anodizer::detail "$@" || return 0; }
+
 # Run a noisy subprocess quietly: capture stdout+stderr, print nothing on
 # success, and surface the full captured output only when the command fails
 # (then propagate its exit status). This keeps the apt/curl/sha256sum/syft/
 # cosign chatter out of a green run while preserving every byte for a red one.
 #
-# Escape hatch: when RUNNER_DEBUG=1 (GitHub Actions step-debug) or
-# ANODIZER_VERBOSE is set, the command runs with its output passed straight
-# through live — nothing is swallowed when a human is actively debugging.
+# Escape hatch: under anodizer::verbose (RUNNER_DEBUG=1 or ANODIZER_VERBOSE) the
+# command runs with its output passed straight through live — nothing is
+# swallowed when a human is actively debugging.
 #
 #   anodizer::run_quiet sudo apt-get install -yq foo
 anodizer::run_quiet() {
-    if [ "${RUNNER_DEBUG:-}" = "1" ] || [ -n "${ANODIZER_VERBOSE:-}" ]; then
+    if anodizer::verbose; then
         "$@"
         return
     fi

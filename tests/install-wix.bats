@@ -114,7 +114,9 @@ _run_install_wix() {
 # ── Test 3: Linux queues wixl (msitools) — the Linux MSI path ─────────────
 
 @test "wix: Linux queues the wixl apt package, exits 0" {
-    _run_install_wix RUNNER_OS="Linux"
+    # The per-package ✓ on flush is a verbose-only line; run under verbose so it
+    # surfaces for the assertion.
+    _run_install_wix RUNNER_OS="Linux" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     # wixl rides the single batched apt install — one batch header plus a
     # per-package ✓ on flush, NOT a per-tool "queued"/"installing" line.
@@ -158,10 +160,11 @@ _run_auto_detect() {
     grep -q '^deps=.*wix' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: msis: config on macOS warns and omits wix" {
+@test "auto-detect: msis: config on macOS omits wix (OS-incompatible)" {
+    # macOS has no MSI build path (needs WiX on Windows or wixl on Linux), so the
+    # dep is silently omitted at default verbosity.
     _run_auto_detect $'msis:\n  - wxs: app.wxs' "macOS"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"got macOS"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'wix' "$GITHUB_OUTPUT"
 }
@@ -298,7 +301,9 @@ _curated_bin_without_candle() {
 }
 
 @test "wix3: Linux queues wixl (msitools) — same as the v4 arm" {
-    _run_install_wix3 RUNNER_OS="Linux"
+    # The per-package ✓ on flush is a verbose-only line; run under verbose so it
+    # surfaces for the assertion.
+    _run_install_wix3 RUNNER_OS="Linux" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     [[ "$output" == *"installing apt batch: wixl"* ]]
     [[ "$output" == *"wixl installed"* ]]

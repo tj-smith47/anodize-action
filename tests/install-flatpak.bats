@@ -129,7 +129,9 @@ _run_dispatch_flatpak() {
     # suppressed. apt_flush still emits one "flatpak installed" line for the
     # `flatpak` apt package itself — that is the single legitimate occurrence;
     # the bug would add a SECOND from dispatch_install.
-    _run_dispatch_flatpak RUNNER_OS="Linux"
+    # The installer's own completion line is verbose-only; run under verbose so
+    # it surfaces for the single-occurrence assertion.
+    _run_dispatch_flatpak RUNNER_OS="Linux" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     # Snapshot the dispatch output — each `run` below clobbers $output.
     local out="$output"
@@ -178,19 +180,17 @@ _run_auto_detect() {
     grep -q '^deps=.*flatpak' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: flatpaks: config on macOS warns and omits flatpak" {
-    # Flatpak is Linux-only; non-Linux runners are warned-and-omitted.
+@test "auto-detect: flatpaks: config on macOS omits flatpak (OS-incompatible)" {
+    # Flatpak is Linux-only; non-Linux runners silently omit the dep at default.
     _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "macOS"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"requires a Linux runner"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'flatpak' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: flatpaks: config on Windows warns and omits flatpak" {
+@test "auto-detect: flatpaks: config on Windows omits flatpak (OS-incompatible)" {
     _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "Windows"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"requires a Linux runner"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'flatpak' "$GITHUB_OUTPUT"
 }

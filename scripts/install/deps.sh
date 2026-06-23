@@ -179,14 +179,14 @@ apt_update_once() {
 }
 apt_flush() {
     [ "${#APT_PKGS[@]}" -eq 0 ] && return
-    anodizer::step "installing apt batch: ${APT_NAMES[*]}"
+    anodizer::vstep "installing apt batch: ${APT_NAMES[*]}"
     apt_update_once
     DEBIAN_FRONTEND=noninteractive \
         anodizer::run_quiet sudo apt-get install -yq "${APT_PKGS[@]}" < /dev/null \
         || gha_fail "apt batch install failed for: ${APT_NAMES[*]}"
     local name
     for name in "${APT_NAMES[@]}"; do
-        anodizer::ok "${name} installed"
+        anodizer::vok "${name} installed"
     done
     APT_PKGS=()
     APT_NAMES=()
@@ -203,8 +203,10 @@ _squashfs_tools_available() {
 skip_unsupported_os() {
     local tool="$1"
     local reason="${2:-not natively supported on ${RUNNER_OS}}"
-    gha_warning "${tool} is ${reason}; skipping"
-    anodizer::warn "${tool} is ${reason}; skipping"
+    # An OS-incompatible tool omitted on this runner is a correct routing
+    # decision, not a warning — keep it out of the annotation summary and quiet
+    # on a green run (visible under anodizer::verbose for debugging).
+    anodizer::vdetail "skipped ${tool}: ${reason}"
 }
 
 # If `$<var>` is set, pin the brew formula to `<formula>@<version>`.
@@ -270,7 +272,7 @@ nfpm_install_linux() {
     tar -xzf "${install_dir}/${tarball}" -C "$install_dir" nfpm
     chmod +x "${install_dir}/nfpm"
     gha_add_path "$install_dir"
-    anodizer::ok "nfpm ${version} (${arch}) installed at ${install_dir}/nfpm"
+    anodizer::vok "nfpm ${version} (${arch}) installed at ${install_dir}/nfpm"
     _INSTALLER_EMITTED_OK=1
 }
 
@@ -356,7 +358,7 @@ snapcraft_install_linux_pip() {
                 || gha_fail "snapcraft: unsquashfs not found and no apt-get to install squashfs-tools — add squashfs-tools to your runner image"
             gha_fail "snapcraft: no snapd, and the pip fallback needs ${apt_needs[*]} (no apt-get available to install them) — preinstall snapcraft in the runner image"
         fi
-        anodizer::detail "installing ${apt_needs[*]} via apt for the pip fallback"
+        anodizer::vdetail "installing ${apt_needs[*]} via apt for the pip fallback"
         apt_update_once
         DEBIAN_FRONTEND=noninteractive \
             anodizer::run_quiet sudo apt-get install -yq "${apt_needs[@]}" < /dev/null \
@@ -407,7 +409,7 @@ snapcraft_install_linux_pip() {
     # ToolMissingError() if the binary is absent — catch it at install time.
     _squashfs_tools_available \
         || gha_fail "snapcraft: unsquashfs not found — install squashfs-tools in the runner image (snapcraft upload requires it)"
-    anodizer::ok "snapcraft ${version} installed via pip (upload-capable; packing snaps still needs a snapd-equipped runner)"
+    anodizer::vok "snapcraft ${version} installed via pip (upload-capable; packing snaps still needs a snapd-equipped runner)"
     _INSTALLER_EMITTED_OK=1
 }
 
@@ -420,7 +422,7 @@ install_snapcraft() {
             # No unsquashfs assertion here: a preinstalled snapcraft means the
             # runner image's build-time `command -v unsquashfs` gate already ran.
             if snapcraft version > /dev/null 2>&1; then
-                anodizer::detail "snapcraft already present ($(command -v snapcraft))"
+                anodizer::vdetail "snapcraft already present ($(command -v snapcraft))"
                 return
             fi
             # `snap version` succeeds only when the client can reach a live
@@ -494,7 +496,7 @@ cosign_install_linux() {
         --certificate-oidc-issuer https://accounts.google.com \
         /tmp/cosign \
         || gha_fail "cosign keyless signature verification FAILED — refusing to install unverified binary"
-    anodizer::ok "cosign keyless signature verified"
+    anodizer::vok "cosign keyless signature verified"
 }
 
 cosign_install_windows() {
@@ -521,7 +523,7 @@ cosign_install_windows() {
         || gha_fail "cosign SHA256 mismatch (expected ${expected}, got ${actual})"
 
     gha_add_path "$install_dir"
-    anodizer::ok "cosign ${version} installed at ${install_dir}/cosign.exe"
+    anodizer::vok "cosign ${version} installed at ${install_dir}/cosign.exe"
     _INSTALLER_EMITTED_OK=1
 }
 
@@ -636,7 +638,7 @@ install_npm_floor() {
         Linux)   anodizer::run_quiet sudo npm install -g "npm@${version}" ;;
         *)       anodizer::run_quiet npm install -g "npm@${version}" ;;
     esac
-    anodizer::ok "npm ${version} active (>= 11.5.1 Trusted-Publishing floor)"
+    anodizer::vok "npm ${version} active (>= 11.5.1 Trusted-Publishing floor)"
 }
 
 install_cargo_zigbuild() {
@@ -699,7 +701,7 @@ install_nsis() {
             else
                 gha_warning "nsis: makensis dir not found after install; relying on choco's PATH shims"
             fi
-            anodizer::ok "NSIS (makensis) installed via choco nsis"
+            anodizer::vok "NSIS (makensis) installed via choco nsis"
             _INSTALLER_EMITTED_OK=1
             ;;
     esac
@@ -745,7 +747,7 @@ install_flatpak() {
                 "org.freedesktop.Platform//${runtime_version}" \
                 "org.freedesktop.Sdk//${runtime_version}" \
                 || gha_fail "flatpak: installing org.freedesktop.Platform//${runtime_version} + Sdk failed"
-            anodizer::ok "flatpak + flatpak-builder + runtime ${runtime_version} (Platform + Sdk) installed"
+            anodizer::vok "flatpak + flatpak-builder + runtime ${runtime_version} (Platform + Sdk) installed"
             _INSTALLER_EMITTED_OK=1
             ;;
         macOS|Windows) skip_unsupported_os flatpak-builder "Linux-only (flatpaks: config requires a Linux runner)" ;;
@@ -755,7 +757,7 @@ install_flatpak() {
 install_pkgbuild() {
     case "$RUNNER_OS" in
         # macOS ships pkgbuild with the Xcode Command Line Tools; nothing to do.
-        macOS)   anodizer::detail "pkgbuild ships with Xcode CLT on macOS" ;;
+        macOS)   anodizer::vdetail "pkgbuild ships with Xcode CLT on macOS" ;;
         Linux)
             # The Linux .pkg path assembles the flat XAR package by hand:
             # cpio+gzip (base image) for the Payload, xar to flatten, and mkbom
@@ -821,7 +823,7 @@ install_pkgbuild() {
                     || gha_fail "bomutils install failed"
                 rm -rf "$src"
             fi
-            anodizer::ok "Linux flat-pkg toolchain (xar + mkbom) installed"
+            anodizer::vok "Linux flat-pkg toolchain (xar + mkbom) installed"
             _INSTALLER_EMITTED_OK=1
             ;;
         Windows) skip_unsupported_os pkgbuild "macOS/Linux only (pkgs: macOS installer format)" ;;
@@ -913,7 +915,7 @@ install_linuxdeploy() {
             # linuxdeploy itself) — $GITHUB_ENV survives across steps; a bare
             # `export` would not.
             gha_set_env APPIMAGE_EXTRACT_AND_RUN 1
-            anodizer::ok "linuxdeploy ${version} + appimage plugin ${plugin_version} (${arch}) installed at ${install_dir}"
+            anodizer::vok "linuxdeploy ${version} + appimage plugin ${plugin_version} (${arch}) installed at ${install_dir}"
             _INSTALLER_EMITTED_OK=1
             ;;
         macOS|Windows) skip_unsupported_os linuxdeploy "Linux-only (appimages: config requires a Linux runner)" ;;
@@ -967,7 +969,7 @@ install_rcodesign() {
                 "apple-codesign-${version}-${triple}/rcodesign"
             chmod +x "${install_dir}/rcodesign"
             gha_add_path "$install_dir"
-            anodizer::ok "rcodesign ${version} (${triple}) installed at ${install_dir}/rcodesign"
+            anodizer::vok "rcodesign ${version} (${triple}) installed at ${install_dir}/rcodesign"
             _INSTALLER_EMITTED_OK=1
             ;;
         Windows)
@@ -1001,7 +1003,7 @@ install_wix() {
             # dotnet global tools install to $HOME/.dotnet/tools; surface it on
             # PATH for later steps in case the image's default PATH lacks it.
             gha_add_path "${USERPROFILE:-$HOME}/.dotnet/tools"
-            anodizer::ok "wix ${version} installed via dotnet global tool"
+            anodizer::vok "wix ${version} installed via dotnet global tool"
             _INSTALLER_EMITTED_OK=1
             ;;
         Linux)
@@ -1063,7 +1065,7 @@ install_wix3() {
             else
                 gha_warning "wix3: candle/light bin dir not found after install; relying on choco's PATH shims"
             fi
-            anodizer::ok "WiX v3 (candle+light) installed via choco wixtoolset"
+            anodizer::vok "WiX v3 (candle+light) installed via choco wixtoolset"
             _INSTALLER_EMITTED_OK=1
             ;;
         Linux)
@@ -1081,7 +1083,7 @@ dispatch_install() {
         # Apt-batched deps are logged by the batch header + per-package `✓`; the
         # generic per-tool "installing X" would duplicate that, so skip it for
         # them. Every other tool gets its leading "installing X" up front.
-        _is_apt_batched "$dep" || anodizer::step "installing ${dep}"
+        _is_apt_batched "$dep" || anodizer::vstep "installing ${dep}"
         pre_queue=${#APT_PKGS[@]}
         # Self-logging installers set this to suppress the generic completion
         # line below. The apt-queue-delta heuristic alone is insufficient: an
@@ -1117,7 +1119,7 @@ dispatch_install() {
         # batch lands — or (b) the installer already emitted its own completion
         # line (_INSTALLER_EMITTED_OK).
         if [ "${#APT_PKGS[@]}" -eq "$pre_queue" ] && [ -z "$_INSTALLER_EMITTED_OK" ]; then
-            anodizer::ok "${dep} installed"
+            anodizer::vok "${dep} installed"
         fi
     done
 }
@@ -1137,6 +1139,10 @@ main() {
     anodizer::verb Installing "${#DEPS[@]} ${noun}"
     dispatch_install
     apt_flush
+    # Default-visible one-line summary of what landed (the per-tool progress is
+    # verbose-only ::v* now), mirroring the detect phase's `detected` row. A
+    # green run shows the header + this line; --debug expands the play-by-play.
+    anodizer::kv installed "$(IFS=','; echo "${DEPS[*]}")"
 }
 
 # Source-safe: only run `main` when executed directly. Lets tests source

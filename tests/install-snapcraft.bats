@@ -143,7 +143,9 @@ _run_install_snapcraft() {
     printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/snapcraft"
     chmod +x "${FAKE_BIN}/snapcraft"
 
-    _run_install_snapcraft RUNNER_OS="Linux"
+    # The "already present" skip detail is verbose-only; run under verbose so it
+    # surfaces for the assertion.
+    _run_install_snapcraft RUNNER_OS="Linux" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     [[ "$output" == *"already present"* ]]
     # Neither install mechanism may fire.
@@ -355,6 +357,11 @@ STUB
     # Remove apt-get stub so command -v apt-get fails.
     rm -f "${FAKE_BIN}/apt-get"
 
+    # The "installing squashfs-tools … via apt for the pip fallback" detail is a
+    # verbose-only line; run under verbose so the squashfs-tools string surfaces.
+    # (When command -v apt-get genuinely misses, the gha_fail message names
+    # squashfs-tools unconditionally; under verbose the apt-batch detail also
+    # carries it — either path satisfies the assertion.)
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
         NO_COLOR=1 \
@@ -365,6 +372,7 @@ STUB
         FIXTURE_LOCK="${FIXTURE_LOCK}" \
         SUDO_LOG="${SUDO_LOG}" \
         PATH="${CONTROLLED_PATH}" \
+        ANODIZER_VERBOSE=1 \
         bash -c "
             source '${REPO_ROOT}/scripts/install/deps.sh'
             brew_install() { :; }

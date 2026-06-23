@@ -262,7 +262,9 @@ _run_dispatch() {
     # install_pkgbuild flushes apt internally and prints its own completion
     # line, so the generic "pkgbuild installed" must be suppressed — one line,
     # not two.
-    DISPATCH_DEP="pkgbuild" MASK_XAR="absent" MASK_MKBOM="absent" _run_dispatch RUNNER_OS="Linux"
+    # The installer's own completion line is verbose-only; run under verbose so
+    # it surfaces for the single-occurrence assertion.
+    DISPATCH_DEP="pkgbuild" MASK_XAR="absent" MASK_MKBOM="absent" _run_dispatch RUNNER_OS="Linux" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     # Snapshot the dispatch output — the `run` below clobbers $output.
     local out="$output"
@@ -312,10 +314,11 @@ _run_auto_detect() {
     grep -q '^deps=.*pkgbuild' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: pkgs: config on Windows warns and omits pkgbuild" {
+@test "auto-detect: pkgs: config on Windows omits pkgbuild (OS-incompatible)" {
+    # macOS .pkg has no Windows build path, so the dep is silently omitted at
+    # default verbosity.
     _run_auto_detect $'pkgs:\n  - identifier: org.example.app' "Windows"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"got Windows"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'pkgbuild' "$GITHUB_OUTPUT"
 }

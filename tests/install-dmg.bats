@@ -94,7 +94,9 @@ _run_install_create_dmg() {
 # ── Test 2: Linux → queues genisoimage (the dmg stage's Linux fallback) ────
 
 @test "create-dmg: Linux queues the genisoimage apt package, exits 0" {
-    _run_install_create_dmg RUNNER_OS="Linux"
+    # The per-package ✓ on flush is a verbose-only line; run under verbose so it
+    # surfaces for the assertion.
+    _run_install_create_dmg RUNNER_OS="Linux" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     # genisoimage rides the single batched apt install — one batch header plus a
     # per-package ✓ on flush, NOT a per-tool "queued"/"installing" line.
@@ -138,12 +140,11 @@ _run_auto_detect() {
     grep -q '^deps=.*create-dmg' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: dmgs: config on Windows warns and omits create-dmg" {
+@test "auto-detect: dmgs: config on Windows omits create-dmg (OS-incompatible)" {
     # No .dmg build path on Windows (needs hdiutil or genisoimage), so the dep
-    # is warned-and-omitted rather than emitted, like pkgs.
+    # is silently omitted at default verbosity, like pkgs.
     _run_auto_detect $'dmgs:\n  - name: app' "Windows"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"got Windows"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'create-dmg' "$GITHUB_OUTPUT"
 }

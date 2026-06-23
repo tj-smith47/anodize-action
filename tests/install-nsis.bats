@@ -205,12 +205,15 @@ _run_install_nsis_no_makensis() {
 # ── Test 5: Linux queues nsis (apt) — the Linux installer path ────────────
 
 @test "nsis: Linux queues the nsis apt package, exits 0" {
+    # The per-package ✓ on flush is a verbose-only line; run under verbose so it
+    # surfaces for the assertion.
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
         GITHUB_PATH="${GITHUB_PATH}" \
         NO_COLOR=1 \
         PATH="${FAKE_BIN}:${PATH}" \
         RUNNER_OS="Linux" \
+        ANODIZER_VERBOSE=1 \
         bash -c "
             source '${REPO_ROOT}/scripts/install/deps.sh'
             skip_unsupported_os() { echo \"SKIPPED: \$1\"; }

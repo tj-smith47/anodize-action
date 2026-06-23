@@ -130,8 +130,10 @@ _run_install_nfpm() {
 # ── Test 1: Linux x86_64 → direct download + checksum verify, on PATH ──────
 
 @test "nfpm: Linux x86_64 downloads + checksum-verifies + installs onto PATH" {
+    # The per-tool "nfpm <version>" completion line is verbose-only; run under
+    # verbose so it surfaces for the assertion.
     _run_install_nfpm RUNNER_OS="Linux" RUNNER_ARCH="X64" \
-        NFPM_EXPECT_TARBALL="nfpm_2.46.3_Linux_x86_64.tar.gz"
+        NFPM_EXPECT_TARBALL="nfpm_2.46.3_Linux_x86_64.tar.gz" ANODIZER_VERBOSE=1
     [ "$status" -eq 0 ]
     # The pinned-version x86_64 tarball + the release checksums.txt were fetched.
     grep -q 'nfpm_2.46.3_Linux_x86_64.tar.gz' "$CURL_LOG"

@@ -163,10 +163,11 @@ _run_auto_detect() {
     grep -q '^deps=.*linuxdeploy' "$GITHUB_OUTPUT"
 }
 
-@test "auto-detect: appimages: config on macOS warns and omits linuxdeploy" {
+@test "auto-detect: appimages: config on macOS omits linuxdeploy (OS-incompatible)" {
+    # linuxdeploy (AppImage) is Linux-only; non-Linux runners silently omit the
+    # dep at default verbosity.
     _run_auto_detect $'appimages:\n  - desktop: app.desktop\n    icon: app.png' "macOS"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"requires a Linux runner"* ]]
     grep -q '^deps=' "$GITHUB_OUTPUT"
     ! grep -q 'linuxdeploy' "$GITHUB_OUTPUT"
 }

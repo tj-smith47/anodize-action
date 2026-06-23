@@ -58,7 +58,7 @@ add_linux_pkg_dep() {
     if [ "${RUNNER_OS:-}" = "Linux" ]; then
         deps+=("$1")
     else
-        gha_warning "auto-install: $1: builds a Linux-only package format (got ${RUNNER_OS:-unset}); skipping"
+        anodizer::vdetail "skipped $1: Linux-only package format (got ${RUNNER_OS:-unset})"
     fi
 }
 if has_cfg_block nfpm || has_kv name anodizer-stage-nfpm; then add_linux_pkg_dep nfpm; fi
@@ -119,7 +119,7 @@ has_cfg_block nsis && deps+=("nsis") || true
 # Windows path — warn (don't fail) and omit there, like pkgs.
 if has_cfg_block dmgs; then
     if [ "${RUNNER_OS:-}" = "Windows" ]; then
-        gha_warning "auto-install: dmgs: needs macOS hdiutil or Linux genisoimage (got Windows); skipping"
+        anodizer::vdetail "skipped dmgs: needs macOS hdiutil or Linux genisoimage (got Windows)"
     else
         deps+=("create-dmg")
     fi
@@ -130,7 +130,7 @@ if has_cfg_block flatpaks; then
     if [ "${RUNNER_OS:-}" = "Linux" ]; then
         deps+=("flatpak")
     else
-        gha_warning "auto-install: flatpaks: requires a Linux runner (got ${RUNNER_OS:-unset}); skipping"
+        anodizer::vdetail "skipped flatpaks: requires a Linux runner (got ${RUNNER_OS:-unset})"
     fi
 fi
 # appimages: shells out to linuxdeploy + its appimage output plugin, both
@@ -139,7 +139,7 @@ if has_cfg_block appimages; then
     if [ "${RUNNER_OS:-}" = "Linux" ]; then
         deps+=("linuxdeploy")
     else
-        gha_warning "auto-install: appimages: requires a Linux runner (got ${RUNNER_OS:-unset}); skipping"
+        anodizer::vdetail "skipped appimages: requires a Linux runner (got ${RUNNER_OS:-unset})"
     fi
 fi
 # alejandra is only needed when the nix publisher opts into it as the
@@ -155,7 +155,7 @@ fi
 # emit the dep on both; only Windows lacks a path.
 if has_cfg_block pkgs; then
     if [ "${RUNNER_OS:-}" = "Windows" ]; then
-        gha_warning "auto-install: pkgs: needs macOS pkgbuild or the Linux flat-package toolchain (got Windows); skipping"
+        anodizer::vdetail "skipped pkgs: needs macOS pkgbuild or the Linux flat-package toolchain (got Windows)"
     else
         deps+=("pkgbuild")
     fi
@@ -254,7 +254,7 @@ detect_msi_dialects() {
 # emitted token is dialect-aware (wix3 = v3 candle+light, wix = v4 wix build).
 if has_cfg_block msis; then
     if [ "${RUNNER_OS:-}" = "macOS" ]; then
-        gha_warning "auto-install: msis: needs WiX (Windows) or wixl (Linux) — got macOS; skipping"
+        anodizer::vdetail "skipped msis: needs WiX (Windows) or wixl (Linux) (got macOS)"
     elif [ "$is_toml" = true ]; then
         # The per-entry dialect resolver is YAML-shaped (`version:` / `wxs:`),
         # so a TOML `[[crates.<n>.msis]]` block's dialect can't be read here;
