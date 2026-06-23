@@ -52,6 +52,8 @@ _rm() {
 # integers and the delta is meaningful.
 before=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
 
+anodizer::vdetail "disk available: $(df -h / 2>/dev/null | awk 'NR==2{print $4}')" || true
+
 case "${RUNNER_OS:-}" in
     macOS)
         # iOS/tvOS/watchOS simulator runtimes + caches — tens of GB. Native
@@ -60,6 +62,30 @@ case "${RUNNER_OS:-}" in
         _rm "/Library/Developer/CoreSimulator/Profiles/Runtimes"
         _rm "${HOME}/Library/Developer/CoreSimulator/Caches"
         _rm "${HOME}/Library/Developer/CoreSimulator/Devices"
+        # The preinstalled /Applications/Xcode*.app bundles are the single biggest
+        # reclaimable items on a GitHub macOS runner (~12–15 GB each, several
+        # shipped). A native Rust release pipeline needs only the active developer
+        # dir's SDK + linker (resolved via `xcode-select -p`) plus the system
+        # hdiutil/pkgbuild/codesign in /usr/bin; every non-active Xcode is dead
+        # weight. Keep the active one, delete the rest.
+        active_dir=$(xcode-select -p 2>/dev/null || true)
+        keep_app=""
+        case "$active_dir" in
+            */Applications/*.app/*) keep_app="${active_dir%%.app/*}.app" ;;
+        esac
+        # Only sweep when the active Xcode was positively identified; if the
+        # selected toolchain is CommandLineTools or unresolved, leave every
+        # bundle alone rather than risk deleting the one the build links against.
+        # RECLAIM_XCODE_DIR overrides /Applications ONLY so the bats test can point
+        # at a fake Applications dir; production always uses /Applications.
+        if [ -n "$keep_app" ]; then
+            apps_dir="${RECLAIM_XCODE_DIR:-/Applications}"
+            for app in "$apps_dir"/Xcode*.app; do
+                [ -e "$app" ] || continue
+                [ "$app" = "$keep_app" ] && continue
+                _rm "$app"
+            done
+        fi
         ;;
     Linux)
         # Large preinstalled SDKs a Rust release pipeline never compiles against.
@@ -75,6 +101,8 @@ case "${RUNNER_OS:-}" in
 esac
 
 after=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
+
+anodizer::vdetail "disk available: $(df -h / 2>/dev/null | awk 'NR==2{print $4}')" || true
 
 # Both reads must be plain integers (Windows git-bash df can be unreliable —
 # skip the summary silently rather than error). Report only a meaningful gain.

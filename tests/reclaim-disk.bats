@@ -114,6 +114,68 @@ _run_reclaim() {
     grep -q 'CoreSimulator/Profiles/Runtimes' "$RM_LOG"
 }
 
+# ── Test 4b: macOS deletes non-active Xcodes, keeps the active one ──────
+
+@test "reclaim: macOS deletes non-active Xcode.app bundles, keeps the active one" {
+    # Stub xcode-select to point the active developer dir at Xcode_16.4 inside
+    # the fake Applications dir the test controls.
+    cat > "${FAKE_BIN}/xcode-select" <<'STUB'
+#!/usr/bin/env bash
+echo "${RECLAIM_XCODE_DIR}/Xcode_16.4.app/Contents/Developer"
+STUB
+    chmod +x "${FAKE_BIN}/xcode-select"
+
+    xcode_dir="${_TEST_HOME}/Applications"
+    mkdir -p "${xcode_dir}/Xcode_16.0.app" "${xcode_dir}/Xcode_16.4.app"
+
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted" \
+        RECLAIM_XCODE_DIR="${xcode_dir}"
+    [ "$status" -eq 0 ]
+    grep -q 'CoreSimulator/Profiles/Runtimes' "$RM_LOG"
+    grep -q 'Xcode_16.0.app' "$RM_LOG"
+    ! grep -q 'Xcode_16.4.app' "$RM_LOG"
+}
+
+# ── Test 4c: macOS with no Xcode*.app present → clean no-op loop ─────────
+
+@test "reclaim: macOS Xcode loop is a clean no-op when no Xcode.app present" {
+    cat > "${FAKE_BIN}/xcode-select" <<'STUB'
+#!/usr/bin/env bash
+echo "${RECLAIM_XCODE_DIR}/Xcode_16.4.app/Contents/Developer"
+STUB
+    chmod +x "${FAKE_BIN}/xcode-select"
+
+    empty_dir="${_TEST_HOME}/Applications-empty"
+    mkdir -p "$empty_dir"
+
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted" \
+        RECLAIM_XCODE_DIR="${empty_dir}"
+    [ "$status" -eq 0 ]
+    ! grep -q 'Xcode' "$RM_LOG"
+    grep -q 'CoreSimulator/Profiles/Runtimes' "$RM_LOG"
+}
+
+# ── Test 4d: macOS + CommandLineTools selected → Xcode sweep is skipped ──
+
+@test "reclaim: macOS skips the Xcode sweep when CommandLineTools is selected" {
+    # CommandLineTools has no `.app` — keep_app never resolves, so the guard
+    # must leave every bundle alone rather than strand the active toolchain.
+    cat > "${FAKE_BIN}/xcode-select" <<'STUB'
+#!/usr/bin/env bash
+echo "/Library/Developer/CommandLineTools"
+STUB
+    chmod +x "${FAKE_BIN}/xcode-select"
+
+    xcode_dir="${_TEST_HOME}/Applications"
+    mkdir -p "${xcode_dir}/Xcode_16.0.app" "${xcode_dir}/Xcode_16.4.app"
+
+    _run_reclaim RECLAIM_DISK="auto" RUNNER_OS="macOS" RUNNER_ENVIRONMENT="github-hosted" \
+        RECLAIM_XCODE_DIR="${xcode_dir}"
+    [ "$status" -eq 0 ]
+    ! grep -q 'Xcode' "$RM_LOG"
+    grep -q 'CoreSimulator/Profiles/Runtimes' "$RM_LOG"
+}
+
 # ── Test 5: true + RUNNER_ENVIRONMENT unset + Linux → forces ────────────
 
 @test "reclaim: true forces reclamation regardless of RUNNER_ENVIRONMENT" {
