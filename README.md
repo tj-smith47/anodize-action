@@ -114,7 +114,7 @@ Pass them via the job/step `env:` block.
 | `FLATPAK_RUNTIME_VERSION` | `24.08` | Branch of the freedesktop runtime + SDK pre-staged from flathub before `flatpak-builder` runs (Linux). |
 | `ALEJANDRA_VERSION` | `4.0.0` | Linux direct-download version. Overriding **requires** `ALEJANDRA_SHA256`. Pins brew on macOS. |
 | `ALEJANDRA_SHA256` | (built-in for the default version) | SHA256 of the alejandra binary; required alongside an `ALEJANDRA_VERSION` override. |
-| `LINUXDEPLOY_VERSION` | `continuous` | linuxdeploy + appimage-plugin download version. Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |
+| `LINUXDEPLOY_VERSION` | `1-alpha-20251107-1` | linuxdeploy + appimage-plugin download version (a dated tag, not `continuous`, so the bytes don't silently drift). Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |
 | `LINUXDEPLOY_SHA256` / `LINUXDEPLOY_PLUGIN_SHA256` | (built-in for the default version) | SHA256 of the linuxdeploy binary / its appimage plugin; required alongside a `LINUXDEPLOY_VERSION` override. |
 | `LINUXDEPLOY_PLUGIN_VERSION` | `1-alpha-20250213-1` | Pins the appimage output plugin's dated tag independently. Overriding also **requires** `LINUXDEPLOY_PLUGIN_SHA256`. |
 | `RCODESIGN_VERSION` | `0.29.0` | rcodesign version — direct download on Linux/macOS, `cargo install` on Windows. Overriding **requires** `RCODESIGN_SHA256` on Linux/macOS. |
@@ -685,19 +685,27 @@ For the full decision tree (single-crate, lockstep workspace, per-crate workspac
 
 ## Retry behavior
 
-The `Run anodizer` step retries up to 3 times for transient failures (registry
-rate limits, Docker push auth expiry, network blips). Between retries it
-prunes generated artifacts from the dist tree (the configured `dist:`
-directory) so the rebuild can't hit "already exists" collisions — **unless**
-any split/preserved context manifest is present (`context.json` /
-`context-<shard>.json` at the dist root, or `context*.json` in any
-first-level subdir). In that case cleanup is skipped entirely — all-or-nothing,
-not per-file — because those trees are `--merge` / `--publish-only` inputs
-that a retry must never wipe.
+The `Run anodizer` step retries up to 3 times — but **only for invocations that
+build no upstream state**. Build and preview legs (`--snapshot`, `--nightly`,
+`--dry-run`, `--merge`, `--preflight`, `--preflight-secrets`, `--prepare`,
+`--split`, `--announce-only`) retry on a transient failure (registry rate
+limits, Docker push auth expiry, network blips). Between retries the step prunes
+generated artifacts from the dist tree (the configured `dist:` directory) so the
+rebuild can't hit "already exists" collisions — **unless** any split/preserved
+context manifest is present (`context.json` / `context-<shard>.json` at the dist
+root, or `context*.json` in any first-level subdir). In that case cleanup is
+skipped entirely — all-or-nothing, not per-file — because those trees are
+`--merge` / `--publish-only` inputs that a retry must never wipe.
 
-`--publish-only`, `--rollback-only`, and `tag rollback` invocations skip the
-retry layer — they are stateful and re-running them would either duplicate
-state changes or fight with concurrent operations.
+A **plain `anodizer release`** (and the explicitly stateful `--publish-only`,
+`--rollback-only`, and `tag rollback`) runs **exactly once — no retry**. A plain
+release cuts the tag, creates the GitHub release, runs the publishers, and on
+failure rolls back, *deleting the tag*. A blind whole-pipeline retry would then
+re-run against a tagless HEAD, anodizer would short-circuit "no release tag —
+nothing to do" and exit 0, and a **failed release would report green**.
+Transient per-publisher failures are instead retried *inside* anodizer — the
+only layer that can retry a single publisher without re-running rollback — so
+the wrapper surfaces the real failure rather than masking it.
 
 ## License
 

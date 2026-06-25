@@ -161,3 +161,43 @@ STUB
     [ "$(cat "$WORKDIR/attempts")" = "3" ]
     [[ "$output" == *"attempt 1/3 failed"* ]]
 }
+
+# --rollback-only is stateful recovery: re-running it would fight concurrent
+# operations or double-act. Exactly once, surfacing the real failure.
+@test "stateful --rollback-only runs exactly once" {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+exit 1
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+    export ANODIZER_ARGS="release --rollback-only --from-run=123"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for stateful mode"* ]]
+}
+
+# `tag rollback` deletes the tag + reverts the writeback commit; a blind retry
+# would error on the already-deleted tag or fight a concurrent re-tag.
+@test "stateful tag rollback runs exactly once" {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+exit 1
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+    export ANODIZER_ARGS="tag rollback --tag v1.2.3"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for stateful mode"* ]]
+}
