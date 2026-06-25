@@ -1,29 +1,151 @@
 # Anodizer Action
 
-GitHub Action for [Anodizer](https://github.com/tj-smith47/anodizer), a
-Rust-native release automation tool inspired by GoReleaser.
+GitHub Action that installs [Anodizer](https://github.com/tj-smith47/anodizer)
+— a Rust-native release automation tool — and runs any anodizer subcommand in a
+single step.
 
 The action installs anodizer (cached per version), auto-installs pipeline
 dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node,
 cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-rcodesign, wix, pkgbuild) based on your
-anodizer config (`.anodizer.yaml` or any of the binary's other discovery
-candidates, including the TOML variants), imports signing keys, logs in to
-container registries, handles split/merge artifact plumbing (uploads honor
-a custom `dist:` directory and the preserved-dist determinism layout), and
-runs any anodizer subcommand — all in one step.
+rcodesign, wix, pkgbuild) from your anodizer config (`.anodizer.yaml` or any of
+the binary's other discovery candidates, including the TOML variants), imports
+signing keys, logs in to container registries, handles split/merge artifact
+plumbing (uploads honor a custom `dist:` directory and the preserved-dist
+determinism layout), and runs anodizer.
 
-## Usage
-
-### Basic release
+## Quick start
 
 ```yaml
+- uses: actions/checkout@v6
+  with:
+    fetch-depth: 0
 - uses: tj-smith47/anodizer-action@v1
   with:
     args: release --clean
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+That installs the latest stable anodizer, parses your config to install any
+dependencies the configured stages need, and runs `anodizer release --clean`.
+For a dry run, swap `args:` for `release --snapshot --clean`.
+
+## Inputs
+
+Every input is optional. Defaults are taken verbatim from `action.yml`; `—`
+means the input has no default.
+
+| Input | Description | Default | Required |
+|-------|-------------|---------|----------|
+| `apk-private-key` | PEM-format RSA private key for signing apk packages produced by nfpm (apk-tools uses RSA-PSS, not OpenPGP, so `gpg-private-key` does not work here). Written to a `0600` temp file and exported as `APK_PRIVATE_KEY_PATH`; the derived public key is exported as `APK_PUBLIC_KEY_PATH` and copied into `./dist/` as `<repo>-apk-signing-key.rsa.pub` for attachment via `release.extra_files`. See [Key material](#key-material). | `""` | no |
+| `args` | Arguments to pass to anodizer (e.g. `release --snapshot`). Do **not** embed secrets here — this value appears in workflow logs; pass secrets via `env:`. Mutually exclusive with `determinism: true`. | `—` | no |
+| `artifact-run-id` | Workflow run ID to download `from-artifact` from. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit, a numeric ID for explicit control, or omit to download from the current run. | `—` | no |
+| `artifact-workflow` | Workflow filename to search when `artifact-run-id` is `auto` (e.g. `ci.yml`). Ignored otherwise. | `ci.yml` | no |
+| `auto-install` | Parse the anodizer config in `workdir` (YAML or TOML, the binary's full discovery order) and auto-install the dependencies the configured stages need. See [auto-install dependency map](#auto-install-dependency-map). | `false` | no |
+| `cosign-key` | Cosign private key contents. Written to `cosign.key` in the workdir with mode `0600`. Pair with `COSIGN_PASSWORD` in `env:`. | `—` | no |
+| `determinism` | Run the determinism harness (`anodizer check determinism`) on this shard: installs Rust, provisions the binary, installs the per-OS harness dep set, derives the configured-target CSV, and invokes the harness. Designed as the entire body of a per-OS harness shard. Mutually exclusive with `args`. See [Determinism harness](#determinism-harness-one-liner-cross-platform-shard). | `false` | no |
+| `determinism-crate` | Scope the harness to a single workspace crate (`anodizer check determinism --crate <name>`). Required when a release workflow fans out per crate so each shard's preserved dist lands under its own `<crate>/` subdir for a collision-free downstream merge. | `""` | no |
+| `determinism-runs` | N for `anodizer check determinism --runs=N`. | `2` | no |
+| `determinism-stages` | Stages to validate (comma-separated). When unset, defaults to the stages configured-and-installable on the current runner: Linux `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS/Windows `build,source,upx,archive,sbom,sign,checksum`. Also accepts `cargo-package`, `docker`, `msi`, `nsis`, `dmg`, `pkg`, `srpm`, and the `installers` family selector (expands to `nfpm,makeself,srpm,msi,nsis,dmg,pkg`). | `""` | no |
+| `determinism-targets` | Explicit target CSV override. When unset, derived by filtering `anodizer targets --json` to the current `RUNNER_OS`. Set when your shard runs on a non-standard runner label. | `—` | no |
+| `docker-password` | Registry password or token (e.g. `secrets.GITHUB_TOKEN` for ghcr.io). | `—` | no |
+| `docker-registry` | Container registry to log in to (e.g. `ghcr.io`). When set, the action logs in and sets up QEMU + buildx for multi-platform builds. | `—` | no |
+| `docker-username` | Registry username. Defaults to `github.actor` (via `GITHUB_ACTOR`) when unset. | `—` | no |
+| `download-dist` | Before running anodizer, download and merge all `dist-*` artifacts into the dist tree (the configured `dist:` directory, default `dist/`). Set to `true` in merge jobs. | `false` | no |
+| `from-artifact` | Download a pre-built anodizer binary from a workflow artifact instead of GitHub releases. Set to the artifact name (e.g. `anodizer-linux`); pair with `artifact-run-id` for cross-workflow downloads. | `—` | no |
+| `from-branch` | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Branch name only — the repo is hardcoded; no owner prefix or SHA. Rust is auto-installed. Mutually exclusive with `version`, `from-artifact`, and `from-source`. | `""` | no |
+| `from-source` | Build anodizer from source in the current workdir (bootstrap mode). Rust is auto-installed — you do not also need `install-rust: true`. | `false` | no |
+| `gpg-private-key` | GPG private key contents to import for signing. Piped into `gpg --batch --import`. See [Key material](#key-material). | `—` | no |
+| `install` | Comma-separated build/pipeline dependencies to install: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `wix3`, `pkgbuild`. (`wix` = WiX v4; `wix3` = WiX v3; both install `wixl` on Linux.) Uses the platform's native package manager. | `—` | no |
+| `install-only` | Only install anodizer (and any requested dependencies/keys); skip running it. | `false` | no |
+| `install-rust` | Install the stable Rust toolchain (`dtolnay/rust-toolchain`). | `false` | no |
+| `preserve-dist` | When `determinism: true`, preserve the harness's byte-stable dist tree to `./preserved-dist/` for a downstream `release --publish-only` job. Manifests get a `-<shard-label>` suffix so sharded uploads don't collide under `merge-multiple`. Requires `shard-label`. | `false` | no |
+| `reclaim-disk` | Reclaim large, build-irrelevant runner caches before heavy build/packaging so disk-tight runners don't fail with "No space left on device". `auto` reclaims caches a Rust release pipeline never uses (iOS/tvOS/watchOS simulator runtimes on macOS, large preinstalled SDKs on Linux) but **only** on GitHub-hosted runners; `true` forces it on any runner; `false` disables it. | `auto` | no |
+| `resolve-workspace` | Resolve the triggering tag to a crate name via `anodizer resolve-tag`. Set to `true` on tag-triggered release workflows. Populates the `workspace`, `crate-path`, and `has-builds` outputs. | `false` | no |
+| `shard-label` | Per-shard suffix appended to preserved-dist manifests (`context-<shard-label>.json`, etc.). The caller names each shard explicitly. Required when `preserve-dist: 'true'`. | `""` | no |
+| `upload-dist` | After running anodizer, upload the dist tree (the configured `dist:` directory, default `dist/`) as a workflow artifact named `dist-$RUNNER_OS`. With `preserve-dist: 'true'` it uploads `preserved-dist/` as `dist-<shard-label>` instead. | `false` | no |
+| `version` | Anodizer version to install from GitHub releases: an exact tag (e.g. `v0.8.0`), the literal `latest` (newest stable), or `nightly` (newest `vX.Y.Z-<sha>-nightly` tag). No semver ranges (`~> v2`). Must not be combined with `from-artifact`, `from-source`, or `from-branch`. | `latest` | no |
+| `workdir` | Working directory (below repository root). | `.` | no |
+
+### auto-install dependency map
+
+With `auto-install: true`, the action scans the anodizer config for these
+top-level keys and installs the matching tool. Keys are shown in YAML form; the
+TOML equivalents (`key = ...`, `[key]` / `[[key]]` headers) are detected the
+same way.
+
+| `.anodizer.yaml` key | Installs | Notes |
+|---------------------|----------|-------|
+| `nfpm:` | `nfpm` | |
+| `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
+| `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). Linux installs via snap; runners without snapd fall back to a pip install pinned by `SNAPCRAFT_VERSION` — upload-capable, but packing snaps still needs snapd. |
+| `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
+| `cmd: cosign` (any sign block) / `docker_signs:` | `cosign` | `signs:`/`binary_signs:` default to GPG (preinstalled); cosign installs only when a block sets `cmd: cosign`, plus always for `docker_signs:` (which defaults to cosign). |
+| `sboms:` | `syft` | |
+| `upx:` | `upx` | |
+| `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
+| `dmgs:` | `create-dmg` | macOS uses `hdiutil`; Linux installs `genisoimage` (the dmg stage falls back to it). |
+| `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
+| `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
+| `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
+| `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing. |
+| `npms:` | `node` | All platforms. The npm publisher uses Trusted Publishing (OIDC), needing Node ≥ 22.14.0 / npm ≥ 11.5.1; `NODE_VERSION` satisfies the Node floor and the installer upgrades npm to `NPM_VERSION` afterward. |
+| `pkgs:` | `pkgbuild` | macOS uses native `pkgbuild` (Xcode CLT); Linux installs the flat-package toolchain (`xar` + `mkbom`, built from source). |
+| `msis:` | `wix` | Windows: WiX v4 `wix` dotnet global tool. Linux: `wixl` (msitools), driving the v3-dialect `.wxs` directly. |
+| `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
+
+#### Dependency version pins (env vars)
+
+Every installer honors an env var to pin (or bump) the version it installs.
+Pass them via the job/step `env:` block.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `NFPM_VERSION` | `2.46.3` | Pins nfpm on all platforms. Linux installs a checksum-verified GitHub-release download; macOS pins the brew formula, Windows the choco package. |
+| `MAKESELF_VERSION` | (unpinned) | Pins makeself on macOS (brew). Linux installs via apt, unpinned. |
+| `SNAPCRAFT_VERSION` | `8.14.5` | Version for the pip fallback on snapd-less Linux runners; also pins the macOS brew formula. |
+| `RPM_VERSION` | (unpinned) | Pins the rpm formula on macOS (brew). Linux installs via apt, unpinned. |
+| `COSIGN_VERSION` | `v2.4.1` | Direct-download version on Linux and Windows; pins brew on macOS. |
+| `SYFT_VERSION` | `v1.18.0` | Version passed to the syft install script on Linux; pins brew/choco on macOS/Windows. |
+| `ZIG_VERSION` | `0.13.0` | Direct-download version on Linux (SHA256-verified); pins brew/choco on macOS/Windows. |
+| `UPX_VERSION` | (unpinned) | Pins upx on macOS (brew) / Windows (choco). Linux installs via apt, unpinned. |
+| `NSIS_VERSION` | (unpinned) | Pins makensis on macOS (brew) / nsis on Windows (choco). Linux installs via apt, unpinned. |
+| `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew). On Linux the dmg stage uses apt `genisoimage` (unpinned). |
+| `FLATPAK_RUNTIME_VERSION` | `24.08` | Branch of the freedesktop runtime + SDK pre-staged from flathub before `flatpak-builder` runs (Linux). |
+| `ALEJANDRA_VERSION` | `4.0.0` | Linux direct-download version. Overriding **requires** `ALEJANDRA_SHA256`. Pins brew on macOS. |
+| `ALEJANDRA_SHA256` | (built-in for the default version) | SHA256 of the alejandra binary; required alongside an `ALEJANDRA_VERSION` override. |
+| `LINUXDEPLOY_VERSION` | `continuous` | linuxdeploy + appimage-plugin download version. Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |
+| `LINUXDEPLOY_SHA256` / `LINUXDEPLOY_PLUGIN_SHA256` | (built-in for the default version) | SHA256 of the linuxdeploy binary / its appimage plugin; required alongside a `LINUXDEPLOY_VERSION` override. |
+| `LINUXDEPLOY_PLUGIN_VERSION` | `1-alpha-20250213-1` | Pins the appimage output plugin's dated tag independently. Overriding also **requires** `LINUXDEPLOY_PLUGIN_SHA256`. |
+| `RCODESIGN_VERSION` | `0.29.0` | rcodesign version — direct download on Linux/macOS, `cargo install` on Windows. Overriding **requires** `RCODESIGN_SHA256` on Linux/macOS. |
+| `RCODESIGN_SHA256` | (built-in for the default version) | SHA256 of the rcodesign archive; required alongside an `RCODESIGN_VERSION` override on Linux/macOS. |
+| `NODE_VERSION` | `22.22.3` | Node version backing the `npms:` publisher. Direct download on Linux (verified); pins brew on macOS and choco on Windows. Satisfies the Node ≥ 22.14.0 OIDC floor. |
+| `NPM_VERSION` | `11.5.1` | npm version installed (via `npm install -g npm@…`) after node, on all platforms — node bundles npm 10.9.x, below the npm ≥ 11.5.1 OIDC floor. |
+| `WIX_VERSION` | `4.0.6` | Version of the WiX v4 `wix` dotnet global tool (Windows). |
+| `ANODIZER_ACTION_SKIP_COSIGN_VERIFY` | (unset) | Set to `1` to skip the keyless signature verification of the downloaded cosign binary (the SHA256 check still runs). Escape hatch for Sigstore-unreachable environments. |
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `artifacts` | Contents of `dist/artifacts.json` (build result artifacts JSON). |
+| `crate-path` | Path to the resolved crate directory (requires `resolve-workspace: true`). |
+| `crates` | JSON array of crate names `anodizer tag` produced tags for (e.g. `["core","bin-a"]`). Empty array `[]` when nothing was tagged. Drive downstream matrices with `fromJson(...)`. |
+| `has-builds` | Whether the resolved crate has binary builds configured (requires `resolve-workspace: true`). |
+| `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target — the bump commit, or the original HEAD when no bump was needed). Check this out in downstream jobs so the tree matches the tag. |
+| `irreversibly-published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, …) whose publish landed — the version is burned at a registry that never accepts the same version twice. `'false'` when only reversible publishers succeeded or nothing was proven published. Gate custom destructive recovery on it. See [Manual recovery](#manual-recovery-advanced). |
+| `irreversibly_published` | Deprecated snake_case alias of `irreversibly-published` (same value); retained for compatibility. New workflows should read `irreversibly-published`. |
+| `metadata` | Contents of `dist/metadata.json` (build result metadata JSON). |
+| `new-tag` | Tag `anodizer tag` created this run (e.g. `v1.2.3`), for single-crate and lockstep-workspace repos. Empty when no tag was cut. Per-crate workspaces use `crates`/`versions` instead. |
+| `old-tag` | Previous tag `anodizer tag` bumped from. Empty on a first release. |
+| `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
+| `release-url` | URL of the created GitHub release (extracted from `metadata.json`). |
+| `split-matrix` | JSON matrix for `strategy.matrix` covering all configured build targets, derived from the anodizer config when `install-only: true`. Each entry has `os`, `target`, and `artifact`. See [Derive the build matrix from config](#derive-the-build-matrix-from-config-split-matrix). |
+| `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on this for single-crate / lockstep repos. |
+| `versions` | JSON object mapping crate name to bumped version (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`) from `anodizer tag`. Empty `{}` when nothing was tagged. Bracket-form for hyphenated crates: `fromJson(...)['my-crate']`. |
+| `workspace` | Crate name resolved from the triggering tag (requires `resolve-workspace: true`). |
+
+## Examples
 
 ### Publisher tokens
 
@@ -73,7 +195,7 @@ environment preflight before any stage (required tools, secrets, endpoint
 reachability, parseable key material) and, on a pipeline failure, executes the
 `release.on_failure` policy inside the binary — rolling back the tag and
 version-bump commit by default, auto-degrading to `hold` once any one-way-door
-publisher (crates.io, chocolatey, winget, snapcraft, ...) has landed. Failure
+publisher (crates.io, chocolatey, winget, snapcraft, …) has landed. Failure
 policy is config, not workflow YAML:
 
 ```yaml
@@ -146,6 +268,14 @@ Workflows that wire their own destructive recovery step must gate it on the
     COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
     COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 ```
+
+### Key material
+
+| Input | Notes |
+|-------|-------|
+| `gpg-private-key` | Imported via `gpg --batch --import` (used by `signs:` blocks). Also written to `$RUNNER_TEMP/anodizer-signing.asc` and exported as `GPG_KEY_PATH` for nfpm package signing — `rpmsign` / `dpkg-sig` / `abuild-sign` read the key directly off disk. Loopback pinentry is enabled so any `GPG_PASSPHRASE` works non-interactively. |
+| `apk-private-key` | apk-tools uses RSA-PSS, not OpenPGP, so `gpg-private-key` does not satisfy apk signing. Written to `$RUNNER_TEMP/anodizer-apk.rsa` (mode `0600`) and exported as `APK_PRIVATE_KEY_PATH`. Reference from `.anodizer.yaml` via `apk.signature.key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"`. The matching public key is derived via `openssl rsa -pubout`, exported as `APK_PUBLIC_KEY_PATH`, and copied into `./dist/` as `<repo>-apk-signing-key.rsa.pub` so it can be attached to the GitHub Release via `release.extra_files`. |
+| `cosign-key` | Written to `cosign.key` (mode `0600`). Pair with `COSIGN_PASSWORD` in `env:`. |
 
 ### Split/merge cross-platform build
 
@@ -373,9 +503,8 @@ poison a release. With `determinism: true`, a 3-OS matrix collapses to
 per-OS harness dependency set (zig + cargo-zigbuild + upx + nfpm +
 makeself + snapcraft + syft + cosign on Linux; upx + syft + cosign on
 macOS/Windows), from-source build of anodizer, per-shard target-CSV
-derivation via
-`anodizer targets --json`, `rustup target add` for each triple, and
-harness invocation:
+derivation via `anodizer targets --json`, `rustup target add` for each
+triple, and harness invocation:
 
 ```yaml
 determinism-check:
@@ -405,26 +534,17 @@ byte-stable dist, set `preserve-dist: 'true'` and pass an explicit
 `shard-label` per matrix entry. The action renames each shard's
 manifests with that suffix so `merge-multiple` doesn't collide.
 
-Tune with:
-
-| Input | Default | Purpose |
-|-------|---------|---------|
-| `determinism-runs` | `2` | N for `--runs=N`. |
-| `determinism-stages` | (per-OS) | Stages to diff per run. Defaults to the stages configured-and-installable on the runner: Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS and Windows get `build,source,upx,archive,sbom,sign,checksum`. Explicit values override. The harness also accepts `cargo-package`, `docker`, `msi`, `nsis`, `dmg`, `pkg`, `srpm`, and the `installers` family selector (expands to `nfpm,makeself,srpm,msi,nsis,dmg,pkg`). |
-| `determinism-targets` | (auto) | Override the target CSV; useful on non-standard runner labels. |
-| `determinism-crate` | | Scope the harness to one workspace crate (`--crate <name>`); required when a release workflow fans out per crate so each shard's preserved dist lands under its own `<crate>/` subdir. |
-
-The harness step does **not** retry on failure — it gates release
-quality, so a flaky retry would mask drift. `determinism: true` is
-mutually exclusive with `args:` (the action invokes the harness
-directly).
+Tune with `determinism-runs`, `determinism-stages`, `determinism-targets`,
+and `determinism-crate` (see [Inputs](#inputs)). The harness step does
+**not** retry on failure — it gates release quality, so a flaky retry would
+mask drift. `determinism: true` is mutually exclusive with `args:` (the
+action invokes the harness directly).
 
 ### Nightly builds
 
 Anodizer publishes immutable nightly tags shaped `vX.Y.Z-<sha>-nightly`
 (e.g. `v0.8.0-abc1234-nightly`) — every nightly is its own permanent
-release rather than a moving `nightly` tag. Mirrors goreleaser-action ≥
-v7.2.0.
+release rather than a moving `nightly` tag.
 
 ```yaml
 - uses: tj-smith47/anodizer-action@v1
@@ -441,154 +561,6 @@ exact tag instead:
   with:
     version: v0.8.0-abc1234-nightly        # exact pin, won't drift
 ```
-
-## Inputs
-
-### Installation source
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `version` | `latest` | Anodizer version to install from GitHub releases — exact tag (e.g. `v0.8.0`), the literal `latest` (newest stable release), or the literal `nightly` (newest release whose tag matches `vX.Y.Z-<sha>-nightly`). **No semver ranges** (`~> v2`) — pass an explicit tag or one of the aliases. Must not be combined with `from-artifact`, `from-source`, or `from-branch` — the action fails when an explicit version is set alongside any of them. |
-| `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
-| `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
-| `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. |
-| `from-source` | `false` | Build anodizer from source in the workdir. Auto-installs the stable Rust toolchain; you don't need `install-rust: true`. |
-| `from-branch` | | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Accepts a branch name only — the repo is hardcoded. Auto-installs the stable Rust toolchain; you don't need `install-rust: true`. Mutually exclusive with `version`, `from-artifact`, and `from-source`. |
-
-### Dependency setup
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `install` | | Comma-separated deps: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `pkgbuild`. |
-| `auto-install` | `false` | Parse the anodizer config (YAML or TOML, same discovery order as the binary: `.anodizer.yaml`, `.anodizer.yml`, `.anodizer.toml`, `anodizer.yaml`, `anodizer.yml`, `anodizer.toml`) and auto-install whatever the configured stages need. |
-| `install-rust` | `false` | Install the stable Rust toolchain. |
-
-When `auto-install: true`, the action scans the anodizer config for the
-following top-level keys and installs the matching tool. The keys are
-shown in YAML form; the TOML equivalents (`key = ...` assignments,
-`[key]` / `[[key]]` table headers) are detected the same way:
-
-| `.anodizer.yaml` key | Installs | Notes |
-|---------------------|----------|-------|
-| `nfpm:` | `nfpm` | |
-| `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
-| `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). Linux installs via snap; runners without snapd (e.g. containerised self-hosted) fall back to a pip install pinned by `SNAPCRAFT_VERSION` (default tracks `SNAPCRAFT_DEFAULT_VERSION` in `scripts/install/deps.sh`) — upload-capable, but packing snaps still needs snapd. |
-| `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
-| `cmd: cosign` (any sign block) / `docker_signs:` | `cosign` | `signs:`/`binary_signs:` default to GPG (preinstalled); cosign installs only when a block sets `cmd: cosign`, plus always for `docker_signs:` (which defaults to cosign). |
-| `sboms:` | `syft` | |
-| `upx:` | `upx` | |
-| `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
-| `dmgs:` | `create-dmg` | macOS uses `hdiutil`; Linux installs `genisoimage` (the dmg stage falls back to it). |
-| `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
-| `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
-| `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
-| `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing (uses macOS-runner `codesign`/`xcrun`). |
-| `npms:` | `node` | All platforms. The npm publisher uses Trusted Publishing (OIDC), which needs Node ≥ 22.14.0 / npm ≥ 11.5.1. `NODE_VERSION` (default `22.22.3`) satisfies the Node floor; the npm node bundles (10.9.x on the whole 22.x line) is **below** the npm floor, so the installer additionally upgrades npm to `NPM_VERSION` (default `11.5.1`) after node install. |
-| `pkgs:` | `pkgbuild` | macOS uses native `pkgbuild` (Xcode CLT); Linux installs the flat-package toolchain (`xar` + `mkbom` from bomutils, built from source). |
-| `msis:` | `wix` | Windows: WiX v4 `wix` dotnet global tool. Linux: `wixl` (msitools), which the msi stage drives directly from the v3-dialect `.wxs`. |
-| `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
-
-#### Override env vars (dependency version pins)
-
-Every installer in `scripts/install/deps.sh` honors an env var to pin (or
-bump) the version it installs. Pass them via the job/step `env:` block:
-
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `NFPM_VERSION` | `2.46.3` | Pins nfpm on all platforms. Linux installs a checksum-verified GitHub-release download (the tarball is verified against the release's `checksums.txt`, mirroring cosign/syft — no GoReleaser apt repo); macOS pins the brew formula, Windows the choco package. |
-| `MAKESELF_VERSION` | (unpinned) | Pins makeself on macOS (brew). Linux installs via apt, unpinned. |
-| `SNAPCRAFT_VERSION` | `8.14.5` | Version for the pip fallback on snapd-less Linux runners; also pins the macOS brew formula. |
-| `RPM_VERSION` | (unpinned) | Pins the rpm formula on macOS (brew). Linux installs via apt, unpinned. |
-| `COSIGN_VERSION` | `v2.4.1` | Direct-download version on Linux and Windows; pins brew on macOS. |
-| `SYFT_VERSION` | `v1.18.0` | Version passed to the syft install script on Linux; pins brew/choco on macOS/Windows. |
-| `ZIG_VERSION` | `0.13.0` | Direct-download version on Linux (SHA256 verified against ziglang.org's `index.json`); pins brew/choco on macOS/Windows. |
-| `UPX_VERSION` | (unpinned) | Pins upx on macOS (brew) / Windows (choco). Linux installs via apt, unpinned. |
-| `NSIS_VERSION` | (unpinned) | Pins makensis on macOS (brew) / nsis on Windows (choco). Linux installs via apt, unpinned. |
-| `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew). On Linux the dmg stage uses apt `genisoimage` (unpinned). |
-| `FLATPAK_RUNTIME_VERSION` | `24.08` | Branch of the freedesktop runtime + SDK (`org.freedesktop.Platform` / `org.freedesktop.Sdk`) pre-staged from flathub before `flatpak-builder` runs (Linux). Tracks the branch `flatpaks:` blocks pin via `runtime_version`. |
-| `ALEJANDRA_VERSION` | `4.0.0` | Linux direct-download version. Overriding **requires** `ALEJANDRA_SHA256` (upstream publishes no checksums file). Pins brew on macOS. |
-| `ALEJANDRA_SHA256` | (built-in for the default version) | SHA256 of the alejandra binary; required alongside an `ALEJANDRA_VERSION` override. |
-| `LINUXDEPLOY_VERSION` | `continuous` | linuxdeploy + appimage-plugin download version. Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |
-| `LINUXDEPLOY_SHA256` / `LINUXDEPLOY_PLUGIN_SHA256` | (built-in for the default version) | SHA256 of the linuxdeploy binary / its appimage plugin; required alongside a `LINUXDEPLOY_VERSION` override. |
-| `LINUXDEPLOY_PLUGIN_VERSION` | `1-alpha-20250213-1` | Pins the appimage output plugin's dated tag independently of `LINUXDEPLOY_VERSION` (the two projects ship different tags). Overriding it also **requires** `LINUXDEPLOY_PLUGIN_SHA256`. |
-| `RCODESIGN_VERSION` | `0.29.0` | rcodesign (apple-codesign) version — direct download on Linux/macOS, `cargo install` on Windows. Overriding **requires** `RCODESIGN_SHA256` on Linux/macOS. |
-| `RCODESIGN_SHA256` | (built-in for the default version) | SHA256 of the rcodesign archive; required alongside an `RCODESIGN_VERSION` override on Linux/macOS. |
-| `NODE_VERSION` | `22.22.3` | Node version backing the `npms:` publisher. Direct download on Linux (verified against nodejs.org's `SHASUMS256.txt`); pins brew on macOS and choco (`nodejs`) on Windows. Satisfies the Node ≥ 22.14.0 OIDC floor; npm is pinned separately via `NPM_VERSION`. |
-| `NPM_VERSION` | `11.5.1` | npm version installed (via `npm install -g npm@…`) after node, on all platforms. node bundles npm 10.9.x on the entire 22.x line — below the npm ≥ 11.5.1 floor that npm Trusted Publishing (OIDC) requires — so the active npm is upgraded to meet the floor. Bump to track the current 11.x line. |
-| `WIX_VERSION` | `4.0.6` | Version of the WiX v4 `wix` dotnet global tool (Windows). |
-| `ANODIZER_ACTION_SKIP_COSIGN_VERIFY` | (unset) | Set to `1` to skip the keyless signature verification of the downloaded cosign binary (the SHA256 check still runs). Escape hatch for environments that can't reach Sigstore. |
-
-### Workspace resolution (monorepo)
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `resolve-workspace` | `false` | Run `anodizer resolve-tag $GITHUB_REF_NAME` and expose the result via the `workspace`, `crate-path`, and `has-builds` outputs. |
-
-### Docker setup
-
-When `docker-registry` is set, the action logs in to the registry, configures QEMU (for emulated platforms), and sets up Docker Buildx (for multi-platform builds).
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `docker-registry` | | Container registry hostname (e.g. `ghcr.io`, `docker.io`). |
-| `docker-username` | `github.actor` | Registry username. |
-| `docker-password` | | Registry password or token (commonly `secrets.GITHUB_TOKEN` for ghcr.io). |
-
-### Split / merge artifact management
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `upload-dist` | `false` | After running anodizer, upload the dist tree (the configured `dist:` directory, default `dist/`) as a workflow artifact named `dist-$RUNNER_OS`. With `preserve-dist: 'true'` it uploads `preserved-dist/` as `dist-<shard-label>` instead, so same-OS shards on a determinism matrix don't collide. |
-| `download-dist` | `false` | Before running anodizer, download all `dist-*` artifacts and merge them into the dist tree. Fails if no split context manifests (`context.json` / `context-<shard>.json`, at the root or one subdir deep) are found. |
-| `preserve-dist` | `false` | When `determinism: true`, preserve the harness's byte-stable dist tree to `./preserved-dist/` for downstream `release --publish-only` consumption. Requires `shard-label`. |
-| `shard-label` | | Per-shard suffix for preserved-dist manifests (`context-<shard-label>.json`, etc.). The caller (matrix) names each shard explicitly; required when `preserve-dist: 'true'`. |
-
-### Key material
-
-| Input | Description |
-|-------|-------------|
-| `gpg-private-key` | GPG private key contents. Imported into the keyring via `gpg --batch --import` (used by `signs:` blocks). The same key is also written to `$RUNNER_TEMP/anodizer-signing.asc` and exported as `GPG_KEY_PATH` for nfpm package signing — `rpmsign` / `dpkg-sig` / `abuild-sign` read the key directly off disk. Loopback pinentry is enabled so any `GPG_PASSPHRASE` works non-interactively. |
-| `apk-private-key` | PEM-format RSA private key for nfpm's apk packager. apk-tools uses RSA-PSS, not OpenPGP, so the `gpg-private-key` value does not satisfy apk signing. The private key is written to `$RUNNER_TEMP/anodizer-apk.rsa` with mode `0600` and exported as `APK_PRIVATE_KEY_PATH`. Reference from `.anodizer.yaml` via `apk.signature.key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"`. The matching public key is derived via `openssl rsa -pubout`, exported as `APK_PUBLIC_KEY_PATH`, and copied into `./dist/` as `<repo>-apk-signing-key.rsa.pub` (the repository name, e.g. `myproject-apk-signing-key.rsa.pub`) so it can be attached to the GitHub Release via `release.extra_files` (apk verifiers need it under `/etc/apk/keys/`). |
-| `cosign-key` | Cosign private key contents. Written to `cosign.key` with mode `0600`. Pair with `COSIGN_PASSWORD` in env. |
-
-### Execution
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `args` | | Arguments to pass to anodizer (e.g. `release --snapshot`). Do **not** embed secrets or tokens here — this value appears in workflow logs; pass secrets via the `env:` block (e.g. `GITHUB_TOKEN`, `COSIGN_PASSWORD`). |
-| `workdir` | `.` | Working directory (relative to repo root). |
-| `install-only` | `false` | Only install anodizer (and any requested dependencies/keys); skip running. |
-
-### Determinism harness
-
-| Input | Default | Description |
-|-------|---------|-------------|
-| `determinism` | `false` | Run `anodizer check determinism` on this shard. Auto-enables Rust toolchain install, from-source build, and the determinism dep set (zig + cargo-zigbuild + upx + nfpm + makeself + snapcraft + syft + cosign on Linux; upx + syft + cosign on macOS/Windows). Mutually exclusive with `args`. |
-| `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
-| `determinism-stages` | (per-OS) | Stages to validate (comma-separated). When unset, defaults to the stages configured-and-installable on the current runner: Linux `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS/Windows `build,source,upx,archive,sbom,sign,checksum` (no nfpm/makeself/snapcraft off-Linux). Also accepted: `cargo-package`, `docker`, `msi`, `nsis`, `dmg`, `pkg`, `srpm`, and the `installers` family selector (expands to `nfpm,makeself,srpm,msi,nsis,dmg,pkg`). |
-| `determinism-targets` | | Explicit target CSV override. When unset, derived from `anodizer targets --json` by filtering on the current runner label. |
-| `determinism-crate` | | Scope the harness to a single workspace crate via `anodizer check determinism --crate <name>`. Required when the release workflow fans out per crate (e.g. a matrix over `fromJson(needs.tag.outputs.crates)`) so each shard's preserved dist lands under its own `<crate>/` subdir for a collision-free merge downstream. |
-
-## Outputs
-
-| Output | Description |
-|--------|-------------|
-| `artifacts` | Contents of `dist/artifacts.json` |
-| `metadata` | Contents of `dist/metadata.json` |
-| `release-url` | URL of the created GitHub release (extracted from metadata) |
-| `workspace` | Crate name resolved from the triggering tag (requires `resolve-workspace: true`) |
-| `crate-path` | Path to the resolved crate directory (requires `resolve-workspace: true`) |
-| `has-builds` | Whether the resolved crate has binary builds configured (requires `resolve-workspace: true`) |
-| `split-matrix` | JSON matrix for `strategy.matrix` covering configured build targets, derived from the anodizer config (requires `install-only: true`). Include-form: each entry has `os`, `target`, and `artifact`. See [Derive the build matrix from config](#derive-the-build-matrix-from-config-split-matrix). |
-| `crates` | JSON array of crate names that received a new tag (e.g. `["core","bin-a"]`). Set when `args: tag` is used on a per-crate workspace. Empty array (`[]`) when nothing changed. |
-| `versions` | JSON object mapping crate name to new version (e.g. `{"core":"1.2.0","bin-a":"0.5.1"}`). Set when `args: tag` is used on a per-crate workspace. |
-| `new-tag` | New tag `anodizer tag` created (e.g. `v1.2.3`), for single-crate and lockstep-workspace repos. Empty when no tag was cut. (Per-crate workspaces use `crates`/`versions` instead.) |
-| `old-tag` | Previous tag `anodizer tag` bumped from. Empty on a first release. |
-| `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
-| `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on this for single-crate / lockstep repos. |
-| `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target). Check this out in downstream jobs so the tree matches the tag. |
-| `irreversibly-published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned at a registry that never accepts the same version twice. `'false'` when only reversible publishers succeeded or nothing was proven published. Forensic signal: the default failure handling is anodizer's in-process `release.on_failure` policy, which already refuses to roll back past one-way doors, so most workflows never read this. Workflows adding a [custom destructive recovery step](#manual-recovery-advanced) must gate on it: `if: always() && (steps.<id>.outcome == 'failure' || steps.<id>.outcome == 'cancelled') && steps.<id>.outputs.irreversibly-published != 'true'`. Collected with `always()`, so it is set even when the release step failed or was cancelled. |
-| `irreversibly_published` | Deprecated snake_case alias of `irreversibly-published` (same value); retained so existing workflows keep working. |
 
 ## Build provenance (SLSA attestations)
 
