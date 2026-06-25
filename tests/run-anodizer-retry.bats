@@ -120,3 +120,44 @@ STUB
     [ "$(cat "$WORKDIR/attempts")" = "1" ]
     [[ "$output" == *"retry disabled for stateful mode"* ]]
 }
+
+# A plain full `release` is stateful: it cuts the tag, publishes, and rolls
+# back on failure (deleting the tag). A blind retry would find no tag and
+# exit 0 — a false-green. It must run exactly once, surfacing the real failure.
+@test "stateful plain release runs exactly once (no false-green retry)" {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+exit 1
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+    export ANODIZER_ARGS="release --clean"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful release"* ]]
+}
+
+# Build-only / preview legs stay retryable. --snapshot self-tags nothing
+# upstream, so a retry genuinely rebuilds rather than no-opping.
+@test "release --snapshot stays retryable (3 attempts)" {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+exit 1
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+    export ANODIZER_ARGS="release --snapshot --single-target --clean --dry-run"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+}
