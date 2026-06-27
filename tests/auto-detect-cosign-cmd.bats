@@ -57,6 +57,21 @@ _run_auto_detect() {
     grep -q '^deps=.*cosign' "$GITHUB_OUTPUT"
 }
 
+# B2/W3: a single-quoted YAML scalar (`cmd: 'cosign'`) is valid and must pull
+# cosign just like the double-quoted/bare forms — has_kv accepts either quote.
+@test "cosign-cmd: signs: with single-quoted cmd: 'cosign' emits cosign" {
+    _run_auto_detect $'signs:\n  - artifacts: all\n    cmd: \'cosign\''
+    [ "$status" -eq 0 ]
+    grep -q '^deps=.*cosign' "$GITHUB_OUTPUT"
+}
+
+# B2/W3 (TOML): a single-quoted TOML literal string is equally valid.
+@test "cosign-cmd: TOML [[signs]] with single-quoted cmd = 'cosign' emits cosign" {
+    _run_auto_detect $'[[signs]]\nartifacts = "all"\ncmd = \'cosign\'' Linux .anodizer.toml
+    [ "$status" -eq 0 ]
+    grep -q '^deps=.*cosign' "$GITHUB_OUTPUT"
+}
+
 @test "cosign-cmd: docker_signs: with no cmd: emits cosign (static default)" {
     _run_auto_detect $'docker_signs:\n  - artifacts: all'
     [ "$status" -eq 0 ]

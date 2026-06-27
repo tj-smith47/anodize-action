@@ -209,6 +209,37 @@ skip_unsupported_os() {
     anodizer::vdetail "skipped ${tool}: ${reason}"
 }
 
+# Probe for `$1` on PATH (overridable in tests to simulate a runner image
+# that lacks the tool). A thin wrapper so ensure_on_path's lookup has a single
+# seam tests can stub without redefining `command`.
+_tool_on_path() {
+    command -v "$1" > /dev/null 2>&1
+}
+
+# Verify an ENVIRONMENT-PROVIDED external tool is already on PATH, rather than
+# installing it. Two dep classes route here (see dispatch_install): the cloud
+# KMS CLIs (aws/gcloud/az) and an arbitrary `sboms.cmd:` generator. anodizer
+# never bundles installers for these — they are expected on the runner image
+# (GitHub-hosted runners preinstall the cloud CLIs; self-hosted images and the
+# user's own SBOM generator are provisioned by the operator).
+#
+# Present  → success no-op (the tool is ready; the stage will spawn it).
+# Absent   → `gha_fail` with an ACTIONABLE message naming the config field that
+#            demanded it, so the operator knows exactly what to install and why
+#            — never a silent skip (a missing KMS CLI would otherwise surface as
+#            a cryptic stage-blob failure mid-publish).
+#
+# `$1` = tool name, `$2` = the config trigger phrase for the diagnostic.
+ensure_on_path() {
+    local tool="$1" trigger="$2"
+    if _tool_on_path "$tool"; then
+        anodizer::vok "${tool} already on PATH (${trigger})"
+        _INSTALLER_EMITTED_OK=1
+        return 0
+    fi
+    gha_fail "${tool} required by ${trigger} but not on PATH — install it on the runner"
+}
+
 # If `$<var>` is set, pin the brew formula to `<formula>@<version>`.
 brew_install() {
     # `var` documents that $2 is the env-var name; the indirection in
@@ -1148,7 +1179,37 @@ dispatch_install() {
             wix)            install_wix ;;
             wix3)           install_wix3 ;;
             pkgbuild)       install_pkgbuild ;;
-            *) gha_fail "Unknown dependency: $dep (supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy, rcodesign, wix, wix3, pkgbuild)" ;;
+            # Cloud KMS CLIs — a closed set emitted by auto-detect from a
+            # `blobs.kms_key:` URL scheme (awskms:// / gcpkms:// / azurekeyvault://).
+            # anodizer ships no installer for them (they are preinstalled on
+            # GitHub-hosted runners and provisioned on self-hosted images), so
+            # ensure-on-PATH with a scheme-specific, actionable message.
+            #
+            # Cosmetic collision: a user who literally names `sboms.cmd: aws`
+            # also lands here and gets the "(awskms://)" trigger phrase. The
+            # ensure-on-PATH behavior is identical (present → no-op, absent →
+            # actionable fail); only the diagnostic phrase is off. Left as-is —
+            # `aws`/`gcloud`/`az` as an SBOM generator name is implausible, and
+            # distinguishing the two callers would need the dispatcher to thread
+            # the originating config field through for no behavioral gain.
+            aws)            ensure_on_path aws "blobs.kms_key (awskms://)" ;;
+            gcloud)         ensure_on_path gcloud "blobs.kms_key (gcpkms://)" ;;
+            az)             ensure_on_path az "blobs.kms_key (azurekeyvault://)" ;;
+            # Any remaining dep name is a user-supplied SBOM generator binary
+            # named in `sboms.cmd:` (e.g. cyclonedx) — syft, the default/auto-
+            # installable generator, has its own real installer above and never
+            # reaches here. Route it to the same ensure-on-PATH contract: present
+            # → no-op, absent → actionable fail.
+            #
+            # This catch-all is safe rather than a typo-masking hazard because
+            # dep names are not free-typed: every name reaching the dispatcher is
+            # synthesized by auto-detect from a SPECIFIC config field (a fixed
+            # tool name per stage, the kms URL scheme, or `sboms.cmd:`), and
+            # anodizer validates the config upstream before the action runs. The
+            # only open-ended field is `sboms.cmd:`, so an unrecognized name here
+            # is, by construction, that generator — fail loudly if it is absent,
+            # naming the field, instead of the opaque "Unknown dependency".
+            *)              ensure_on_path "$dep" "sboms.cmd" ;;
         esac
         # Skip the generic "installed" line when either (a) the installer left
         # something apt-queued — apt_flush emits one line per package after the

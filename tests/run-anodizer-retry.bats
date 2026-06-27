@@ -201,3 +201,214 @@ STUB
     [ "$(cat "$WORKDIR/attempts")" = "1" ]
     [[ "$output" == *"retry disabled for stateful mode"* ]]
 }
+
+# A one-failure-then-pass stub: attempt 1 exits 1, attempt 2+ exits 0. Lets a
+# test assert a mode IS retryable (reaches attempt 2 and greens) rather than
+# only that it fails N times.
+_write_flaky_stub() {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+[ "\$n" -ge 2 ] && exit 0
+exit 1
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+}
+
+# A one-shot always-fail stub for asserting a mode runs exactly once.
+_write_failing_stub() {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+exit 1
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+}
+
+# F2: `publish` runs the same stateful release/publish/blob chain against the
+# same PR-based publishers as `release --publish-only`, but carries no
+# `--publish-only` literal. A blind retry would open DUPLICATE PRs. It must run
+# exactly once, surfacing the real failure.
+@test "stateful publish runs exactly once (no duplicate PRs)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="publish --skip npm"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful publish/continue"* ]]
+}
+
+# F2: `continue` (single-host stage-resume) runs the identical publish chain;
+# same duplicate-PR hazard as bare `publish`. Exactly once.
+@test "stateful continue runs exactly once (no duplicate PRs)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="continue --token xxx"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful publish/continue"* ]]
+}
+
+# F2 guard: `publish --dry-run` runs the pipeline with no side effects, so a
+# retry opens no PRs — it stays retryable (3 attempts).
+@test "publish --dry-run stays retryable (3 attempts)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="publish --dry-run"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+}
+
+# F2 guard: `continue --merge` resumes behind anodizer's own publish-rerun
+# guard (identical to `release --merge`), so a retry is safe. Retryable.
+@test "continue --merge stays retryable (3 attempts)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="continue --merge"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+}
+
+# F4: `tag --push` pushes the bump commit + a new tag to the remote. A partial
+# push retried fails on the now-existing tag or double-applies the bump. Must
+# run exactly once.
+@test "stateful tag --push runs exactly once (no double-push)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="tag --push --changelog"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful tag"* ]]
+}
+
+# F4: `tag --changelog` (without --push) still refreshes CHANGELOG.md into a
+# bump commit that the same tag flow pushes; treat it as remote-mutating.
+@test "stateful tag --changelog runs exactly once" {
+    _write_failing_stub
+    export ANODIZER_ARGS="tag --changelog"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful tag"* ]]
+}
+
+# F4 guard: a local-only `tag --dry-run` (and `--push-dry-run`) mutates nothing
+# on the remote, so it stays retryable. Use the flaky stub to prove it actually
+# reaches attempt 2 and greens.
+@test "tag --dry-run stays retryable and recovers on attempt 2" {
+    _write_flaky_stub
+    export ANODIZER_ARGS="tag --dry-run"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 0 ]
+    [ "$(cat "$WORKDIR/attempts")" = "2" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+    [[ "$output" != *"retry disabled"* ]]
+}
+
+# Regression guard: a stateful `release --publish-only` is STILL caught by the
+# stateful-mode case (the `publish` word-match must not steal it — `--publish-only`
+# is not the standalone token ` publish `). Exactly once, classic warn.
+@test "release --publish-only still runs exactly once (publish-only literal, not the publish subcommand)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="release --publish-only --skip npm"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for stateful mode"* ]]
+}
+
+# Regression guard: `release --preflight-secrets` is a side-effect-free
+# pre-release gate; the new publish/continue/tag cases must not steal it. Still
+# retryable.
+@test "release --preflight-secrets still retryable (3 attempts)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="release --preflight-secrets --skip blob"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+}
+
+# Regression guard: `release --dry-run` stays retryable — the new publish/tag
+# word-matches must not match a plain release invocation.
+@test "release --dry-run still retryable (3 attempts)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="release --dry-run --single-target"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+}
+
+# Misroute guard (B1): `publish` is a real stage NAME, so `release --skip publish`
+# carries a bare ` publish ` token. The leading-anchored case must NOT steal it
+# into the publish/continue class — it is a plain stateful `release` (runs once,
+# release warn). A non-anchored match would have left it falsely classified.
+@test "release --skip publish classifies as stateful release, not publish (runs once)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="release --skip publish"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful release"* ]]
+    [[ "$output" != *"stateful publish/continue"* ]]
+}
+
+# Misroute guard (B1): `tag` is also a stage name. `release --workspace tag`
+# carries a bare ` tag ` token; an unanchored match would route it into the tag
+# case and — with no --push/--changelog — DANGEROUSLY mark a stateful release
+# 3×-retryable. It must classify as a stateful release (runs once).
+@test "release --workspace tag classifies as stateful release, not tag (runs once)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="release --workspace tag"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"retry disabled for a stateful release"* ]]
+    [[ "$output" != *"stateful tag"* ]]
+}
+
+# Misroute guard (B1): `continue` stage name in a snapshot release. The bare
+# ` continue ` token must not pull it into the publish/continue class; a
+# --snapshot release self-tags nothing and stays retryable (3 attempts).
+@test "release --snapshot --workspace continue stays retryable (not publish/continue)" {
+    _write_failing_stub
+    export ANODIZER_ARGS="release --snapshot --workspace continue"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+    [[ "$output" != *"stateful publish/continue"* ]]
+}

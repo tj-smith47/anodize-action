@@ -37,12 +37,15 @@ has_cfg_block() {
 # True when `$1` is assigned value `$2` anywhere in the config — YAML
 # `key: value` / TOML `key = "value"` — at any nesting depth. The value is
 # end-anchored (closing quote, whitespace, or EOL) so a prefix match never
-# fires: `cmd: cosignx` / `cmd: cosign-foo` must NOT pull `cosign`.
+# fires: `cmd: cosignx` / `cmd: cosign-foo` must NOT pull `cosign`. Either
+# quote style is accepted: a single-quoted YAML scalar (`cmd: 'cosign'`) is as
+# valid as double-quoted, so the optional leading quote and the closing-quote
+# end-anchor both admit `'` and `"`.
 has_kv() {
     if [ "$is_toml" = true ]; then
-        grep -qE "${1}[[:space:]]*=[[:space:]]*\"?${2}(\"|[[:space:]]|$)" "$cfg"
+        grep -qE "${1}[[:space:]]*=[[:space:]]*['\"]?${2}(['\"]|[[:space:]]|$)" "$cfg"
     else
-        grep -qE "${1}:[[:space:]]*\"?${2}(\"|[[:space:]]|$)" "$cfg"
+        grep -qE "${1}:[[:space:]]*['\"]?${2}(['\"]|[[:space:]]|$)" "$cfg"
     fi
 }
 
@@ -65,23 +68,199 @@ if has_cfg_block nfpm || has_kv name anodizer-stage-nfpm; then add_linux_pkg_dep
 has_cfg_block makeselfs && add_linux_pkg_dep makeself || true
 has_cfg_block snapcrafts && add_linux_pkg_dep snapcraft || true
 has_cfg_block srpm && add_linux_pkg_dep rpmbuild || true
-# cosign is the signing backend only for blocks that actually target it.
-# anodizer's per-block default `cmd:` differs by sign type (verified against
-# crates/core/src/signing.rs + crates/stage-sign/src/helpers.rs):
-#   - `signs:` / `binary_signs:` (SignConfig) DEFAULT TO GPG when `cmd:` is
-#     unset — default_sign_cmd reads `git config gpg.program`, falling back to
-#     literal `gpg`. They need cosign only when `cmd: cosign` is set.
-#   - `docker_signs:` (DockerSignConfig) has a STATIC cosign default
-#     (DEFAULT_CMD = "cosign") — it needs cosign even with no `cmd:` line.
-# So: install cosign when any sign block sets `cmd: cosign` (matches a top-level
-# `signs:`/`binary_signs:`/`docker_signs:` block alike — the probe is cmd-based,
-# not block-based), OR when a `docker_signs:` block is present at all. GPG needs
-# no installer (it is pre-installed on every GitHub runner image), so a
-# `binary_signs:` with `cmd: gpg` correctly pulls nothing.
+# True when the config sets a `cmd:` whose value is `cosign` or a `cosign-*`
+# variant (e.g. `cosign-fips`). Mirrors anodizer's `is_cosign_cmd` in
+# crates/stage-sign/src/process.rs, which tests the cmd BASENAME with
+# `starts_with("cosign")` — so `cosign-foo` is a cosign binary too. A bare
+# `cosign` is also a variant of itself. The value is anchored so `cosignx`
+# (no separator) still matches the `cosign` prefix per `is_cosign_cmd`, while a
+# DIFFERENT tool like `gpg` never does. Used only by the preflight key-LOAD
+# detection below, where a co-occurring `env://` ref is the discriminator —
+# the bare-tool install logic keeps its stricter exact `has_kv cmd cosign`.
+has_cosign_variant_cmd() {
+    if [ "$is_toml" = true ]; then
+        grep -qE "cmd[[:space:]]*=[[:space:]]*['\"]?cosign" "$cfg"
+    else
+        grep -qE "cmd:[[:space:]]*['\"]?cosign" "$cfg"
+    fi
+}
+
+# True when the config references cosign key material via the `env://VAR`
+# scheme (verified against crates/core/src/env_preflight.rs::env_scheme_refs,
+# which scans for the literal `env://`). In an anodizer config this scheme is
+# cosign-key-specific — it only appears in a sign block's args/env/stdin/
+# certificate — so its presence alongside a cosign cmd reconstructs exactly the
+# `cosign_key_refs()` set `release --preflight-secrets` load-verifies.
+config_has_env_scheme_ref() {
+    grep -qF 'env://' "$cfg"
+}
+
+# cosign falls into the dep set for two distinct reasons; both resolve here.
+#
+# (1) SIGN-STAGE TOOL — cosign must be on PATH because the sign stage will spawn
+#     it. anodizer's per-block default `cmd:` differs by sign type (verified
+#     against crates/core/src/signing.rs + crates/stage-sign/src/helpers.rs):
+#       - `signs:` / `binary_signs:` (SignConfig) DEFAULT TO GPG when `cmd:` is
+#         unset — default_sign_cmd reads `git config gpg.program`, falling back
+#         to literal `gpg`. They need cosign only when `cmd: cosign` is set.
+#       - `docker_signs:` (DockerSignConfig) has a STATIC cosign default
+#         (DEFAULT_CMD = "cosign") — it needs cosign even with no `cmd:` line.
+#     So: install cosign when any block sets exactly `cmd: cosign`, OR when a
+#     `docker_signs:` block is present at all. GPG needs no installer (it is
+#     pre-installed on every runner image), so `binary_signs:` with `cmd: gpg`
+#     correctly pulls nothing.
+#
+# (2) PREFLIGHT KEY-LOAD — when the action runs `release --preflight-secrets`,
+#     preflight offline load-verifies EVERY cosign key the config references
+#     (crates/cli/src/commands/preflight.rs::cosign_key_refs → a `KeyEnv{Cosign}`
+#     per `env://VAR` ref under a cosign-cmd block, emitted by stage-sign's
+#     entry_env_requirements). If cosign is absent the check WARN-skips
+#     (silent false-green: a bad COSIGN_PASSWORD slips past the pre-tag gate).
+#     anodizer's `is_cosign_cmd` matches any `cosign*` BASENAME, so a
+#     `cmd: cosign-fips` (or any variant) bearing an `env://` key is a cosign
+#     key reference the exact `has_kv cmd cosign` probe above misses. Cover the
+#     full set: install cosign whenever a cosign-variant cmd co-occurs with an
+#     `env://` key ref — exactly the shapes `cosign_key_refs()` enumerates.
+#
+#     Both probes are decoupled WHOLE-FILE greps, so a `cosign-*` cmd in one
+#     block plus an `env://` ref in an UNRELATED block also triggers the
+#     install. That over-install is INTENTIONAL and kept consistent with the
+#     bare `has_kv cmd cosign` rule above (itself a whole-file value match): a
+#     cosign install is idempotent and cheap, so block-scoping this one probe
+#     would make it stricter than its sibling — an inconsistent asymmetry that
+#     buys no real safety while adding awk block-extraction complexity. Pinned
+#     by the cosign-keyload bats suite so the behavior is codified, not accident.
 need_cosign=""
 has_kv cmd cosign && need_cosign=1
 [ -z "$need_cosign" ] && has_cfg_block docker_signs && need_cosign=1
+[ -z "$need_cosign" ] && has_cosign_variant_cmd && config_has_env_scheme_ref && need_cosign=1
 [ -n "$need_cosign" ] && deps+=("cosign") || true
+
+# Print only the lines belonging to a `sboms:` block, whether top-level
+# (single-crate flat config) or nested under a crate entry (workspace
+# per-crate config). The block runs from the `sboms:` header to the next line
+# indented at or below the header's own indentation. Mirrors `msis_block`.
+sboms_block() {
+    awk '
+        !inblock && /^[[:space:]]*sboms:/ {
+            match($0, /^[[:space:]]*/); hdr = RLENGTH
+            inblock = 1; next
+        }
+        inblock {
+            match($0, /^[[:space:]]*/)
+            if ($0 ~ /[^[:space:]]/ && RLENGTH <= hdr) { inblock = 0 }
+        }
+        inblock { print }
+    ' "$cfg"
+}
+
+# Resolve the generator tool a SINGLE `sboms:` list entry needs, mirroring
+# crates/stage-sbom/src/lib.rs (`use_builtin = cmd.is_none() && args.is_none()`)
+# + crates/core/src/config/sbom.rs (`resolved_cmd()` defaults to `syft`):
+#   - entry has a `cmd:` line   → echo its value verbatim (the spawned binary)
+#   - entry has `args:` but no `cmd:` → echo `syft` (the default generator)
+#   - entry has neither          → builtin generator, echo nothing
+# `$1` is the entry's text. Reads the YAML shape (anodizer's sboms: is YAML in
+# practice); the TOML path is resolved separately below.
+detect_sbom_entry_tool() {
+    local entry="$1" cmd
+    # Strip a trailing ` # …` YAML inline comment before trimming, or the
+    # comment text leaks into the dep name (`cmd: cyclonedx # gen` → `cyclonedx`).
+    cmd=$(printf '%s\n' "$entry" \
+        | grep -E '^[[:space:]]*(-[[:space:]]+)?cmd:[[:space:]]*' \
+        | sed -E 's/^[[:space:]]*(-[[:space:]]+)?cmd:[[:space:]]*//' \
+        | sed -E 's/[[:space:]]+#.*$//' \
+        | tr -d '"' | tr -d "'" | head -1 | xargs || true)
+    if [ -n "$cmd" ]; then
+        echo "$cmd"
+        return
+    fi
+    if printf '%s\n' "$entry" | grep -qE '^[[:space:]]*(-[[:space:]]+)?args:'; then
+        echo "syft"
+    fi
+    # Neither cmd: nor args: → builtin generator, no external tool.
+}
+
+# Resolve the DISTINCT generator tools the whole `sboms:` config needs. Splits
+# the YAML block on `- ` list markers (one entry per generator), or scopes each
+# TOML `[[sboms]]` / `[[crates.<n>.sboms]]` table, resolves each, and prints
+# every distinct tool on its own line. A builtin-only config prints nothing.
+detect_sbom_tools() {
+    has_cfg_block sboms || return 0
+    local seen=""
+    local tool
+    if [ "$is_toml" = true ]; then
+        # Per TOML sbom table: read `cmd = "X"` (→ X) else `args = …` (→ syft)
+        # else builtin (→ nothing). awk scopes each table from its `[[…sboms]]`
+        # header to the next table header.
+        while IFS= read -r tool; do
+            [ -z "$tool" ] && continue
+            case ",$seen," in *",$tool,"*) continue ;; esac
+            seen="${seen:+$seen,}$tool"
+            echo "$tool"
+        done < <(
+            awk '
+                /^\[\[?([^]]*\.)?sboms[].]/ {
+                    if (intable) emit()
+                    intable = 1; cmd = ""; hasargs = 0; next
+                }
+                /^\[/ { if (intable) { emit(); intable = 0 } }
+                intable && /^[[:space:]]*cmd[[:space:]]*=/ {
+                    line = $0
+                    sub(/^[[:space:]]*cmd[[:space:]]*=[[:space:]]*/, "", line)
+                    # Strip a trailing ` # …` inline comment before quote/space
+                    # trimming, or `cmd = "cyclonedx" # gen` leaks the comment.
+                    sub(/[[:space:]]+#.*$/, "", line)
+                    gsub(/"/, "", line); gsub(/\047/, "", line)
+                    sub(/[[:space:]]+$/, "", line)
+                    cmd = line
+                }
+                intable && /^[[:space:]]*args[[:space:]]*=/ { hasargs = 1 }
+                END { if (intable) emit() }
+                function emit() {
+                    if (cmd != "") print cmd
+                    else if (hasargs) print "syft"
+                }
+            ' "$cfg"
+        )
+        return 0
+    fi
+    local block entry
+    block=$(sboms_block)
+    while IFS= read -r tool; do
+        [ -z "$tool" ] && continue
+        case ",$seen," in *",$tool,"*) continue ;; esac
+        seen="${seen:+$seen,}$tool"
+        echo "$tool"
+    done < <(
+        printf '%s\n' "$block" | awk '
+            /^[[:space:]]*-[[:space:]]/ {
+                if (entry != "") print entry "\036"
+                entry = $0 "\n"; next
+            }
+            { entry = entry $0 "\n" }
+            END { if (entry != "") print entry "\036" }
+        ' | while IFS= read -r -d $'\036' entry; do
+            [ -n "$entry" ] && detect_sbom_entry_tool "$entry"
+        done
+    )
+    # The block/entry splitter keys off the `- ` block-style list marker; it
+    # does NOT parse FLOW-style YAML (`sboms: [{cmd: cyclonedx}]`), so such a
+    # block resolves to ZERO tools and would silently install nothing — a
+    # configured generator absent at runtime. When the list is declared inline-
+    # flow on the `sboms:` header (a `[` immediately after the colon) yet the
+    # resolver found none, fall back to the default generator `syft` so the
+    # stage has SOME generator on PATH rather than failing mid-run. The probe is
+    # anchored to the header (not a bare `[` anywhere in the block) so a block-
+    # style entry whose VALUE is a flow scalar — e.g. `documents: ["x.json"]` on
+    # a builtin entry — does NOT spuriously trigger the fallback. (Full flow-
+    # style parsing is out of scope; a custom `cmd:` inside flow YAML still needs
+    # explicit `install:`. sboms_block consumes the header line, so probe $cfg.)
+    if [ -z "$seen" ] && grep -qE '^[[:space:]]*sboms:[[:space:]]*\[' "$cfg"; then
+        echo "syft"
+    fi
+}
+
 # notarize.macos:[] drives the CROSS-PLATFORM signing/notarization path, which
 # shells out to `rcodesign` (the apple-codesign project) — verified against
 # crates/stage-notarize/src/run.rs (spawns "rcodesign") and
@@ -110,7 +289,36 @@ fi
 # OIDC), which needs node/npm on PATH. npm publish runs on any runner OS, so
 # no OS guard.
 has_cfg_block npms && deps+=("node") || true
-has_cfg_block sboms && deps+=("syft") || true
+# sboms: the generator is per-block (verified against
+# crates/stage-sbom/src/lib.rs + crates/core/src/config/sbom.rs):
+#   - NO `cmd:` AND NO `args:`  → the BUILTIN Cargo.lock generator runs
+#     (`use_builtin = cmd.is_none() && args.is_none()`); it shells out to
+#     nothing, so NO external tool is installed.
+#   - `cmd: <X>`                → anodizer spawns `<X>` verbatim
+#     (`resolved_cmd()`); install THAT binary (syft when `cmd: syft`, the
+#     named tool otherwise — e.g. `cyclonedx`).
+#   - `args:` present, no `cmd:` → `resolved_cmd()` falls back to the default
+#     `syft` (DEFAULT_CMD), so syft is installed.
+# Emits one dep per distinct generator the block(s) request; a builtin-only
+# config emits nothing here.
+while IFS= read -r _sbom_tool; do
+    [ -n "$_sbom_tool" ] && deps+=("$_sbom_tool")
+done < <(detect_sbom_tools)
+# blobs: a `kms_key:` with a URL scheme drives CLIENT-SIDE KMS encryption,
+# which shells out to a cloud CLI before upload (verified against
+# crates/stage-blob/src/kms.rs: parse_kms_provider + kms_cli_program):
+#   - `awskms://…`        → aws
+#   - `gcpkms://…`        → gcloud
+#   - `azurekeyvault://…` → az
+# A plain key ARN/ID with NO scheme means SERVER-SIDE SSE-KMS (S3 does the
+# encryption), so no CLI is provisioned. The cloud CLI runs on any runner OS,
+# so no OS guard. `kms_key:` only appears inside a `blobs:` block, so a direct
+# value probe is sufficient — no block scoping needed.
+if has_cfg_block blobs; then
+    if has_kv kms_key 'awskms://[^[:space:]"]*'; then deps+=("aws"); fi
+    if has_kv kms_key 'gcpkms://[^[:space:]"]*'; then deps+=("gcloud"); fi
+    if has_kv kms_key 'azurekeyvault://[^[:space:]"]*'; then deps+=("az"); fi
+fi
 has_cfg_block upx && deps+=("upx") || true
 # nsis builds on every platform (makensis: nsis apt on Linux, brew on macOS,
 # choco on Windows), so it emits unconditionally.
@@ -145,7 +353,7 @@ fi
 # alejandra is only needed when the nix publisher opts into it as the
 # formatter (the alternative, `nixfmt`, has no auto-installer here yet).
 if [ "$is_toml" = true ]; then
-    grep -qE '^[[:space:]]*formatter[[:space:]]*=[[:space:]]*"?alejandra"?[[:space:]]*$' "$cfg" && deps+=("alejandra") || true
+    grep -qE "^[[:space:]]*formatter[[:space:]]*=[[:space:]]*['\"]?alejandra['\"]?[[:space:]]*\$" "$cfg" && deps+=("alejandra") || true
 else
     grep -qE '^[[:space:]]+formatter:[[:space:]]*alejandra[[:space:]]*$' "$cfg" && deps+=("alejandra") || true
 fi
@@ -192,9 +400,12 @@ msis_block() {
 # sniff reads the YAML shape. `$1` is the entry's text (version/wxs lines).
 detect_entry_dialect() {
     local entry="$1" version wxs
+    # Strip a trailing ` # …` YAML inline comment before trimming so a comment
+    # never leaks into the resolved dialect token (`version: v3 # legacy`).
     version=$(printf '%s\n' "$entry" \
         | grep -E '^[[:space:]]*(-[[:space:]]+)?version:[[:space:]]*' \
         | sed -E 's/^[[:space:]]*(-[[:space:]]+)?version:[[:space:]]*//' \
+        | sed -E 's/[[:space:]]+#.*$//' \
         | tr -d '"' | tr -d "'" | head -1 | xargs || true)
     case "$(printf '%s' "$version" | tr '[:upper:]' '[:lower:]')" in
         v3|3|wixl|linux) echo "wix3"; return ;;
@@ -204,6 +415,7 @@ detect_entry_dialect() {
     wxs=$(printf '%s\n' "$entry" \
         | grep -E '^[[:space:]]*(-[[:space:]]+)?wxs:[[:space:]]*' \
         | sed -E 's/^[[:space:]]*(-[[:space:]]+)?wxs:[[:space:]]*//' \
+        | sed -E 's/[[:space:]]+#.*$//' \
         | tr -d '"' | tr -d "'" | head -1 | xargs || true)
     if [ -n "$wxs" ] && [ -f "$wxs" ] \
         && grep -q 'http://schemas.microsoft.com/wix/2006/wi' "$wxs"; then
@@ -270,7 +482,7 @@ if has_cfg_block msis; then
 fi
 
 if [ "$is_toml" = true ]; then
-    grep -qE '^[[:space:]]*cross[[:space:]]*=[[:space:]]*"?(auto|zigbuild)"?[[:space:]]*$' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
+    grep -qE "^[[:space:]]*cross[[:space:]]*=[[:space:]]*['\"]?(auto|zigbuild)['\"]?[[:space:]]*\$" "$cfg" && deps+=("zig" "cargo-zigbuild") || true
 else
     grep -qE '^[[:space:]]*cross:[[:space:]]*(auto|zigbuild)[[:space:]]*$' "$cfg" && deps+=("zig" "cargo-zigbuild") || true
 fi

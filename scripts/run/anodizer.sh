@@ -75,6 +75,63 @@ resolve_max_retries() {
             return
             ;;
     esac
+    # A `tag` invocation that mutates the remote (--push pushes the bump commit
+    # + the new tag; --changelog refreshes CHANGELOG.md into that pushed bump
+    # commit) is single-shot stateful: a partial push retried fails on the
+    # now-existing tag, or — if it got past the bump commit — double-applies the
+    # version writeback. Local-only `tag` forms (bare auto-tag, --dry-run,
+    # --push-dry-run, --no-push) mutate nothing on the remote, so they stay
+    # retryable. (`tag rollback` is already handled by the stateful-mode case
+    # above.)
+    #
+    # LEADING-ANCHORED on the subcommand: the subcommand is always the FIRST
+    # token of ANODIZER_ARGS. Matching a bare ` tag ` anywhere would misroute
+    # `release --workspace tag` (`tag` is also a stage name) — dangerously
+    # flipping a stateful release to 3×-retryable — so we only match `tag` when
+    # it leads the arg string.
+    case "$ANODIZER_ARGS " in
+        "tag "*)
+            case " $ANODIZER_ARGS " in
+                *" --push "*|*" --changelog "*)
+                    anodizer::warn "retry disabled for a stateful tag (--push / --changelog push a bump commit + a new tag; a blind retry fails on the existing tag or double-applies the writeback)."
+                    echo 1
+                    ;;
+                *)
+                    echo 3
+                    ;;
+            esac
+            return
+            ;;
+    esac
+    # `publish` and `continue` run the SAME stateful release / publish / blob
+    # chain as `release --publish-only` against the SAME PR-based publishers
+    # (homebrew, scoop, nix, krew, MCP) — they just lack the `--publish-only`
+    # literal the stateful-mode case above keys off. A blind whole-pipeline
+    # retry of a transient per-publisher failure re-runs the publish and opens
+    # DUPLICATE PRs. Treat them like a stateful release: run once, surface the
+    # real failure, let transient per-publisher failures retry INSIDE anodizer.
+    # The build-only / preview leg (--dry-run, side-effect-free) and the
+    # merge-resume leg (--merge, which sits behind anodizer's own publish-rerun
+    # guard, identical to `release --merge`) stay retryable.
+    #
+    # LEADING-ANCHORED like the tag case: `publish` / `continue` are also stage
+    # names, so `release --skip publish` and `release --snapshot --workspace
+    # continue` must NOT match here — only a leading `publish `/`continue `
+    # subcommand does.
+    case "$ANODIZER_ARGS " in
+        "publish "*|"continue "*)
+            case " $ANODIZER_ARGS " in
+                *" --dry-run "*|*" --merge "*)
+                    echo 3
+                    ;;
+                *)
+                    anodizer::warn "retry disabled for a stateful publish/continue (runs the publish + blob chain against PR-based publishers; a blind retry would open duplicate PRs). Transient failures retry inside anodizer."
+                    echo 1
+                    ;;
+            esac
+            return
+            ;;
+    esac
     # A plain `release` cuts the tag, creates the GitHub release, runs the
     # publishers, and on failure rolls back — DELETING the tag. A retry then
     # finds no release tag at HEAD, short-circuits "nothing to do", and exits 0,
