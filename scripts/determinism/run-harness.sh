@@ -1,31 +1,31 @@
 #!/usr/bin/env bash
-# Run `anodizer check determinism` with the resolved per-shard stage list,
-# target CSV, and optional preserve-dist / per-crate scoping.
+# Run `anodizer check determinism` with the resolved target CSV and optional
+# preserve-dist / per-crate scoping.
 #
-# Per-OS default stage list (when $STAGES_INPUT is empty):
-#   Linux  → build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum
-#   other  → build,source,upx,archive,sbom,sign,checksum
+# Stage selection is the BINARY's job, not this wrapper's. Omitting `--stages`
+# tells the harness to byte-verify the full host-OS-native partition via
+# `default_stages_for_host()` (the single source of truth: Linux adds
+# nfpm/makeself/snapcraft/srpm/docker/appimage/flatpak, macOS adds
+# appbundle/dmg/pkg, Windows adds msi/nsis). This wrapper used to re-derive a
+# per-OS list in bash, which drifted from the binary's partition; that
+# re-derivation is gone. $STAGES_INPUT is forwarded verbatim only when an
+# operator explicitly overrides the set.
 #
-# Linux includes nfpm/makeself/snapcraft because their dependencies only
-# install cleanly on the Ubuntu runner (apt is Linux-only; apk/deb/rpm
-# signing isn't provisioned on the non-Linux shards). Snapcraft packs a
-# pre-assembled prime directory (no build env / lxd) and honors
-# SOURCE_DATE_EPOCH for squashfs mtime determinism.
+# `--require-tools` always: this is the CI path, where a missing OS-native
+# backing tool must HARD-FAIL the shard rather than warn-skip. A silent skip
+# is false coverage — a shard claiming it byte-verified a format it then
+# produced nothing for (the failure mode that hid the macOS/Windows installers
+# from every release).
 #
 # No retry loop here. The harness gates release-quality drift; a retry
 # would mask a flaky-but-real failure. Fail loudly on the first run.
 set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 
-if [ -n "$STAGES_INPUT" ]; then
-    stages="$STAGES_INPUT"
-elif [ "$RUNNER_OS" = "Linux" ]; then
-    stages="build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum"
-else
-    stages="build,source,upx,archive,sbom,sign,checksum"
-fi
-
 extra_args=()
+if [ -n "$STAGES_INPUT" ]; then
+    extra_args+=(--stages="$STAGES_INPUT")
+fi
 if [ "$PRESERVE_DIST" = "true" ]; then
     extra_args+=(--preserve-dist=./preserved-dist)
 fi
@@ -37,7 +37,7 @@ fi
 # group prints targets/stages/runs/preserve-dist/crate with one formatter.
 # Echoing them from the wrapper too doubled the header in release logs.
 anodizer check determinism \
-    --stages="$stages" \
+    --require-tools \
     --runs="$RUNS" \
     --targets="$TARGETS" \
     "${extra_args[@]}"
