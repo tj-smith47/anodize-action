@@ -99,6 +99,25 @@ case "${RUNNER_OS:-}" in
         _rm "/usr/local/share/dotnet"
         _rm "/Users/runner/Library/Developer/Xcode/DerivedData"
         _rm "/Users/runner/.ghcup"
+        # `df`/statvfs "available" on APFS counts PURGEABLE space — local Time
+        # Machine snapshots and evictable caches — that `hdiutil create` cannot
+        # allocate from. That is the real cause of the runner reporting >100 GiB
+        # "available" while the DMG stage still dies with "No space left on
+        # device": physical free is far below the reported figure, and anodizer's
+        # disk guard (which reads the same statvfs number) is fooled into passing.
+        # Deleting local snapshots and forcing a purge converts that purgeable
+        # space into real free so hdiutil can allocate. Both are macOS built-ins,
+        # idempotent, and safe on an ephemeral runner; every step is best-effort.
+        # The default-level "physical free" line surfaces the real-vs-reported gap
+        # so a future ENOSPC is diagnosable straight from the log.
+        df_avail=$(df -h / 2>/dev/null | awk 'NR==2{print $4}') || true
+        real_free=$(diskutil info / 2>/dev/null \
+            | awk -F'Container Free Space:' '/Container Free Space/{print $2}' \
+            | sed 's/ (.*//; s/^[[:space:]]*//') || true
+        snaps=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c 'com.apple') || snaps=0
+        anodizer::kv "physical free" "${real_free:-unknown} real vs ${df_avail:-unknown} df-available; ${snaps} purgeable snapshot(s)" || true
+        sudo tmutil deletelocalsnapshots / >/dev/null 2>&1 || tmutil deletelocalsnapshots / >/dev/null 2>&1 || true
+        sudo purge >/dev/null 2>&1 || purge >/dev/null 2>&1 || true
         ;;
     Linux)
         # Large preinstalled SDKs a Rust release pipeline never compiles against.
