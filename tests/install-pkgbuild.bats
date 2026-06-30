@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # install-pkgbuild.bats — unit tests for the pkgbuild installer in
-# scripts/install/deps.sh AND the pkgs: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # pkgbuild drives anodizer's `pkgs:` stage (crates/stage-pkg). On macOS the
 # native `pkgbuild` ships with the Xcode Command Line Tools (no install). On
@@ -22,7 +21,10 @@
 #   4. Linux, xar present + mkbom absent → only bomutils built (guards split)
 #   5. dispatch emits exactly one completion line (no duplicate)
 #   6. Windows → skipped (macOS installer format), exits 0
-#   7-9. auto-detect: pkgs: config emits/omits the pkgbuild dep per OS
+#
+# Config detection (pkgs: → pkgbuild) now lives in `anodizer tools`; the
+# action's pkgbuild/xar → pkgbuild translation is covered by
+# auto-detect-deps.bats.
 
 load test_helper
 
@@ -285,40 +287,4 @@ _run_dispatch() {
     _run_install_pkgbuild RUNNER_OS="Windows"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPED"* ]]
-}
-
-# ── auto-detect wiring ────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: pkgs: config on Linux emits the pkgbuild dep" {
-    _run_auto_detect $'pkgs:\n  - identifier: org.example.app' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*pkgbuild' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: pkgs: config on macOS emits the pkgbuild dep" {
-    _run_auto_detect $'pkgs:\n  - identifier: org.example.app' "macOS"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*pkgbuild' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: pkgs: config on Windows omits pkgbuild (OS-incompatible)" {
-    # macOS .pkg has no Windows build path, so the dep is silently omitted at
-    # default verbosity.
-    _run_auto_detect $'pkgs:\n  - identifier: org.example.app' "Windows"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'pkgbuild' "$GITHUB_OUTPUT"
 }

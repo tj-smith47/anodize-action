@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # install-flatpak.bats — unit tests for the flatpak installer in
-# scripts/install/deps.sh AND the flatpaks: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # flatpak drives anodizer's `flatpaks:` stage, which shells out to
 # `flatpak-builder ... build <manifest>` then `flatpak build-bundle`. The
@@ -17,8 +16,10 @@
 #      Sdk//24.08 installed, exits 0
 #   2. FLATPAK_RUNTIME_VERSION override → that branch pre-staged, exits 0
 #   3. macOS / Windows → skipped (flatpak is Linux-only), exits 0
-#   4. auto-detect: `flatpaks:` config emits flatpak on Linux; warns + omits
-#      on macOS/Windows (Flatpak is Linux-only)
+#
+# Config detection (flatpaks: → flatpak) now lives in `anodizer tools`; the
+# action's flatpak/flatpak-builder → flatpak translation is covered by
+# auto-detect-deps.bats.
 
 load test_helper
 
@@ -157,40 +158,4 @@ _run_dispatch_flatpak() {
     _run_install_flatpak RUNNER_OS="Windows"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPED"* ]]
-}
-
-# ── auto-detect wiring ────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: flatpaks: config on Linux emits the flatpak dep" {
-    _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*flatpak' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: flatpaks: config on macOS omits flatpak (OS-incompatible)" {
-    # Flatpak is Linux-only; non-Linux runners silently omit the dep at default.
-    _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "macOS"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'flatpak' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: flatpaks: config on Windows omits flatpak (OS-incompatible)" {
-    _run_auto_detect $'flatpaks:\n  - app_id: org.example.App\n    runtime_version: "24.08"' "Windows"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'flatpak' "$GITHUB_OUTPUT"
 }

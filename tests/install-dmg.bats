@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # install-dmg.bats — unit tests for the create-dmg installer in
-# scripts/install/deps.sh AND the dmgs: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # The dmg installer feeds anodizer's `dmgs:` stage (crates/stage-dmg). That
 # stage prefers macOS-native `hdiutil`, then falls back to `genisoimage`, then
@@ -14,9 +13,10 @@
 #   1. macOS → `brew install create-dmg`, exits 0
 #   2. Linux → queues the genisoimage apt package, exits 0
 #   3. Windows → skipped (no .dmg path), exits 0
-#   4. auto-detect: dmgs: config on macOS/Linux emits the create-dmg dep
-#   5. auto-detect: dmgs: config on Windows warns + omits it (no .dmg path on
-#      Windows), like pkgs
+#
+# Config detection (dmgs: → create-dmg, incl. the genisoimage/mkisofs Linux
+# fallback) now lives in `anodizer tools`; the action's binary→keyword
+# translation is covered by auto-detect-deps.bats.
 
 load test_helper
 
@@ -111,40 +111,4 @@ _run_install_create_dmg() {
     _run_install_create_dmg RUNNER_OS="Windows"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPED"* ]]
-}
-
-# ── auto-detect wiring ────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: dmgs: config on macOS emits the create-dmg dep" {
-    _run_auto_detect $'dmgs:\n  - name: app' "macOS"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*create-dmg' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: dmgs: config on Linux emits the create-dmg dep (genisoimage path)" {
-    _run_auto_detect $'dmgs:\n  - name: app' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*create-dmg' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: dmgs: config on Windows omits create-dmg (OS-incompatible)" {
-    # No .dmg build path on Windows (needs hdiutil or genisoimage), so the dep
-    # is silently omitted at default verbosity, like pkgs.
-    _run_auto_detect $'dmgs:\n  - name: app' "Windows"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'create-dmg' "$GITHUB_OUTPUT"
 }

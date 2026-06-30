@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # install-linuxdeploy.bats — unit tests for the linuxdeploy installer in
-# scripts/install/deps.sh AND the appimages: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # linuxdeploy drives anodizer's `appimages:` stage; it (and the appimage
 # output plugin it needs to emit a `.AppImage`) ships only as a rolling
@@ -16,8 +15,9 @@
 #   2. LINUXDEPLOY_VERSION override missing its shas → loud fail, exits ≠0
 #   3. LINUXDEPLOY_VERSION override WITH both shas → install exits 0
 #   4. macOS / Windows → skipped (linuxdeploy is Linux-only), exits 0
-#   5. auto-detect: `appimages:` config on Linux emits the linuxdeploy dep
-#   6. auto-detect: `appimages:` config on a non-Linux runner warns + omits it
+#
+# Config detection (appimages: → linuxdeploy) now lives in `anodizer tools`;
+# the action's binary→keyword translation is covered by auto-detect-deps.bats.
 
 load test_helper
 
@@ -138,36 +138,4 @@ _run_install_linuxdeploy() {
     _run_install_linuxdeploy RUNNER_OS="Windows"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPED"* ]]
-}
-
-# ── auto-detect wiring ────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    # Runs auto-detect-deps.sh against a temp workdir holding $1 as
-    # .anodizer.yaml, on the runner OS given by $2.
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: appimages: config on Linux emits the linuxdeploy dep" {
-    _run_auto_detect $'appimages:\n  - desktop: app.desktop\n    icon: app.png' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*linuxdeploy' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: appimages: config on macOS omits linuxdeploy (OS-incompatible)" {
-    # linuxdeploy (AppImage) is Linux-only; non-Linux runners silently omit the
-    # dep at default verbosity.
-    _run_auto_detect $'appimages:\n  - desktop: app.desktop\n    icon: app.png' "macOS"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'linuxdeploy' "$GITHUB_OUTPUT"
 }

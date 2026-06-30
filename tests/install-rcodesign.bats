@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # install-rcodesign.bats — unit tests for the rcodesign installer in
-# scripts/install/deps.sh AND the notarize.macos: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # rcodesign (the apple-codesign project) drives anodizer's cross-platform
 # `notarize.macos:` path (`rcodesign sign` / `rcodesign notary-submit`). It
@@ -22,8 +21,10 @@
 #   4. RCODESIGN_VERSION override WITH a sha → install exits 0
 #   5. Windows → cargo install fallback fires, exits 0
 #   6. Windows without cargo → loud fail (Rust required), exits ≠0
-#   7. auto-detect: notarize.macos: config emits the rcodesign dep
-#   8. auto-detect: notarize.macos_native: config does NOT emit rcodesign
+#
+# Config detection (notarize.macos: → rcodesign) now lives in `anodizer
+# tools`; the action's binary→keyword translation is covered by
+# auto-detect-deps.bats.
 
 load test_helper
 
@@ -196,32 +197,4 @@ _run_install_rcodesign_no_cargo() {
     _run_install_rcodesign_no_cargo RUNNER_OS="Windows" RUNNER_ARCH="X64"
     [ "$status" -ne 0 ]
     [[ "$output" == *"requires Rust"* ]]
-}
-
-# ── auto-detect wiring ────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: notarize.macos: config emits the rcodesign dep" {
-    _run_auto_detect $'notarize:\n  macos:\n    - sign:\n        certificate: cert.p12' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*rcodesign' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: notarize.macos_native: config does NOT emit rcodesign" {
-    _run_auto_detect $'notarize:\n  macos_native:\n    - use: dmg\n      sign:\n        identity: Developer ID' "macOS"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'rcodesign' "$GITHUB_OUTPUT"
 }

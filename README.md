@@ -4,14 +4,13 @@ GitHub Action that installs [Anodizer](https://github.com/tj-smith47/anodizer)
 — a Rust-native release automation tool — and runs any anodizer subcommand in a
 single step.
 
-The action installs anodizer (cached per version), auto-installs pipeline
-dependencies (nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node,
-cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-rcodesign, wix, pkgbuild) from your anodizer config (`.anodizer.yaml` or any of
-the binary's other discovery candidates, including the TOML variants), imports
-signing keys, logs in to container registries, handles split/merge artifact
-plumbing (uploads honor a custom `dist:` directory and the preserved-dist
-determinism layout), and runs anodizer.
+The action installs anodizer (cached per version), auto-installs the pipeline
+tools the engine itself reports via `anodizer tools` (nfpm, makeself, snapcraft,
+rpmbuild, cosign, syft, zig, node, cargo-zigbuild, upx, nsis, create-dmg,
+flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild, and the cloud KMS
+CLIs), imports signing keys, logs in to container registries, handles
+split/merge artifact plumbing (uploads honor a custom `dist:` directory and the
+preserved-dist determinism layout), and runs anodizer.
 
 ## Quick start
 
@@ -26,9 +25,10 @@ determinism layout), and runs anodizer.
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-That installs the latest stable anodizer, parses your config to install any
-dependencies the configured stages need, and runs `anodizer release --clean`.
-For a dry run, swap `args:` for `release --snapshot --clean`.
+That installs the latest stable anodizer, asks `anodizer tools` which external
+tools the configured stages need and installs them, and runs
+`anodizer release --clean`. For a dry run, swap `args:` for
+`release --snapshot --clean`.
 
 ## Inputs
 
@@ -41,7 +41,7 @@ means the input has no default.
 | `args` | Arguments to pass to anodizer (e.g. `release --snapshot`). Do **not** embed secrets here — this value appears in workflow logs; pass secrets via `env:`. Mutually exclusive with `determinism: true`. | `—` | no |
 | `artifact-run-id` | Workflow run ID to download `from-artifact` from. Use `auto` to resolve the latest successful run of `artifact-workflow` for the current commit, a numeric ID for explicit control, or omit to download from the current run. | `—` | no |
 | `artifact-workflow` | Workflow filename to search when `artifact-run-id` is `auto` (e.g. `ci.yml`). Ignored otherwise. | `ci.yml` | no |
-| `auto-install` | Parse the anodizer config in `workdir` (YAML or TOML, the binary's full discovery order) and auto-install the dependencies the configured stages need. See [auto-install dependency map](#auto-install-dependency-map). | `false` | no |
+| `auto-install` | Ask `anodizer tools --json` what the configured pipeline needs and install it — the engine's own report, not a config re-parse. The run's scope flags (`--publish-only`, `--skip`, `--publishers`, `-f/--config`) are read from `args` and forwarded, so the installed set matches exactly the stages this job runs. See [auto-install dependency map](#auto-install-dependency-map). | `false` | no |
 | `cosign-key` | Cosign private key contents. Written to `cosign.key` in the workdir with mode `0600`. Pair with `COSIGN_PASSWORD` in `env:`. | `—` | no |
 | `determinism` | Run the determinism harness (`anodizer check determinism`) on this shard: installs Rust, provisions the binary, installs the per-OS harness dep set, derives the configured-target CSV, and invokes the harness. Designed as the entire body of a per-OS harness shard. Mutually exclusive with `args`. See [Determinism harness](#determinism-harness-one-liner-cross-platform-shard). | `false` | no |
 | `determinism-crate` | Scope the harness to a single workspace crate (`anodizer check determinism --crate <name>`). Required when a release workflow fans out per crate so each shard's preserved dist lands under its own `<crate>/` subdir for a collision-free downstream merge. | `""` | no |
@@ -56,7 +56,7 @@ means the input has no default.
 | `from-branch` | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Branch name only — the repo is hardcoded; no owner prefix or SHA. Rust is auto-installed. Mutually exclusive with `version`, `from-artifact`, and `from-source`. | `""` | no |
 | `from-source` | Build anodizer from source in the current workdir (bootstrap mode). Rust is auto-installed — you do not also need `install-rust: true`. | `false` | no |
 | `gpg-private-key` | GPG private key contents to import for signing. Piped into `gpg --batch --import`. See [Key material](#key-material). | `—` | no |
-| `install` | Comma-separated build/pipeline dependencies to install: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `wix3`, `pkgbuild`. (`wix` = WiX v4; `wix3` = WiX v3; both install `wixl` on Linux.) Uses the platform's native package manager. | `—` | no |
+| `install` | Explicit comma-separated build/pipeline dependencies, bypassing auto-detection: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `wix3`, `pkgbuild`. (`wix` = WiX v4; `wix3` = WiX v3; both install `wixl` on Linux.) Uses the platform's native package manager. Use this for jobs that do **not** run the pipeline (so `anodizer tools` reports nothing) — e.g. a `--preflight-secrets` key-load check — or to force a specific tool on. | `—` | no |
 | `install-only` | Only install anodizer (and any requested dependencies/keys); skip running it. | `false` | no |
 | `install-rust` | Install the stable Rust toolchain (`dtolnay/rust-toolchain`). | `false` | no |
 | `preserve-dist` | When `determinism: true`, preserve the harness's byte-stable dist tree to `./preserved-dist/` for a downstream `release --publish-only` job. Manifests get a `-<shard-label>` suffix so sharded uploads don't collide under `merge-multiple`. Requires `shard-label`. | `false` | no |
@@ -69,30 +69,48 @@ means the input has no default.
 
 ### auto-install dependency map
 
-With `auto-install: true`, the action scans the anodizer config for these
-top-level keys and installs the matching tool. Keys are shown in YAML form; the
-TOML equivalents (`key = ...`, `[key]` / `[[key]]` headers) are detected the
-same way.
+With `auto-install: true`, the action does **not** read your config. It runs
+`anodizer tools --json` (forwarding the run's scope flags from `args`) and lets
+the engine report exactly which external binaries the configured stages and
+publishers will spawn — the same per-stage / per-publisher source of truth the
+preflight engine uses, so a new tool-bearing stage updates the set
+automatically with no shell logic to drift. Each reported binary is then
+translated to an installer keyword (this translation — _how_ to install — is the
+action's job; _what_ to install is anodizer's). Tools already on `PATH`, or
+provided by the runner (git, gpg, ssh, docker, cargo), are left alone; a
+required tool with no install recipe is reported as a `::warning::` rather than
+silently skipped.
 
-| `.anodizer.yaml` key | Installs | Notes |
-|---------------------|----------|-------|
-| `nfpm:` | `nfpm` | |
-| `makeselfs:` | `makeself` | Linux, macOS (skipped on Windows). |
-| `snapcrafts:` | `snapcraft` | Linux, macOS (skipped on Windows). Linux installs via snap; runners without snapd fall back to a pip install pinned by `SNAPCRAFT_VERSION` — upload-capable, but packing snaps still needs snapd. |
-| `srpm:` | `rpmbuild` | Linux, macOS (skipped on Windows). |
-| `cmd: cosign` (any sign block) / `docker_signs:` | `cosign` | `signs:`/`binary_signs:` default to GPG (preinstalled); cosign installs only when a block sets `cmd: cosign`, plus always for `docker_signs:` (which defaults to cosign). |
-| `sboms:` | `syft` | |
-| `upx:` | `upx` | |
-| `nsis:` | `nsis` | All platforms; macOS installs `makensis`. |
-| `dmgs:` | `create-dmg` | macOS uses `hdiutil`; Linux installs `genisoimage` (the dmg stage falls back to it). |
-| `flatpaks:` | `flatpak-builder` | Linux only (warns on other runners). |
-| `appimages:` | `linuxdeploy` + appimage plugin | Linux only (warns on other runners). |
-| `formatter: alejandra` (nix publisher) | `alejandra` | Only when the nix publisher opts into alejandra as its formatter; `nixfmt` has no auto-installer. |
-| `notarize.macos:` | `rcodesign` | Cross-platform (Linux/macOS pinned binary; Windows builds via `cargo install apple-codesign`). `notarize.macos_native:` needs nothing. |
-| `npms:` | `node` | All platforms. The npm publisher uses Trusted Publishing (OIDC), needing Node ≥ 22.14.0 / npm ≥ 11.5.1; `NODE_VERSION` satisfies the Node floor and the installer upgrades npm to `NPM_VERSION` afterward. |
-| `pkgs:` | `pkgbuild` | macOS uses native `pkgbuild` (Xcode CLT); Linux installs the flat-package toolchain (`xar` + `mkbom`, built from source). |
-| `msis:` | `wix` | Windows: WiX v4 `wix` dotnet global tool. Linux: `wixl` (msitools), driving the v3-dialect `.wxs` directly. |
-| `cross: auto` / `cross: zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild. |
+Translation from the binary anodizer reports to the installer the action runs:
+
+| anodizer reports (binary) | Action installs | Notes |
+|---------------------------|-----------------|-------|
+| `nfpm` | `nfpm` | |
+| `makeself` | `makeself` | macOS too; deps.sh skips it on Windows. |
+| `snapcraft`, `unsquashfs` | `snapcraft` | The snapcraft installer also provisions `squashfs-tools` (`unsquashfs`). Linux installs via snap; runners without snapd fall back to a pip install pinned by `SNAPCRAFT_VERSION`. |
+| `rpmbuild` | `rpmbuild` | macOS too; deps.sh skips it on Windows. |
+| `cosign` (and any `cosign*` variant, e.g. `cosign-fips`) | `cosign` | Reported whenever the sign / docker-sign / blob stages will spawn a cosign binary. |
+| `syft` | `syft` | A custom `sboms.cmd` (e.g. `cyclonedx`) has no recipe and is reported as a warning — install it on the runner or via `install:`. |
+| `upx` | `upx` | |
+| `makensis` | `nsis` | |
+| `hdiutil` / `genisoimage` / `mkisofs` | `create-dmg` | The dmg stage's interchangeable binaries; any already on `PATH` (macOS `hdiutil`) satisfies it with no install. |
+| `flatpak`, `flatpak-builder` | `flatpak` | The flatpak installer provisions both. deps.sh skips it off Linux. |
+| `linuxdeploy` | `linuxdeploy` | deps.sh skips it off Linux. |
+| `alejandra` | `alejandra` | nix publisher formatter. **See the gap note below.** |
+| `rcodesign` | `rcodesign` | Cross-platform notarization (`notarize.macos:`). |
+| `npm` | `node` | The npm publisher uses Trusted Publishing (OIDC); `NODE_VERSION` / `NPM_VERSION` pin the floor. |
+| `pkgbuild` / `xar` | `pkgbuild` | macOS native `pkgbuild` (Xcode CLT); Linux builds the flat-package toolchain (`xar` + `mkbom`). |
+| `wix` | `wix` | WiX v4 (`wix build`, the dotnet global tool). |
+| `candle` / `light` / `wixl` | `wix3` | WiX v3 dialect — `candle`+`light` on Windows, `wixl` (msitools) on Linux. anodizer resolves the dialect (explicit `version:` > `.wxs` namespace > installed tool) and reports the matching binary. |
+| `zig`, `cargo-zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild (advisory — the build degrades gracefully without them). |
+| `aws` / `gcloud` / `az` | `aws` / `gcloud` / `az` | Client-side KMS CLI for a `blobs.kms_key:` URL scheme; ensured on `PATH`. |
+
+> **Known gap — nix `formatter`.** anodizer's nix publisher currently declares
+> only its git/ssh requirements, not the `formatter` binary
+> (`alejandra` / `nixfmt`), so `anodizer tools` does not yet report it. The map
+> above already routes `alejandra` for when anodizer closes that gap, but until
+> then a config whose nix publisher sets `formatter: alejandra` must keep
+> `alejandra` in the explicit `install:` list.
 
 #### Dependency version pins (env vars)
 

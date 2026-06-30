@@ -1,17 +1,12 @@
 #!/usr/bin/env bats
 # install-wix.bats — unit tests for the WiX installer in
-# scripts/install/deps.sh AND the msis: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # WiX drives anodizer's `msis:` stage (crates/stage-msi). On Windows the v4 CLI
 # is the `wix` dotnet global tool; WiX itself is Windows-only and EULA-gated, so
 # on Linux the stage uses `wixl` (msitools, apt) from the v3-dialect .wxs. macOS
-# has no MSI path and is skipped (warn, don't fail).
-#
-# anodizer's msi stage is dialect-aware: a v3-dialect .wxs (or `version: v3`/
-# `wixl`) selects candle+light (choco wixtoolset on Windows), a v4-dialect .wxs
-# (or `version: v4`, or unknown) selects the `wix` dotnet global tool. Both use
-# wixl on Linux. auto-detect emits the matching token (`wix3` vs `wix`).
+# has no MSI path and is skipped (warn, don't fail). The v3 dialect installs
+# candle+light via choco wixtoolset on Windows.
 #
 # Stubs dotnet + choco so no network is needed. Covers:
 #
@@ -20,12 +15,12 @@
 #   2. WIX_VERSION override → forwarded to --version
 #   3. Linux → queues the wixl apt package, exits 0
 #   4. macOS → skipped (no MSI path), exits 0
-#   5. auto-detect: msis: config on Windows AND Linux emits the wix dep
-#   6. auto-detect: msis: config on macOS warns + omits it
-#   7. Windows (v3) → choco wixtoolset (candle+light), candle bin dir on PATH
-#   8. wix3 Linux → wixl; wix3 macOS → skipped
-#   9. auto-detect dialect: version v3/wixl → wix3; version v4 → wix;
-#      namespace sniff (v3 ns → wix3, v4 ns / missing .wxs → wix)
+#   5. Windows (v3) → choco wixtoolset (candle+light), candle bin dir on PATH
+#   6. wix3 Linux → wixl; wix3 macOS → skipped
+#
+# Dialect resolution (version: / .wxs namespace sniff → wix vs wix3) now lives
+# in `anodizer tools`; the action's wix→wix and candle/light/wixl→wix3
+# translation is covered by auto-detect-deps.bats.
 
 load test_helper
 
@@ -131,42 +126,6 @@ _run_install_wix() {
     _run_install_wix RUNNER_OS="macOS"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPED"* ]]
-}
-
-# ── auto-detect wiring ────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: msis: config on Windows emits the wix dep" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs' "Windows"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*wix' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: msis: config on Linux emits the wix dep (wixl path)" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*wix' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: msis: config on macOS omits wix (OS-incompatible)" {
-    # macOS has no MSI build path (needs WiX on Windows or wixl on Linux), so the
-    # dep is silently omitted at default verbosity.
-    _run_auto_detect $'msis:\n  - wxs: app.wxs' "macOS"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=' "$GITHUB_OUTPUT"
-    ! grep -q 'wix' "$GITHUB_OUTPUT"
 }
 
 # ── wix3 (v3 dialect): Windows → choco wixtoolset (candle+light) ──────────
@@ -313,95 +272,4 @@ _curated_bin_without_candle() {
     _run_install_wix3 RUNNER_OS="macOS"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIPPED"* ]]
-}
-
-# ── auto-detect dialect selection ─────────────────────────────────────────
-
-# Like _run_auto_detect but also writes a .wxs fixture so the namespace sniff
-# has a file to read. $3 is the .wxs body (optional).
-_run_auto_detect_with_wxs() {
-    local cfg_body="$1" runner_os="$2" wxs_body="${3:-}"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    if [ -n "$wxs_body" ]; then
-        printf '%s\n' "$wxs_body" > "${workdir}/app.wxs"
-    fi
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: explicit version: v3 → wix3 dep on Windows" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs\n    version: v3' "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix3(,|$)' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: explicit version: v4 → wix (v4) dep, not wix3" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs\n    version: v4' "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix(,|$)' "$GITHUB_OUTPUT"
-    ! grep -q 'wix3' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: version: wixl → wix3 (candle+light is the v3-dialect Windows fallback)" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs\n    version: wixl' "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix3(,|$)' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: no version + v3-namespace .wxs sniff → wix3" {
-    _run_auto_detect_with_wxs \
-        $'msis:\n  - wxs: app.wxs' "Windows" \
-        '<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"></Wix>'
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix3(,|$)' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: no version + v4-namespace .wxs sniff → wix (default)" {
-    _run_auto_detect_with_wxs \
-        $'msis:\n  - wxs: app.wxs' "Windows" \
-        '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"></Wix>'
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix(,|$)' "$GITHUB_OUTPUT"
-    ! grep -q 'wix3' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: no version + missing .wxs file → wix (v4 default)" {
-    _run_auto_detect $'msis:\n  - wxs: nonexistent.wxs' "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix(,|$)' "$GITHUB_OUTPUT"
-    ! grep -q 'wix3' "$GITHUB_OUTPUT"
-}
-
-# ── Test: a mixed v3+v4 msis: block must emit BOTH tokens ─────────────────
-# anodizer resolves WiX version PER msis: entry (stage-msi env_requirements
-# loops per entry), so a block with one v3 and one v4 entry needs BOTH
-# toolchains. The old `head -1` emitted only one, leaving the other entry's MSI
-# to hard-fail at release.
-@test "auto-detect: mixed v3+v4 msis: block emits BOTH wix3 and wix" {
-    _run_auto_detect \
-        $'msis:\n  - wxs: a.wxs\n    version: v3\n  - wxs: b.wxs\n    version: v4' \
-        "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix3(,|$)' "$GITHUB_OUTPUT"
-    grep -qE '^deps=([^=]*,)?wix(,|$)' "$GITHUB_OUTPUT"
-}
-
-# ── SUGGESTION tests: case/format-insensitive v3 parsing ──────────────────
-
-@test "auto-detect: version: V3 (uppercase) → wix3" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs\n    version: V3' "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix3(,|$)' "$GITHUB_OUTPUT"
-}
-
-@test "auto-detect: version: 3 (bare) → wix3" {
-    _run_auto_detect $'msis:\n  - wxs: app.wxs\n    version: 3' "Windows"
-    [ "$status" -eq 0 ]
-    grep -qE '^deps=([^=]*,)?wix3(,|$)' "$GITHUB_OUTPUT"
 }

@@ -64,7 +64,10 @@ inputs:
   # ---------------------------------------------------------------------------
   install:
     description: >
-      Comma-separated list of build/pipeline dependencies to install.
+      Explicit comma-separated list of build/pipeline dependencies to install,
+      bypassing auto-detection. Use this when the job does NOT run the pipeline
+      (so `anodizer tools` has nothing to report) — e.g. a `--preflight-secrets`
+      key-load check — or to force a specific tool on.
       Supported: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig, node,
       cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
       rcodesign, wix, wix3, pkgbuild.
@@ -77,20 +80,18 @@ inputs:
     required: false
   auto-install:
     description: >
-      Parse the anodizer config in the workdir (`.anodizer.yaml` or any
-      of the binary's other discovery candidates, including the TOML
-      variants) and automatically install the
-      dependencies needed by the configured stages (nfpm, makeself, snapcraft,
-      rpmbuild for srpm, cosign for any sign block whose cmd is cosign and for
-      docker_signs:, syft for sboms, nsis, create-dmg (genisoimage on Linux),
-      flatpak-builder, upx, zig+cargo-zigbuild for cross-compilation, alejandra
-      when the nix publisher requests it as the formatter, linuxdeploy + its
-      appimage plugin for appimages:, rcodesign for notarize.macos:, WiX for
-      msis: (dialect-aware — wixl on Linux; on Windows the v3 dialect installs
-      candle+light via choco wixtoolset, the v4 dialect installs the `wix`
-      dotnet global tool, selected from the msis: `version:` or, when unset,
-      the referenced .wxs file's XML namespace) — and pkgbuild for pkgs: —
-      native pkgbuild on macOS, the xar+mkbom flat-package toolchain on Linux).
+      Derive and install the external tools the configured pipeline needs by
+      asking the engine itself — `anodizer tools --json` — rather than
+      re-parsing the config in shell (which drifts from anodizer's truth).
+      The run's scope flags (`--publish-only`, `--skip`, `--publishers`,
+      `-f/--config`) are read from `args` and forwarded, so the installed set
+      matches exactly the stages this job runs (a publish-only job never
+      installs build-only tools, and `--skip=npm` drops node). Each reported
+      binary is mapped to the matching installer; tools already on PATH or
+      provided by the runner (git, gpg, ssh, docker, cargo) are left alone, and
+      a required tool with no install recipe is reported as a warning instead
+      of being silently skipped. Set `install:` instead when the job does not
+      run the pipeline.
     default: "false"
     required: false
   install-rust:
@@ -502,58 +503,11 @@ runs:
       run: "${GITHUB_ACTION_PATH}/scripts/rust/sccache-probe.sh"
 
     # -------------------------------------------------------------------------
-    # Dependency installation
-    # -------------------------------------------------------------------------
-    - name: Auto-detect dependencies from .anodizer.yaml
-      if: inputs.auto-install == 'true'
-      id: auto-detect
-      shell: bash
-      working-directory: ${{ inputs.workdir }}
-      run: "${GITHUB_ACTION_PATH}/scripts/install/auto-detect-deps.sh"
-
-    - name: Emit determinism dependency set
-      if: inputs.determinism == 'true'
-      id: det-deps
-      shell: bash
-      run: "${GITHUB_ACTION_PATH}/scripts/install/determinism-deps.sh"
-
-    - name: Install dependencies
-      if: inputs.install != '' || steps.auto-detect.outputs.deps != '' || steps.det-deps.outputs.deps != ''
-      shell: bash
-      env:
-        EXPLICIT_INSTALL: ${{ inputs.install }}
-        AUTO_INSTALL: ${{ steps.auto-detect.outputs.deps }}
-        DETERMINISM_INSTALL: ${{ steps.det-deps.outputs.deps }}
-      run: "${GITHUB_ACTION_PATH}/scripts/install/deps.sh"
-
-    # -------------------------------------------------------------------------
-    # Key material
-    # -------------------------------------------------------------------------
-    - name: Import GPG private key
-      if: inputs.gpg-private-key != ''
-      shell: bash
-      env:
-        GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
-      run: "${GITHUB_ACTION_PATH}/scripts/keys/gpg.sh"
-
-    - name: Provision apk signing keys
-      if: inputs.apk-private-key != ''
-      shell: bash
-      working-directory: ${{ inputs.workdir }}
-      env:
-        APK_PRIVATE_KEY_INPUT: ${{ inputs.apk-private-key }}
-      run: "${GITHUB_ACTION_PATH}/scripts/keys/apk.sh"
-
-    - name: Write cosign key
-      if: inputs.cosign-key != ''
-      shell: bash
-      working-directory: ${{ inputs.workdir }}
-      env:
-        COSIGN_KEY_CONTENTS: ${{ inputs.cosign-key }}
-      run: "${GITHUB_ACTION_PATH}/scripts/keys/cosign.sh"
-
-    # -------------------------------------------------------------------------
-    # Installation — Path A: from workflow artifact
+    # Install anodizer — runs BEFORE dependency auto-detection so the binary
+    # exists when auto-detect-deps.sh asks `anodizer tools` what the configured
+    # pipeline needs.
+    #
+    # Path A: from a workflow artifact.
     # -------------------------------------------------------------------------
     - name: Resolve artifact run ID
       if: steps.plan.outputs.install_method == 'artifact' && inputs.artifact-run-id != ''
@@ -624,6 +578,59 @@ runs:
         BIN: ${{ steps.platform.outputs.bin }}
         FROM_BRANCH: ${{ inputs.from-branch }}
       run: "${GITHUB_ACTION_PATH}/scripts/install/from-source.sh"
+
+    # -------------------------------------------------------------------------
+    # Dependency installation
+    # -------------------------------------------------------------------------
+    - name: Auto-detect dependencies from .anodizer.yaml
+      if: inputs.auto-install == 'true'
+      id: auto-detect
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        ANODIZER_ARGS: ${{ inputs.args }}
+      run: "${GITHUB_ACTION_PATH}/scripts/install/auto-detect-deps.sh"
+
+    - name: Emit determinism dependency set
+      if: inputs.determinism == 'true'
+      id: det-deps
+      shell: bash
+      run: "${GITHUB_ACTION_PATH}/scripts/install/determinism-deps.sh"
+
+    - name: Install dependencies
+      if: inputs.install != '' || steps.auto-detect.outputs.deps != '' || steps.det-deps.outputs.deps != ''
+      shell: bash
+      env:
+        EXPLICIT_INSTALL: ${{ inputs.install }}
+        AUTO_INSTALL: ${{ steps.auto-detect.outputs.deps }}
+        DETERMINISM_INSTALL: ${{ steps.det-deps.outputs.deps }}
+      run: "${GITHUB_ACTION_PATH}/scripts/install/deps.sh"
+
+    # -------------------------------------------------------------------------
+    # Key material
+    # -------------------------------------------------------------------------
+    - name: Import GPG private key
+      if: inputs.gpg-private-key != ''
+      shell: bash
+      env:
+        GPG_PRIVATE_KEY: ${{ inputs.gpg-private-key }}
+      run: "${GITHUB_ACTION_PATH}/scripts/keys/gpg.sh"
+
+    - name: Provision apk signing keys
+      if: inputs.apk-private-key != ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        APK_PRIVATE_KEY_INPUT: ${{ inputs.apk-private-key }}
+      run: "${GITHUB_ACTION_PATH}/scripts/keys/apk.sh"
+
+    - name: Write cosign key
+      if: inputs.cosign-key != ''
+      shell: bash
+      working-directory: ${{ inputs.workdir }}
+      env:
+        COSIGN_KEY_CONTENTS: ${{ inputs.cosign-key }}
+      run: "${GITHUB_ACTION_PATH}/scripts/keys/cosign.sh"
 
     # -------------------------------------------------------------------------
     # Workspace resolution (monorepo tag → crate)

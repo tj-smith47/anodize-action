@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # install-node.bats — unit tests for the node installer in
-# scripts/install/deps.sh AND the npms: auto-detect wiring in
-# scripts/install/auto-detect-deps.sh.
+# scripts/install/deps.sh.
 #
 # node/npm back anodizer's `npms:` publisher, which publishes the npm
 # metapackage via npm Trusted Publishing (OIDC) — a handshake needing
@@ -21,8 +20,7 @@
 #   3. NODE_VERSION override → forwarded into the download URL + tarball name
 #   4. macOS  → node via brew
 #   5. Windows → choco install nodejs
-#   6. auto-detect: `npms:` config emits the node dep
-#   7. npm floor: every install_node path upgrades npm to >= 11.5.1 via
+#   6. npm floor: every install_node path upgrades npm to >= 11.5.1 via
 #      `npm install -g npm@$NPM_VERSION` (the npm node bundles is below the
 #      Trusted-Publishing OIDC floor), with NPM_VERSION honoured as an override
 
@@ -297,28 +295,4 @@ _run_install_node() {
         NPM_VERSION="11.9.0"
     [ "$status" -eq 0 ]
     grep -q 'npm install -g npm@11.9.0' "$NPM_LOG"
-}
-
-# ── auto-detect wiring ─────────────────────────────────────────────────────
-
-_run_auto_detect() {
-    # Runs auto-detect-deps.sh against a temp workdir holding $1 as
-    # .anodizer.yaml, on the runner OS given by $2.
-    local cfg_body="$1" runner_os="$2"
-    local workdir="${_TEST_HOME}/workdir"
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    printf '%s\n' "$cfg_body" > "${workdir}/.anodizer.yaml"
-    run env \
-        GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
-        NO_COLOR=1 \
-        RUNNER_OS="$runner_os" \
-        bash -c "cd '${workdir}' && bash '${REPO_ROOT}/scripts/install/auto-detect-deps.sh'"
-}
-
-@test "auto-detect: npms: config emits the node dep" {
-    _run_auto_detect $'npms:\n  - name: anodizer\n    scope: tj-smith47' "Linux"
-    [ "$status" -eq 0 ]
-    grep -q '^deps=.*node' "$GITHUB_OUTPUT"
-    [[ "$output" == *"detected"*"node"* ]]
 }
