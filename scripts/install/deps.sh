@@ -273,6 +273,39 @@ sha_from_checksums() {
     echo "$sha"
 }
 
+# Number of fetch attempts on the tool-DOWNLOAD path (override for tests/tuning).
+ANODIZER_FETCH_ATTEMPTS="${ANODIZER_FETCH_ATTEMPTS:-3}"
+
+# Retry a download command with exponential backoff. Dependency installs pull
+# tool tarballs/binaries/checksums over the network; a single transient blip
+# (e.g. curl exit 18 — partial transfer) otherwise aborts the whole install,
+# and on a determinism shard surfaces as a SPURIOUS determinism failure even
+# though the bytes that half-arrived are irrelevant once re-fetched. Re-attempt
+# a few times before giving up; on the final attempt the wrapped command's own
+# non-zero exit propagates unchanged, so `set -e` and a trailing
+# `|| gha_fail …` still fire exactly as before.
+#
+# This wraps only the DOWNLOAD/INSTALL path. The determinism VERIFICATION loop
+# in scripts/determinism/run-harness.sh deliberately documents "No retry loop
+# here" — a retry there would mask real drift — and is left untouched.
+#
+#   fetch_retry anodizer::fetch "$url" "$dest"
+fetch_retry() {
+    local attempt=1 delay=2 rc=0
+    while true; do
+        rc=0
+        "$@" || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        if [ "$attempt" -ge "$ANODIZER_FETCH_ATTEMPTS" ]; then
+            return "$rc"
+        fi
+        anodizer::vdetail "fetch failed (exit ${rc}); retry ${attempt}/$((ANODIZER_FETCH_ATTEMPTS - 1)) in ${delay}s"
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+    done
+}
+
 # ── per-dep installers ───────────────────────────────────────────────
 
 nfpm_install_linux() {
@@ -290,8 +323,8 @@ nfpm_install_linux() {
     local install_dir="${RUNNER_TEMP:-/tmp}/nfpm"
     mkdir -p "$install_dir"
 
-    anodizer::fetch "${base}/${tarball}" "${install_dir}/${tarball}"
-    anodizer::fetch "${base}/checksums.txt" "${install_dir}/checksums.txt"
+    fetch_retry anodizer::fetch "${base}/${tarball}" "${install_dir}/${tarball}"
+    fetch_retry anodizer::fetch "${base}/checksums.txt" "${install_dir}/checksums.txt"
     # Verify against the release's signed checksums.txt — no hardcoded sha to
     # drift, the tag is immutable so the bytes are stable.
     local expected
@@ -398,7 +431,7 @@ snapcraft_install_linux_pip() {
 
     local workdir="${RUNNER_TEMP:-/tmp}/snapcraft-pip"
     mkdir -p "$workdir"
-    anodizer::fetch "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" "${workdir}/uv.lock" \
+    fetch_retry anodizer::fetch "https://raw.githubusercontent.com/canonical/snapcraft/${version}/uv.lock" "${workdir}/uv.lock" \
         || gha_fail "snapcraft: failed to fetch uv.lock for tag ${version} — does the tag exist upstream?"
     snapcraft_lock_to_constraints "${workdir}/uv.lock" > "${workdir}/constraints.txt" \
         || gha_fail "snapcraft: could not derive pip constraints from uv.lock for ${version}"
@@ -494,7 +527,7 @@ cosign_install_download_verify() {
     local bin="$1" sha_cmd="$2" b64_decode="$3"
     local version="${COSIGN_VERSION:-v2.4.1}"
     local base="https://github.com/sigstore/cosign/releases/download/${version}"
-    anodizer::fetch "${base}/${bin}" /tmp/cosign
+    fetch_retry anodizer::fetch "${base}/${bin}" /tmp/cosign
     # Sigstore publishes the keyless .pem and .sig as base64-encoded files
     # (single-line, starts with `LS0tLS1CRUdJTiB...`). Decode before
     # handing to cosign — its PEM parser does not strip base64, so a raw
@@ -506,9 +539,9 @@ cosign_install_download_verify() {
     # bare curl — wrapping curl alone would swallow the piped bytes. `set -o
     # pipefail` inside the wrapped shell preserves the outer pipefail contract
     # so a curl failure mid-pipe still aborts.
-    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.pem' | ${b64_decode} > /tmp/cosign.pem"
-    anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.sig' | ${b64_decode} > /tmp/cosign.sig"
-    anodizer::fetch "${base}/cosign_checksums.txt" /tmp/cosign_checksums.txt
+    fetch_retry anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.pem' | ${b64_decode} > /tmp/cosign.pem"
+    fetch_retry anodizer::run_quiet bash -c "set -o pipefail; curl -sSfL '${base}/${bin}-keyless.sig' | ${b64_decode} > /tmp/cosign.sig"
+    fetch_retry anodizer::fetch "${base}/cosign_checksums.txt" /tmp/cosign_checksums.txt
 
     # SHA256 first — bootstraps trust without requiring cosign-to-verify-cosign.
     local expected
@@ -573,11 +606,21 @@ cosign_install_windows() {
     # SHA256 verification mirrors the Linux path.
     local version="${COSIGN_VERSION:-v2.4.1}"
     local base="https://github.com/sigstore/cosign/releases/download/${version}"
-    local bin="cosign-windows-amd64.exe"
+    # Sigstore ships a native cosign-windows-arm64.exe; pick it on an arm
+    # runner so windows-11-arm runs cosign natively instead of under x64
+    # emulation. The RUNNER_ARCH→arch mapping mirrors scripts/platform/detect.sh
+    # so the two stay consistent.
+    local arch
+    case "$RUNNER_ARCH" in
+        X64)   arch=amd64 ;;
+        ARM64) arch=arm64 ;;
+        *)     gha_fail "Unsupported Windows arch for cosign: $RUNNER_ARCH" ;;
+    esac
+    local bin="cosign-windows-${arch}.exe"
     local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
     mkdir -p "$install_dir"
-    anodizer::fetch "${base}/${bin}" "${install_dir}/cosign.exe"
-    anodizer::fetch "${base}/cosign_checksums.txt" "${install_dir}/cosign_checksums.txt"
+    fetch_retry anodizer::fetch "${base}/${bin}" "${install_dir}/cosign.exe"
+    fetch_retry anodizer::fetch "${base}/cosign_checksums.txt" "${install_dir}/cosign_checksums.txt"
 
     local expected actual
     expected=$(sha_from_checksums "${install_dir}/cosign_checksums.txt" "$bin")
@@ -590,7 +633,7 @@ cosign_install_windows() {
         || gha_fail "cosign SHA256 mismatch (expected ${expected}, got ${actual})"
 
     gha_add_path "$install_dir"
-    anodizer::vok "cosign ${version} installed at ${install_dir}/cosign.exe"
+    anodizer::vok "cosign ${version} (${arch}) installed at ${install_dir}/cosign.exe"
     _INSTALLER_EMITTED_OK=1
 }
 
@@ -606,11 +649,20 @@ install_syft() {
     case "$RUNNER_OS" in
         Linux)
             local version="${SYFT_VERSION:-v1.18.0}"
-            anodizer::fetch "https://raw.githubusercontent.com/anchore/syft/main/install.sh" /tmp/syft-install.sh
+            fetch_retry anodizer::fetch "https://raw.githubusercontent.com/anchore/syft/main/install.sh" /tmp/syft-install.sh
             chmod +x /tmp/syft-install.sh
             anodizer::run_quiet sudo /tmp/syft-install.sh -b /usr/local/bin "${version}"
             ;;
         macOS)   brew_install syft SYFT_VERSION ;;
+        # No native windows-arm64 syft download here: the choco syft package
+        # installs the amd64 binary, and the reference pin v1.18.0 (the Linux
+        # default) predates upstream's windows_arm64 release assets, which first
+        # shipped ~v1.43. On windows-11-arm choco's amd64 syft runs under x64
+        # emulation. Acceptable: SBOM bytes are a pure function of input + syft
+        # version, and both determinism runs on a shard take this same path, so
+        # the within-shard comparison is unaffected. (Switching arm64 to a
+        # native direct download would diverge the syft version per-arch and
+        # require an arm64-only sha pin — a version-policy change, not a fix.)
         Windows) choco_install syft SYFT_VERSION ;;
     esac
 }
@@ -629,13 +681,17 @@ install_zig() {
             local base="https://ziglang.org/download/${version}"
             # ziglang.org does not publish per-tarball .sha256 sidecars;
             # canonical shasums live in download/index.json.
-            anodizer::fetch "${base}/${tarball}" /tmp/zig.tar.xz
+            fetch_retry anodizer::fetch "${base}/${tarball}" /tmp/zig.tar.xz
             local expected
-            # NOT routed through run_quiet: this curl's stdout is consumed by the
-            # `$(... | jq ...)` capture, which run_quiet would redirect into its
-            # log file — swallowing the shasum. It is already quiet on success
-            # (stdout goes to jq, not the terminal).
-            expected=$(curl -sSfL "https://ziglang.org/download/index.json" \
+            # NOT routed through anodizer::fetch/run_quiet: this curl's stdout is
+            # consumed by the `$(... | jq ...)` capture, which a file-writing
+            # fetch helper would swallow. Resilience comes from curl's own
+            # --retry/--retry-all-errors instead — curl retries internally and
+            # emits only the final successful body, so the jq pipe never sees a
+            # partial transfer (the fetch_retry loop can't wrap a pipe-into-
+            # capture without concatenating bytes across attempts).
+            expected=$(curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 \
+                "https://ziglang.org/download/index.json" \
                 | jq -r --arg v "$version" --arg k "${arch}-linux" \
                     '.[$v][$k].shasum // empty')
             [ -n "$expected" ] \
@@ -666,13 +722,17 @@ install_node() {
             # nodejs.org publishes per-release SHASUMS256.txt (`<sha>  <file>`
             # per line) rather than per-tarball sidecars; verify against it so
             # no sha is hardcoded — the dated dist dir is immutable.
-            anodizer::fetch "${base}/${tarball}" /tmp/node.tar.xz
+            fetch_retry anodizer::fetch "${base}/${tarball}" /tmp/node.tar.xz
             local expected
-            # NOT routed through run_quiet: this curl's stdout feeds the
-            # `$(... | grep ...)` capture, which run_quiet would redirect into
-            # its log file — swallowing the shasum. It is already quiet on
-            # success (stdout goes to grep, not the terminal).
-            expected=$(curl -sSfL "${base}/SHASUMS256.txt" \
+            # NOT routed through anodizer::fetch/run_quiet: this curl's stdout
+            # feeds the `$(... | grep ...)` capture, which a file-writing fetch
+            # helper would swallow. Resilience comes from curl's own
+            # --retry/--retry-all-errors instead — curl retries internally and
+            # emits only the final successful body, so the grep pipe never sees a
+            # partial transfer (the fetch_retry loop can't wrap a pipe-into-
+            # capture without concatenating bytes across attempts).
+            expected=$(curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 \
+                "${base}/SHASUMS256.txt" \
                 | grep " ${tarball}\$" | awk '{print $1}')
             [ -n "$expected" ] \
                 || gha_fail "node sha256 missing from SHASUMS256.txt for ${tarball}"
@@ -718,6 +778,11 @@ install_upx() {
     case "$RUNNER_OS" in
         Linux)   apt_queue upx upx ;;
         macOS)   brew_install upx UPX_VERSION ;;
+        # upstream upx publishes only win32/win64 (both x86) assets — there is
+        # no windows-arm64 build — so choco's x64 upx is the only option on
+        # windows-11-arm, running under x64 emulation. Acceptable: UPX output is
+        # a deterministic function of input + version, identical across a
+        # shard's two determinism runs.
         Windows) choco_install upx UPX_VERSION ;;
     esac
 }
@@ -917,7 +982,7 @@ install_alejandra() {
                 sha="$override_sha"
             fi
             local bin="alejandra-${arch}-unknown-linux-musl"
-            anodizer::fetch "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" /tmp/alejandra
+            fetch_retry anodizer::fetch "https://github.com/kamadorueda/alejandra/releases/download/${version}/${bin}" /tmp/alejandra
             anodizer::run_quiet bash -c "echo '${sha}  /tmp/alejandra' | sha256sum -c -"
             sudo install -m 0755 /tmp/alejandra /usr/local/bin/alejandra
             rm -f /tmp/alejandra
@@ -968,12 +1033,12 @@ install_linuxdeploy() {
             mkdir -p "$install_dir"
 
             local ld_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/${version}/linuxdeploy-${arch}.AppImage"
-            anodizer::fetch "$ld_url" "${install_dir}/linuxdeploy"
+            fetch_retry anodizer::fetch "$ld_url" "${install_dir}/linuxdeploy"
             anodizer::run_quiet bash -c "echo '${ld_sha}  ${install_dir}/linuxdeploy' | sha256sum -c -"
             chmod +x "${install_dir}/linuxdeploy"
 
             local plugin_url="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/${plugin_version}/linuxdeploy-plugin-appimage-${arch}.AppImage"
-            anodizer::fetch "$plugin_url" "${install_dir}/linuxdeploy-plugin-appimage"
+            fetch_retry anodizer::fetch "$plugin_url" "${install_dir}/linuxdeploy-plugin-appimage"
             anodizer::run_quiet bash -c "echo '${plugin_sha}  ${install_dir}/linuxdeploy-plugin-appimage' | sha256sum -c -"
             chmod +x "${install_dir}/linuxdeploy-plugin-appimage"
 
@@ -1028,7 +1093,7 @@ install_rcodesign() {
             local tarball="apple-codesign-${version}-${triple}.tar.gz"
             # The release tag is URL-encoded (`apple-codesign/<ver>` → `%2F`).
             local url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${version}/${tarball}"
-            anodizer::fetch "$url" "${install_dir}/${tarball}"
+            fetch_retry anodizer::fetch "$url" "${install_dir}/${tarball}"
             anodizer::run_quiet bash -c "echo '${sha}  ${install_dir}/${tarball}' | sha256sum -c -"
             # `rcodesign` sits one dir deep (apple-codesign-<ver>-<triple>/rcodesign);
             # strip the leading component and extract only the binary.
