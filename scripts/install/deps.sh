@@ -344,7 +344,12 @@ install_nfpm() {
     case "$RUNNER_OS" in
         Linux)   nfpm_install_linux ;;
         macOS)   brew_install goreleaser/tap/nfpm NFPM_VERSION ;;
-        Windows) choco_install nfpm NFPM_VERSION ;;
+        # nfpm has no chocolatey package, and nfpm's stage (deb/rpm/apk
+        # packaging) is never host-native on Windows — the determinism
+        # partition builds msi/nsis there, not nfpm. Skip like the other
+        # Linux/macOS-only packagers (makeself/rpmbuild/snapcraft) rather than
+        # hard-failing on a missing choco source.
+        Windows) skip_unsupported_os nfpm "Linux/macOS only (no chocolatey package; deb/rpm packaging runs on Unix runners)" ;;
     esac
 }
 

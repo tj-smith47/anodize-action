@@ -5,7 +5,8 @@
 # nfpm drives anodizer's deb/rpm/apk publishers. On Linux it installs via a
 # direct, checksum-verified GitHub-release download (mirroring cosign/syft) so
 # no third-party apt repo and no extra `apt-get update` are introduced; macOS
-# uses the goreleaser brew tap and Windows uses choco.
+# uses the goreleaser brew tap. Windows is skipped: nfpm has no chocolatey
+# package and its deb/rpm/apk stage is never host-native there.
 #
 # Stubs curl, sha256sum, tar, brew, and choco so no network or root is needed.
 # Covers:
@@ -15,7 +16,7 @@
 #   2. Linux arm64  → the asymmetric arch name (arm64, not aarch64) is used
 #   3. NFPM_VERSION override → forwarded into the download URL + tarball name
 #   4. macOS  → goreleaser/tap/nfpm via brew
-#   5. Windows → choco install nfpm
+#   5. Windows → skipped (no choco package; deb/rpm packaging is Unix-only)
 
 load test_helper
 
@@ -179,10 +180,16 @@ _run_install_nfpm() {
     grep -q "brew install goreleaser/tap/nfpm" "$BREW_LOG"
 }
 
-# ── Test 5: Windows → choco ───────────────────────────────────────────────
+# ── Test 5: Windows → skipped (no choco package) ──────────────────────────
 
-@test "nfpm: Windows installs via choco" {
+@test "nfpm: Windows is skipped (no chocolatey package), exits 0" {
     _run_install_nfpm RUNNER_OS="Windows" RUNNER_ARCH="X64"
     [ "$status" -eq 0 ]
-    grep -q "choco install nfpm" "$CHOCO_LOG"
+    # nfpm has no chocolatey package and its deb/rpm/apk stage is never
+    # host-native on Windows, so the installer skips rather than attempting
+    # (and hard-failing) a choco install.
+    if [ -f "$CHOCO_LOG" ]; then
+        run grep -q "nfpm" "$CHOCO_LOG"
+        [ "$status" -ne 0 ]
+    fi
 }
