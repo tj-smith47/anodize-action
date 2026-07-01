@@ -7,13 +7,18 @@
 # installer therefore lands BOTH the `flatpak` CLI and `flatpak-builder`,
 # adds the flathub remote, and pre-stages the org.freedesktop.Platform +
 # Sdk runtimes the manifest pins (default branch 24.08, override via
-# FLATPAK_RUNTIME_VERSION). Flatpak is Linux-only.
+# FLATPAK_RUNTIME_VERSION) for EACH arch in FLATPAK_ARCHES (default
+# `x86_64 aarch64`). Because flatpak-builder executes the manifest's
+# build-commands inside the target-arch sandbox, cross-bundling the aarch64
+# app on an x86_64 runner also needs qemu-user-static + binfmt-support (the
+# static aarch64 emulator, registered with the F flag for bwrap). Flatpak is
+# Linux-only.
 #
 # Stubs sudo (which fronts both `apt-get install` and `flatpak`) so no root,
 # apt, or network is needed. Covers:
 #
-#   1. default runtime on Linux → flathub remote added + Platform//24.08 +
-#      Sdk//24.08 installed, exits 0
+#   1. default runtime on Linux → flathub remote + Platform//24.08 +
+#      Sdk//24.08 staged for BOTH arches, qemu-user-static queued, exits 0
 #   2. FLATPAK_RUNTIME_VERSION override → that branch pre-staged, exits 0
 #   3. macOS / Windows → skipped (flatpak is Linux-only), exits 0
 #
@@ -99,17 +104,29 @@ _run_dispatch_flatpak() {
 
 # ── Test 1: default runtime on Linux → remote + runtimes staged, exits 0 ───
 
-@test "flatpak: default runtime stages flathub remote + Platform//24.08 + Sdk//24.08 on Linux" {
+@test "flatpak: default runtime stages flathub remote + Platform//24.08 + Sdk//24.08 for both arches on Linux" {
     _run_install_flatpak RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
-    # apt batch installed both the CLI and the builder.
+    # apt batch installed the CLI, the builder, and the aarch64 cross-exec deps.
     grep -q 'apt-get install .*flatpak' "$SUDO_LOG"
     grep -q 'flatpak-builder' "$SUDO_LOG"
+    grep -q 'qemu-user-static' "$SUDO_LOG"
+    grep -q 'binfmt-support' "$SUDO_LOG"
     # flathub remote added idempotently.
     grep -q 'flatpak remote-add --if-not-exists flathub' "$SUDO_LOG"
-    # Both runtimes pinned to the default 24.08 branch.
-    grep -q 'org.freedesktop.Platform//24.08' "$SUDO_LOG"
-    grep -q 'org.freedesktop.Sdk//24.08' "$SUDO_LOG"
+    # Platform + Sdk pinned to the default 24.08 branch, staged for EACH arch
+    # (an x86_64 runner cross-bundling the aarch64 app needs the aarch64 base).
+    grep -q 'flatpak install .*--arch=x86_64 .*org.freedesktop.Platform//24.08 .*org.freedesktop.Sdk//24.08' "$SUDO_LOG"
+    grep -q 'flatpak install .*--arch=aarch64 .*org.freedesktop.Platform//24.08 .*org.freedesktop.Sdk//24.08' "$SUDO_LOG"
+}
+
+# ── Test: FLATPAK_ARCHES trims the staged arch set ─────────────────────────
+
+@test "flatpak: FLATPAK_ARCHES override stages only the requested arch" {
+    _run_install_flatpak RUNNER_OS="Linux" FLATPAK_ARCHES="x86_64"
+    [ "$status" -eq 0 ]
+    grep -q 'flatpak install .*--arch=x86_64 .*org.freedesktop.Sdk//24.08' "$SUDO_LOG"
+    ! grep -q -- '--arch=aarch64' "$SUDO_LOG"
 }
 
 # ── Test 2: FLATPAK_RUNTIME_VERSION override → that branch is pre-staged ────
@@ -137,8 +154,8 @@ _run_dispatch_flatpak() {
     # Snapshot the dispatch output — each `run` below clobbers $output.
     local out="$output"
     # The installer's own completion line is present exactly once.
-    [[ "$out" == *"flatpak + flatpak-builder + runtime"* ]]
-    run bash -c "printf '%s\n' \"\$1\" | grep -c 'flatpak + flatpak-builder + runtime'" _ "$out"
+    [[ "$out" == *"flatpak + flatpak-builder + qemu-user-static + runtime"* ]]
+    run bash -c "printf '%s\n' \"\$1\" | grep -c 'flatpak + flatpak-builder + qemu-user-static + runtime'" _ "$out"
     [ "$output" -eq 1 ]
     # Exactly one "flatpak installed" line total (apt_flush's, for the flatpak
     # apt package) — the generic dispatch duplicate must not add a second.

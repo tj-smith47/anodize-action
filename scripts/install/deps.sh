@@ -861,30 +861,52 @@ install_create_dmg() {
 # (org.freedesktop.Platform / org.freedesktop.Sdk) staged into a flatpak
 # installation before the build, or it fails resolving the base.
 #
+# The stage bundles EVERY Linux build arch anodizer produces (its gnu build
+# yields both x86_64 and aarch64), so the Platform + Sdk are staged for each
+# arch in FLATPAK_ARCHES — a runner cross-bundling the aarch64 app resolves
+# the aarch64 base and hard-fails on a missing org.freedesktop.Sdk/aarch64.
+# Cross-bundling also has to EXECUTE target-arch binaries: flatpak-builder
+# runs the manifest's build-commands inside the target-arch sandbox (bwrap +
+# the target Sdk's own /bin/sh), which an x86_64 host can only run through
+# qemu-user emulation. qemu-user-static ships the STATIC qemu-aarch64 (bwrap's
+# sandbox carries no host libraries) and, via binfmt-support, registers the
+# handler with the F ("fix-binary") flag so it survives the sandbox's mount
+# namespace — without it flatpak-builder dies with
+# `bwrap: execvp /bin/sh: Exec format error`.
+#
 # RUNTIME_VERSION tracks the branch anodizer's flatpaks: blocks pin
 # (`runtime_version: "24.08"`); override with FLATPAK_RUNTIME_VERSION to
 # pre-stage a different branch. The runtimes come from flathub, so the
 # flathub remote is added first (idempotent via --if-not-exists).
 FLATPAK_DEFAULT_RUNTIME_VERSION="24.08"
+FLATPAK_DEFAULT_ARCHES="x86_64 aarch64"
 install_flatpak() {
     case "$RUNNER_OS" in
         Linux)
             # apt_queue + an inline flush: the runtime install below needs the
             # `flatpak` binary present, so the batch must land before it runs.
+            # qemu-user-static + binfmt-support enable the aarch64 sandbox exec
+            # described above; they queue with flatpak so one apt round installs all.
             apt_queue flatpak flatpak
             apt_queue flatpak-builder flatpak-builder
+            apt_queue qemu-user-static qemu-user-static
+            apt_queue binfmt-support binfmt-support
             apt_flush
             local runtime_version="${FLATPAK_RUNTIME_VERSION:-$FLATPAK_DEFAULT_RUNTIME_VERSION}"
+            local fp_arches="${FLATPAK_ARCHES:-$FLATPAK_DEFAULT_ARCHES}"
             # System-wide remote + runtimes so a non-root `flatpak-builder` and
             # the later `anodizer release` step share one installation.
             anodizer::run_quiet sudo flatpak remote-add --if-not-exists flathub \
                 https://flathub.org/repo/flathub.flatpakrepo \
                 || gha_fail "flatpak: adding the flathub remote failed"
-            anodizer::run_quiet sudo flatpak install -y --noninteractive flathub \
-                "org.freedesktop.Platform//${runtime_version}" \
-                "org.freedesktop.Sdk//${runtime_version}" \
-                || gha_fail "flatpak: installing org.freedesktop.Platform//${runtime_version} + Sdk failed"
-            anodizer::vok "flatpak + flatpak-builder + runtime ${runtime_version} (Platform + Sdk) installed"
+            local fp_arch
+            for fp_arch in $fp_arches; do
+                anodizer::run_quiet sudo flatpak install -y --noninteractive --arch="$fp_arch" flathub \
+                    "org.freedesktop.Platform//${runtime_version}" \
+                    "org.freedesktop.Sdk//${runtime_version}" \
+                    || gha_fail "flatpak: installing org.freedesktop.Platform + Sdk (${fp_arch}//${runtime_version}) failed"
+            done
+            anodizer::vok "flatpak + flatpak-builder + qemu-user-static + runtime ${runtime_version} (Platform + Sdk: ${fp_arches}) installed"
             _INSTALLER_EMITTED_OK=1
             ;;
         macOS|Windows) skip_unsupported_os flatpak-builder "Linux-only (flatpaks: config requires a Linux runner)" ;;

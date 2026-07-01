@@ -94,7 +94,7 @@ Translation from the binary anodizer reports to the installer the action runs:
 | `upx` | `upx` | |
 | `makensis` | `nsis` | |
 | `hdiutil` / `genisoimage` / `mkisofs` | `create-dmg` | The dmg stage's interchangeable binaries; any already on `PATH` (macOS `hdiutil`) satisfies it with no install. |
-| `flatpak`, `flatpak-builder` | `flatpak` | The flatpak installer provisions both. deps.sh skips it off Linux. |
+| `flatpak`, `flatpak-builder` | `flatpak` | The flatpak installer provisions both, plus the freedesktop Platform+SDK for each `FLATPAK_ARCHES` arch and `qemu-user-static`/`binfmt-support` so an x86_64 runner can cross-bundle the aarch64 app (flatpak-builder executes the manifest's build-commands inside the target-arch sandbox). deps.sh skips it off Linux. |
 | `linuxdeploy` | `linuxdeploy` | deps.sh skips it off Linux. |
 | `alejandra` | `alejandra` | nix publisher formatter. **See the gap note below.** |
 | `rcodesign` | `rcodesign` | Cross-platform notarization (`notarize.macos:`). |
@@ -130,6 +130,7 @@ Pass them via the job/step `env:` block.
 | `NSIS_VERSION` | (unpinned) | Pins makensis on macOS (brew) / nsis on Windows (choco). Linux installs via apt, unpinned. |
 | `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew). On Linux the dmg stage uses apt `genisoimage` (unpinned). |
 | `FLATPAK_RUNTIME_VERSION` | `24.08` | Branch of the freedesktop runtime + SDK pre-staged from flathub before `flatpak-builder` runs (Linux). |
+| `FLATPAK_ARCHES` | `x86_64 aarch64` | Space-separated Flatpak arches to stage the Platform+SDK for — anodizer's `flatpaks:` stage bundles every Linux build arch, so an x86_64 runner cross-bundling the aarch64 app needs its base staged too. Trim to a single arch (e.g. `x86_64`) if your config only ships one. |
 | `ALEJANDRA_VERSION` | `4.0.0` | Linux direct-download version. Overriding **requires** `ALEJANDRA_SHA256`. Pins brew on macOS. |
 | `ALEJANDRA_SHA256` | (built-in for the default version) | SHA256 of the alejandra binary; required alongside an `ALEJANDRA_VERSION` override. |
 | `LINUXDEPLOY_VERSION` | `1-alpha-20251107-1` | linuxdeploy + appimage-plugin download version (a dated tag, not `continuous`, so the bytes don't silently drift). Overriding **requires** `LINUXDEPLOY_SHA256` and `LINUXDEPLOY_PLUGIN_SHA256`. |
