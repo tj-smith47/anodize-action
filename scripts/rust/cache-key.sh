@@ -4,7 +4,9 @@
 # Key disambiguation: a from-source consumer must not collide with a
 # determinism shard (different feature sets / build profiles), and a
 # from-branch run keys on the branch slug so concurrent feature branches
-# don't share a cache.
+# don't share a cache. Determinism shards additionally key on the shard
+# label so same-host shards (the x86_64 + aarch64 Windows shards both run on
+# a Windows_NT-x64 host) don't compute an identical key and race to save it.
 #
 # Pre-create: Swatinem/rust-cache validates the `workspaces:` path exists
 # before restoring. On a cache-miss first run of from-branch the clone
@@ -15,7 +17,9 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 if [ "$DETERMINISM" = "true" ]; then
-    suffix=determinism
+    # Append the shard label (empty for a single, non-sharded determinism run)
+    # so same-host shards get distinct rust-cache keys instead of colliding.
+    suffix="determinism${SHARD_LABEL:+-${SHARD_LABEL}}"
 elif [ -n "$FROM_BRANCH" ]; then
     # Branch names can contain `/` and whitespace; GHA expressions have no
     # `replace()` so slug-formation happens here.

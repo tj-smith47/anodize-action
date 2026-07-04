@@ -479,6 +479,9 @@ runs:
         DETERMINISM: ${{ inputs.determinism }}
         FROM_BRANCH: ${{ inputs.from-branch }}
         WORKSPACE_DIR: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
+        # Same-OS determinism shards (the x86_64 + aarch64 Windows shards share a
+        # Windows_NT-x64 host) must key distinctly or they race to save one cache.
+        SHARD_LABEL: ${{ inputs.shard-label }}
       run: "${GITHUB_ACTION_PATH}/scripts/rust/cache-key.sh"
 
     - name: Cache cargo target dir
@@ -487,10 +490,19 @@ runs:
       with:
         key: anodizer-action-${{ steps.cache-key.outputs.suffix }}
         workspaces: ${{ inputs.from-branch != '' && format('{0}/anodizer-src', runner.temp) || inputs.workdir }}
+      env:
+        # rust-cache's bundled Node deps import the deprecated `punycode` core
+        # module (DEP0040); its node24 runtime honors the per-code suppression so
+        # genuine deprecations still surface. v2.9.1 is latest — no release drops it.
+        NODE_OPTIONS: --disable-warning=DEP0040
 
     - name: Set up sccache
       if: steps.plan.outputs.needs_sccache == 'true'
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.9
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      env:
+        # sccache-action's bundled Node deps import the deprecated `punycode`
+        # module (DEP0040); its node24 runtime honors the per-code suppression.
+        NODE_OPTIONS: --disable-warning=DEP0040
 
     # sccache is armed only for determinism / from-source. from-branch clones
     # a remote and builds it once per CI run with no chance of reuse, so the
