@@ -6,9 +6,10 @@
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-# rcodesign, wix, wix3, pkgbuild. (`wix` is the v4 dialect — `wix build` /
-# dotnet global tool; `wix3` is the v3 dialect — candle+light via choco
-# wixtoolset. Both fall back to wixl on Linux.)
+# rcodesign, wix, wix3, pkgbuild, clang-cl. (`wix` is the v4 dialect — `wix
+# build` / dotnet global tool; `wix3` is the v3 dialect — candle+light via
+# choco wixtoolset. Both fall back to wixl on Linux. `clang-cl` is
+# Windows-only — the determinism harness's pinned MSVC C/C++ compiler.)
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -1231,6 +1232,78 @@ install_wix3() {
     esac
 }
 
+# clang-cl provisioning for anodizer's determinism harness, which HARD-REQUIRES
+# clang-cl on PATH for windows-msvc builds — pinning it as the C/C++ compiler
+# fixes an intermittent cl.exe C-object codegen non-determinism (identical
+# source, differing object bytes across otherwise-identical runs). The
+# GitHub-hosted windows image ships LLVM 20.1.8 with its bin dir already on the
+# machine PATH (runner-images' own Install-LLVM.ps1 calls Add-MachinePathItem),
+# so the on-PATH check below is a no-op on stock images; the fallbacks exist
+# for images/configurations where that PATH entry is missing.
+install_clang_cl() {
+    case "$RUNNER_OS" in
+        Windows)
+            if command -v clang-cl > /dev/null 2>&1; then
+                anodizer::vok "clang-cl already on PATH"
+                _INSTALLER_EMITTED_OK=1
+                return 0
+            fi
+            # Two known locations ship clang-cl without adding it to PATH: the
+            # standalone LLVM package (the target of runner-images' own
+            # Install-LLVM.ps1) and Visual Studio's bundled ClangCL toolset
+            # component (Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset).
+            # CLANG_GLOB_ROOT_PREFIX rebases the search roots for hermetic
+            # tests (empty in production).
+            local prefix="${CLANG_GLOB_ROOT_PREFIX:-}" clangdir="" candidate
+            for candidate in "${prefix}/c/Program Files/LLVM/bin" \
+                             "${prefix}/c/Program Files/Microsoft Visual Studio"/*/*/VC/Tools/Llvm/x64/bin; do
+                if [ -x "${candidate}/clang-cl.exe" ]; then
+                    clangdir="$candidate"
+                    break
+                fi
+            done
+            if [ -n "$clangdir" ]; then
+                gha_add_path "$clangdir"
+                anodizer::vok "clang-cl found at ${clangdir}, added to PATH"
+                _INSTALLER_EMITTED_OK=1
+                return 0
+            fi
+            # Neither known location has it — install standalone LLVM (the
+            # same choco package runner-images' Install-LLVM.ps1 uses for x64)
+            # and discover its bin dir the way install_nsis/install_wix3 do: a
+            # choco package can land without its PATH shim reaching the
+            # current shell.
+            choco_install llvm LLVM_VERSION
+            if command -v clang-cl > /dev/null 2>&1; then
+                clangdir="$(dirname "$(command -v clang-cl)")"
+            elif command -v where.exe > /dev/null 2>&1; then
+                # `dirname ""` returns ".", which would poison PATH with the
+                # cwd; only resolve a dir when the lookup actually found
+                # clang-cl. `|| true` + the explicit `if` keep this
+                # set -e-safe — right after the choco install clang-cl is not
+                # yet on PATH, so where.exe exits non-zero, and without the
+                # guard pipefail would abort the whole install before the
+                # glob fallback below runs.
+                local found
+                found="$(where.exe clang-cl 2>/dev/null | head -1 | tr -d '\r' || true)"
+                if [ -n "$found" ]; then clangdir="$(dirname "$found")"; fi
+            fi
+            if [ -z "$clangdir" ] && [ -x "${prefix}/c/Program Files/LLVM/bin/clang-cl.exe" ]; then
+                clangdir="${prefix}/c/Program Files/LLVM/bin"
+            fi
+            if [ -n "$clangdir" ]; then
+                gha_add_path "$clangdir"
+            else
+                gha_warning "clang-cl: bin dir not found after choco install llvm; relying on choco's PATH shims"
+            fi
+            anodizer::vok "clang-cl (LLVM) installed via choco llvm"
+            _INSTALLER_EMITTED_OK=1
+            ;;
+        Linux) skip_unsupported_os clang-cl "Windows-only (MSVC C-object determinism pin)" ;;
+        macOS) skip_unsupported_os clang-cl "Windows-only (MSVC C-object determinism pin)" ;;
+    esac
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────
 
 dispatch_install() {
@@ -1268,6 +1341,7 @@ dispatch_install() {
             wix)            install_wix ;;
             wix3)           install_wix3 ;;
             pkgbuild)       install_pkgbuild ;;
+            clang-cl)       install_clang_cl ;;
             # Cloud KMS CLIs — a closed set emitted by auto-detect from a
             # `blobs.kms_key:` URL scheme (awskms:// / gcpkms:// / azurekeyvault://).
             # anodizer ships no installer for them (they are preinstalled on
