@@ -843,3 +843,9 @@ runs:
       with:
         name: ${{ inputs.preserve-dist == 'true' && format('dist-{0}', inputs.shard-label) || format('dist-{0}', runner.os) }}
         path: ${{ inputs.preserve-dist == 'true' && format('{0}/preserved-dist/', inputs.workdir) || format('{0}/', steps.dist.outputs.path) }}
+        # The dist tree carries dot-directories (.completions/, .manpages/)
+        # that the preserved context manifest lists as artifacts; the
+        # upload action's v4+ default excludes hidden files, which silently
+        # strips them and fails `release --publish-only`'s hash-verify on
+        # the download side.
+        include-hidden-files: true
