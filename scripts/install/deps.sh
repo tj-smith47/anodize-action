@@ -611,16 +611,13 @@ cosign_install_windows() {
     # SHA256 verification mirrors the Linux path.
     local version="${COSIGN_VERSION:-v2.4.1}"
     local base="https://github.com/sigstore/cosign/releases/download/${version}"
-    # Sigstore ships a native cosign-windows-arm64.exe; pick it on an arm
-    # runner so windows-11-arm runs cosign natively instead of under x64
-    # emulation. The RUNNER_ARCH→arch mapping mirrors scripts/platform/detect.sh
-    # so the two stay consistent.
-    local arch
-    case "$RUNNER_ARCH" in
-        X64)   arch=amd64 ;;
-        ARM64) arch=arm64 ;;
-        *)     gha_fail "Unsupported Windows arch for cosign: $RUNNER_ARCH" ;;
-    esac
+    # Sigstore publishes no windows/arm64 cosign asset (verified through v3.1.1;
+    # every Windows release ships only cosign-windows-amd64.exe). Install the
+    # amd64 binary on both x64 and arm64 runners — on windows-11-arm it runs
+    # under x64 emulation, mirroring the upx/syft rationale: cosign's output is
+    # a deterministic function of input + version, so emulation cannot perturb
+    # a determinism shard's within-run comparison.
+    local arch=amd64
     local bin="cosign-windows-${arch}.exe"
     local install_dir="${RUNNER_TEMP:-/tmp}/cosign"
     mkdir -p "$install_dir"
