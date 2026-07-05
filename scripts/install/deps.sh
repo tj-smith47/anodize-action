@@ -6,10 +6,12 @@
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-# rcodesign, wix, wix3, pkgbuild, clang-cl. (`wix` is the v4 dialect — `wix
-# build` / dotnet global tool; `wix3` is the v3 dialect — candle+light via
-# choco wixtoolset. Both fall back to wixl on Linux. `clang-cl` is
-# Windows-only — the determinism harness's pinned MSVC C/C++ compiler.)
+# rcodesign, wix, wix3, pkgbuild, clang-cl, nasm. (`wix` is the v4 dialect —
+# `wix build` / dotnet global tool; `wix3` is the v3 dialect — candle+light
+# via choco wixtoolset. Both fall back to wixl on Linux. `clang-cl` is
+# Windows-only — the determinism harness's pinned MSVC C/C++ compiler.
+# `nasm` is also Windows-only — aws-lc-sys hard-requires it on PATH to
+# assemble its perlasm .asm on windows-msvc.)
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -1304,6 +1306,81 @@ install_clang_cl() {
     esac
 }
 
+# nasm provisioning: aws-lc-sys (pulled in transitively via octocrab's
+# aws-lc-rs JWT provider — see the root Cargo.toml's `jwt-aws-lc-rs` comment)
+# hard-requires nasm on PATH to assemble its perlasm .asm on windows-msvc; its
+# build script panics with no fallback when nasm is missing. The GitHub-hosted
+# windows image ships NASM with its install dir already on the machine PATH,
+# so the on-PATH check below is a no-op on stock images; the choco fallback
+# exists for images/configurations where that PATH entry is missing.
+#
+# Consumed two ways: as the `nasm` dep (dispatched below, parallel to
+# clang-cl in determinism-deps.sh) AND directly by from-source.sh, which
+# builds anodizer itself — and therefore aws-lc-sys — before the "Install
+# dependencies" step (where the dispatch loop below runs) ever executes.
+install_nasm() {
+    case "$RUNNER_OS" in
+        Windows)
+            if command -v nasm > /dev/null 2>&1; then
+                anodizer::vok "nasm already on PATH"
+                _INSTALLER_EMITTED_OK=1
+                return 0
+            fi
+            # choco's nasm package lands here without adding it to PATH.
+            # NASM_GLOB_ROOT_PREFIX rebases the search root for hermetic tests
+            # (empty in production).
+            local prefix="${NASM_GLOB_ROOT_PREFIX:-}" nasmdir=""
+            if [ -x "${prefix}/c/Program Files/NASM/nasm.exe" ]; then
+                nasmdir="${prefix}/c/Program Files/NASM"
+            fi
+            if [ -n "$nasmdir" ]; then
+                gha_add_path "$nasmdir"
+                # aws-lc-sys may compile in THIS SAME process (from-source.sh
+                # invokes cargo build right after calling install_nasm) —
+                # unlike clang-cl, which is only ever consumed by a later
+                # step — so export PATH immediately, not just for future
+                # steps via GITHUB_PATH.
+                export PATH="${nasmdir}:${PATH}"
+                anodizer::vok "nasm found at ${nasmdir}, added to PATH"
+                _INSTALLER_EMITTED_OK=1
+                return 0
+            fi
+            # Neither on PATH nor the known install dir — install via choco
+            # and discover its bin dir the way install_nsis/install_wix3/
+            # install_clang_cl do: a choco package can land without its PATH
+            # shim reaching the current shell.
+            choco_install nasm NASM_VERSION
+            if command -v nasm > /dev/null 2>&1; then
+                nasmdir="$(dirname "$(command -v nasm)")"
+            elif command -v where.exe > /dev/null 2>&1; then
+                # `dirname ""` returns ".", which would poison PATH with the
+                # cwd; only resolve a dir when the lookup actually found nasm.
+                # `|| true` + the explicit `if` keep this set -e-safe — right
+                # after the choco install nasm is not yet on PATH, so
+                # where.exe exits non-zero, and without the guard pipefail
+                # would abort the whole install before the glob fallback
+                # below runs.
+                local found
+                found="$(where.exe nasm 2>/dev/null | head -1 | tr -d '\r' || true)"
+                if [ -n "$found" ]; then nasmdir="$(dirname "$found")"; fi
+            fi
+            if [ -z "$nasmdir" ] && [ -x "${prefix}/c/Program Files/NASM/nasm.exe" ]; then
+                nasmdir="${prefix}/c/Program Files/NASM"
+            fi
+            if [ -n "$nasmdir" ]; then
+                gha_add_path "$nasmdir"
+                export PATH="${nasmdir}:${PATH}"
+            else
+                gha_warning "nasm: bin dir not found after choco install nasm; relying on choco's PATH shims"
+            fi
+            anodizer::vok "nasm installed via choco nasm"
+            _INSTALLER_EMITTED_OK=1
+            ;;
+        Linux) skip_unsupported_os nasm "Windows-only (aws-lc-sys perlasm assembly on windows-msvc)" ;;
+        macOS) skip_unsupported_os nasm "Windows-only (aws-lc-sys perlasm assembly on windows-msvc)" ;;
+    esac
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────
 
 dispatch_install() {
@@ -1342,6 +1419,7 @@ dispatch_install() {
             wix3)           install_wix3 ;;
             pkgbuild)       install_pkgbuild ;;
             clang-cl)       install_clang_cl ;;
+            nasm)           install_nasm ;;
             # Cloud KMS CLIs — a closed set emitted by auto-detect from a
             # `blobs.kms_key:` URL scheme (awskms:// / gcpkms:// / azurekeyvault://).
             # anodizer ships no installer for them (they are preinstalled on

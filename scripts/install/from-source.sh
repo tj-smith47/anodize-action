@@ -12,6 +12,8 @@
 # — those builds benefit from cache reuse.
 set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
+# shellcheck source=deps.sh
+source "${GITHUB_ACTION_PATH}/scripts/install/deps.sh"
 
 command -v cargo > /dev/null 2>&1 \
     || gha_fail "Rust is required; set install-rust: true (or use from-branch which auto-installs Rust)"
@@ -20,6 +22,14 @@ if [ -n "$FROM_BRANCH" ]; then
     unset RUSTC_WRAPPER
     unset SCCACHE_GHA_ENABLED
 fi
+
+# anodizer itself pulls in aws-lc-sys transitively (octocrab's aws-lc-rs JWT
+# provider — see the root Cargo.toml's `jwt-aws-lc-rs` comment), which
+# hard-requires nasm on windows-msvc (see install_nasm in deps.sh). This
+# build runs before the "Install dependencies" step — where the
+# determinism-deps/auto-detect `nasm` token would otherwise land — so
+# provision it here directly rather than depending on that later step.
+[ "$RUNNER_OS" = "Windows" ] && install_nasm
 
 gha_section Building "anodizer from source"
 cargo build --release -p anodizer

@@ -12,13 +12,19 @@
 # windows-msvc builds, pinning it as the C/C++ compiler to fix an
 # intermittent cl.exe C-object codegen non-determinism. It is windows-only —
 # macOS determinism has no such requirement.
+#
+# Windows also adds nasm: aws-lc-sys (a real transitive dep the harness's
+# windows-msvc build compiles — see install_nasm in deps.sh) hard-requires it
+# on PATH to assemble its perlasm .asm, panicking with no fallback otherwise.
+# It is windows-only — Linux/macOS aws-lc-sys builds use their platform's own
+# assembler, not nasm.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 
 if [ "$RUNNER_OS" = "Linux" ]; then
     gha_set_output deps "zig,cargo-zigbuild,upx,nfpm,makeself,snapcraft,syft,cosign"
 elif [ "$RUNNER_OS" = "Windows" ]; then
-    gha_set_output deps "upx,syft,cosign,clang-cl"
+    gha_set_output deps "upx,syft,cosign,clang-cl,nasm"
 else
     gha_set_output deps "upx,syft,cosign"
 fi
