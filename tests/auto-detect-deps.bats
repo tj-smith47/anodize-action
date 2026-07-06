@@ -24,7 +24,9 @@ setup() {
     CLEAN_BIN="${_TEST_HOME}/bin"
     mkdir -p "$CLEAN_BIN"
     local c p
-    for c in bash cat dirname env grep head jq mktemp rm sed tr; do
+    # sort + tail back the npm-floor version_ge comparison; every other name
+    # here backs the script's other, non-floor resolution logic.
+    for c in bash cat dirname env grep head jq mktemp rm sed sort tail tr; do
         p="$(command -v "$c")" && ln -sf "$p" "${CLEAN_BIN}/${c}"
     done
 
@@ -54,6 +56,17 @@ esac
 exit 0
 EOF
     chmod +x "${CLEAN_BIN}/anodizer"
+}
+
+# Install a fake `npm` on PATH whose `--version` prints $1, mirroring real
+# npm's bare `X.Y.Z` output (no leading "v" or extra text).
+_fake_npm() {
+    local version="$1"
+    cat > "${CLEAN_BIN}/npm" << EOF
+#!/usr/bin/env bash
+echo "${version}"
+EOF
+    chmod +x "${CLEAN_BIN}/npm"
 }
 
 # Install a fake `anodizer` whose `tools` subcommand fails (emulates an
@@ -171,6 +184,41 @@ _no_dep() { [[ ",$(_deps)," != *",$1,"* ]]; }
     [ "$status" -eq 0 ]
     [ -z "$(_deps)" ]
     [[ "$output" != *"::warning::"* ]]
+}
+
+# ── npm Trusted-Publishing floor (version-aware satisfaction) ────────────────
+
+@test "floor: npm on PATH below the OIDC floor still installs node" {
+    _fake_npm "10.9.3"
+    _fake_anodizer '{"schema_version":1,"tools":[{"any_of":["npm"],"advisory":false}]}'
+    _run
+    [ "$status" -eq 0 ]
+    _has_dep node
+}
+
+@test "floor: npm on PATH exactly at the OIDC floor is satisfied; node is not installed" {
+    _fake_npm "11.5.1"
+    _fake_anodizer '{"schema_version":1,"tools":[{"any_of":["npm"],"advisory":false}]}'
+    _run
+    [ "$status" -eq 0 ]
+    [ -z "$(_deps)" ]
+    _no_dep node
+}
+
+@test "floor: npm on PATH above the OIDC floor is satisfied; node is not installed" {
+    _fake_npm "12.0.0"
+    _fake_anodizer '{"schema_version":1,"tools":[{"any_of":["npm"],"advisory":false}]}'
+    _run
+    [ "$status" -eq 0 ]
+    [ -z "$(_deps)" ]
+    _no_dep node
+}
+
+@test "floor: npm absent from PATH still installs node (regression guard)" {
+    _fake_anodizer '{"schema_version":1,"tools":[{"any_of":["npm"],"advisory":false}]}'
+    _run
+    [ "$status" -eq 0 ]
+    _has_dep node
 }
 
 # ── ambient tools + dedup ────────────────────────────────────────────────────

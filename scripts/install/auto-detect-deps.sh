@@ -17,6 +17,19 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/gha.sh"
 # shellcheck source=../lib/config.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
+# deps.sh is source-safe (its main() only fires when executed directly — see
+# the guard at its own end), so sourcing it here reuses NPM_DEFAULT_VERSION
+# as the single place the npm Trusted-Publishing floor is written, instead of
+# a second hardcoded copy drifting from it. GITHUB_ACTION_PATH/RUNNER_OS
+# default defensively: deps.sh hard-requires both (for its own lib source and
+# its per-OS installer dispatch, neither exercised by this read-only sourcing)
+# but this script — unlike deps.sh — has never needed them, and every other
+# script in this repo already assumes GITHUB_ACTION_PATH is ambient rather
+# than deriving it, so this is the one place that still must.
+: "${GITHUB_ACTION_PATH:=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+: "${RUNNER_OS:=Linux}"
+# shellcheck source=deps.sh
+source "$(dirname "${BASH_SOURCE[0]}")/deps.sh"
 
 anodizer::verb Detecting "pipeline dependencies"
 
@@ -122,25 +135,53 @@ map_binary() {
     esac
 }
 
+# Binaries whose mere presence on PATH is INSUFFICIENT to satisfy an any_of
+# group: they must also meet a minimum version, or resolution falls through
+# to the install path so the upgrade actually runs. npm below
+# NPM_DEFAULT_VERSION (deps.sh's single source of truth for the Trusted-
+# Publishing/OIDC floor) cannot perform the OIDC handshake — GitHub runners
+# ship npm 10.9.x bundled with every Node 22.x line, so an ambient stale npm
+# must never suppress the node/install_npm_floor install that upgrades it.
+declare -A _min_version=( [npm]="${NPM_DEFAULT_VERSION}" )
+
+# True iff version $1 >= version $2 (both plain X.Y.Z, compared numerically
+# via sort -V rather than string/lexical order so e.g. 9.0.0 < 11.5.1).
+version_ge() {
+    [ "$1" = "$2" ] || [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | tail -1)" = "$1" ]
+}
+
 declare -A _seen=()
 deps=()
 
 # Resolve one tool requirement (an `any_of` group + its advisory flag) to at
 # most one install keyword. An `any_of` is satisfied with no install when any
-# listed binary is already on PATH; otherwise the first binary with a mapping
-# selects the keyword. A required group that maps to nothing and is absent is a
-# LOUD warning (the drift the config-grep era hid silently); an advisory group
-# is a quiet verbose note (the pipeline degrades gracefully without it).
+# listed binary is already on PATH and, for a floor-bearing binary (see
+# _min_version above), meets its minimum version; otherwise the first binary
+# with a mapping selects the keyword. A required group that maps to nothing
+# and is absent is a LOUD warning (the drift the config-grep era hid
+# silently); an advisory group is a quiet verbose note (the pipeline degrades
+# gracefully without it).
 resolve_requirement() {
     local advisory="$1"
     shift
     local bins=("$@")
-    local b kw
+    local b kw floor have
 
     for b in "${bins[@]}"; do
         if command -v "$b" > /dev/null 2>&1; then
-            anodizer::vdetail "satisfied ${bins[*]}: '$b' already on PATH"
-            return 0
+            floor="${_min_version[$b]:-}"
+            if [ -z "$floor" ]; then
+                anodizer::vdetail "satisfied ${bins[*]}: '$b' already on PATH"
+                return 0
+            fi
+            have="$("$b" --version 2> /dev/null | sed -E 's/^[^0-9]*([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+            if [ -n "$have" ] && version_ge "$have" "$floor"; then
+                anodizer::vdetail "satisfied ${bins[*]}: '$b' $have on PATH (>= $floor floor)"
+                return 0
+            fi
+            anodizer::vdetail "under-floor ${bins[*]}: '$b' ${have:-<unknown>} on PATH < $floor floor; installing the upgrade"
+            # Fall through (no return): the map_binary loop below must still
+            # run so the mapped install keyword lands in deps.
         fi
     done
 
