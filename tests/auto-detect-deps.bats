@@ -161,6 +161,14 @@ _no_dep() { [[ ",$(_deps)," != *",$1,"* ]]; }
     _has_dep wix3
 }
 
+@test "map: xmllint (chocolatey nuspec validation) maps to the xmllint keyword" {
+    _fake_anodizer '{"schema_version":1,"tools":[{"any_of":["xmllint"],"advisory":false}]}'
+    _run
+    [ "$status" -eq 0 ]
+    _has_dep xmllint
+    [[ "$output" != *"::warning::"* ]]
+}
+
 # ── any_of groups ────────────────────────────────────────────────────────────
 
 @test "any_of: the dmg group resolves to create-dmg (single keyword)" {

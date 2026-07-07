@@ -128,6 +128,7 @@ map_binary() {
         hdiutil | genisoimage | mkisofs) echo create-dmg ;;
         wix)                           echo wix ;;   # WiX v4 (wix build)
         candle | light | wixl)         echo wix3 ;;  # WiX v3 dialect (candle+light / Linux wixl)
+        xmllint)                       echo xmllint ;;  # chocolateys: prepublish .nuspec schema validation
         aws)                           echo aws ;;
         gcloud)                        echo gcloud ;;
         az)                            echo az ;;

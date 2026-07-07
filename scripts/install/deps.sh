@@ -6,12 +6,13 @@
 #
 # Recognised deps: nfpm, makeself, snapcraft, rpmbuild, cosign, syft, zig,
 # node, cargo-zigbuild, upx, nsis, create-dmg, flatpak, alejandra, linuxdeploy,
-# rcodesign, wix, wix3, pkgbuild, clang-cl, nasm. (`wix` is the v4 dialect —
-# `wix build` / dotnet global tool; `wix3` is the v3 dialect — candle+light
-# via choco wixtoolset. Both fall back to wixl on Linux. `clang-cl` is
-# Windows-only — the determinism harness's pinned MSVC C/C++ compiler.
-# `nasm` is also Windows-only — aws-lc-sys hard-requires it on PATH to
-# assemble its perlasm .asm on windows-msvc.)
+# rcodesign, wix, wix3, pkgbuild, clang-cl, nasm, xmllint. (`wix` is the v4
+# dialect — `wix build` / dotnet global tool; `wix3` is the v3 dialect —
+# candle+light via choco wixtoolset. Both fall back to wixl on Linux.
+# `clang-cl` is Windows-only — the determinism harness's pinned MSVC C/C++
+# compiler. `nasm` is also Windows-only — aws-lc-sys hard-requires it on PATH
+# to assemble its perlasm .asm on windows-msvc. `xmllint` backs the chocolatey
+# prepublish guard's .nuspec schema validation.)
 set -euo pipefail
 
 # shellcheck source=../lib/gha.sh
@@ -114,7 +115,7 @@ DEPS=()
 # dispatch loop suppresses the generic per-tool "installing X" line for them to
 # avoid a duplicate. flatpak/pkgbuild also queue but flush inline and self-log,
 # so they are NOT listed here. Membership is only consulted on Linux.
-_APT_BATCHED_DEPS=" makeself rpmbuild upx nsis create-dmg wix wix3 "
+_APT_BATCHED_DEPS=" makeself rpmbuild upx nsis create-dmg wix wix3 xmllint "
 
 # True when $1's installer on this runner just queues a stock apt package
 # (so the batch header/✓ carry its log, not the generic per-tool lines).
@@ -1381,6 +1382,22 @@ install_nasm() {
     esac
 }
 
+# xmllint backs anodizer's chocolatey prepublish guard, which hard-requires it
+# to schema-validate the generated .nuspec before push. On Linux it ships in
+# libxml2-utils (the Debian/Ubuntu package providing /usr/bin/xmllint). macOS
+# needs no install: libxml2 is part of the base system, so every GitHub macOS
+# runner already has /usr/bin/xmllint. Windows is skipped rather than
+# installed: the chocolatey push itself is plain HTTPS (no xmllint involved,
+# the validating runner in practice is Linux), and choco ships no standalone
+# xmllint package — only xsltproc bundles it as a side effect.
+install_xmllint() {
+    case "$RUNNER_OS" in
+        Linux)   apt_queue libxml2-utils xmllint ;;
+        macOS)   anodizer::vdetail "xmllint ships with the OS on macOS" ;;
+        Windows) skip_unsupported_os xmllint "Linux/macOS only (chocolateys: nuspec validation runs on the packaging runner)" ;;
+    esac
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────
 
 dispatch_install() {
@@ -1420,6 +1437,7 @@ dispatch_install() {
             pkgbuild)       install_pkgbuild ;;
             clang-cl)       install_clang_cl ;;
             nasm)           install_nasm ;;
+            xmllint)        install_xmllint ;;
             # Cloud KMS CLIs — a closed set emitted by auto-detect from a
             # `blobs.kms_key:` URL scheme (awskms:// / gcpkms:// / azurekeyvault://).
             # anodizer ships no installer for them (they are preinstalled on

@@ -7,8 +7,8 @@ single step.
 The action installs anodizer (cached per version), auto-installs the pipeline
 tools the engine itself reports via `anodizer tools` (nfpm, makeself, snapcraft,
 rpmbuild, cosign, syft, zig, node, cargo-zigbuild, upx, nsis, create-dmg,
-flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild, and the cloud KMS
-CLIs), imports signing keys, logs in to container registries, handles
+flatpak, alejandra, linuxdeploy, rcodesign, wix, pkgbuild, xmllint, and the
+cloud KMS CLIs), imports signing keys, logs in to container registries, handles
 split/merge artifact plumbing (uploads honor a custom `dist:` directory and the
 preserved-dist determinism layout), and runs anodizer.
 
@@ -56,7 +56,7 @@ means the input has no default.
 | `from-branch` | Shallow-clone `tj-smith47/anodizer` at the given branch (e.g. `my-feature`) and build it from source. Branch name only — the repo is hardcoded; no owner prefix or SHA. Rust is auto-installed. Mutually exclusive with `version`, `from-artifact`, and `from-source`. | `""` | no |
 | `from-source` | Build anodizer from source in the current workdir (bootstrap mode). Rust is auto-installed — you do not also need `install-rust: true`. | `false` | no |
 | `gpg-private-key` | GPG private key contents to import for signing. Piped into `gpg --batch --import`. See [Key material](#key-material). | `—` | no |
-| `install` | Explicit comma-separated build/pipeline dependencies, bypassing auto-detection: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `wix3`, `pkgbuild`. (`wix` = WiX v4; `wix3` = WiX v3; both install `wixl` on Linux.) Uses the platform's native package manager. Use this for jobs that do **not** run the pipeline (so `anodizer tools` reports nothing) — e.g. a `--preflight-secrets` key-load check — or to force a specific tool on. | `—` | no |
+| `install` | Explicit comma-separated build/pipeline dependencies, bypassing auto-detection: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `wix3`, `pkgbuild`, `xmllint`. (`wix` = WiX v4; `wix3` = WiX v3; both install `wixl` on Linux.) Uses the platform's native package manager. Use this for jobs that do **not** run the pipeline (so `anodizer tools` reports nothing) — e.g. a `--preflight-secrets` key-load check — or to force a specific tool on. | `—` | no |
 | `install-only` | Only install anodizer (and any requested dependencies/keys); skip running it. | `false` | no |
 | `install-rust` | Install the stable Rust toolchain (`dtolnay/rust-toolchain`). | `false` | no |
 | `preserve-dist` | When `determinism: true`, preserve the harness's byte-stable dist tree to `./preserved-dist/` for a downstream `release --publish-only` job. Manifests get a `-<shard-label>` suffix so sharded uploads don't collide under `merge-multiple`. Requires `shard-label`. | `false` | no |
@@ -102,6 +102,7 @@ Translation from the binary anodizer reports to the installer the action runs:
 | `pkgbuild` / `xar` | `pkgbuild` | macOS native `pkgbuild` (Xcode CLT); Linux builds the flat-package toolchain (`xar` + `mkbom`). |
 | `wix` | `wix` | WiX v4 (`wix build`, the dotnet global tool). |
 | `candle` / `light` / `wixl` | `wix3` | WiX v3 dialect — `candle`+`light` on Windows, `wixl` (msitools) on Linux. anodizer resolves the dialect (explicit `version:` > `.wxs` namespace > installed tool) and reports the matching binary. |
+| `xmllint` | `xmllint` | Chocolatey prepublish guard — schema-validates the generated `.nuspec` before push. Linux installs `libxml2-utils`; macOS ships `/usr/bin/xmllint` with the OS; deps.sh skips it on Windows (the choco push is plain HTTPS and the validating runner in practice is Linux). |
 | `zig`, `cargo-zigbuild` | `zig` + `cargo-zigbuild` | Cross-compilation via zigbuild (advisory — the build degrades gracefully without them). |
 | `aws` / `gcloud` / `az` | `aws` / `gcloud` / `az` | Client-side KMS CLI for a `blobs.kms_key:` URL scheme; ensured on `PATH`. |
 
