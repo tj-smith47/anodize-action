@@ -23,7 +23,9 @@ jobs:
     name: Validate action.yml
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Validate action.yml manifest
         run: bash scripts/validate/action-manifest.sh action.yml
 

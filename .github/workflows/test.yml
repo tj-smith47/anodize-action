@@ -14,7 +14,8 @@ jobs:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Run shellcheck on scripts/
         run: |
@@ -28,7 +29,8 @@ jobs:
     name: Output discipline
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       # Fail if a chatty-on-success subprocess is invoked bare (not via
       # anodizer::run_quiet, a gha_section group, output redirect/capture, or a
@@ -41,7 +43,8 @@ jobs:
     name: actionlint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Install and run actionlint
         run: |
@@ -52,7 +55,8 @@ jobs:
     name: Validate action.yml
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       # Asserts the top-level keys AND that every composite step has
       # run-or-uses (+ shell where run) — the step-level check actionlint
@@ -64,7 +68,8 @@ jobs:
     name: bats
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@v7
 
       # The tests/*.bats suite exercises the real install/run/validate scripts
       # in isolated throwaway dirs; it had no CI job, so regressions in the
@@ -78,3 +83,44 @@ jobs:
 
       - name: Run bats suite
         run: bats tests/
+
+  zig-cross-smoke:
+    name: Zig cross-compile smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Install the DEFAULT-pinned zig + the unpinned (latest) cargo-zigbuild
+      # through the action's own install path — the same bytes a consumer's
+      # determinism shard gets.
+      - name: Install zig + cargo-zigbuild via the action
+        uses: ./
+        with:
+          install-only: 'true'
+          install: zig,cargo-zigbuild
+          install-rust: 'true'
+
+      # Cross-compile a crate with a C-crypto dependency (ring) to every
+      # Linux-shard cross target the harness supports. ring's build script
+      # compiles C against zig's bundled per-target libc headers, so this
+      # fails loudly if the pinned zig's libc tree is incomplete for ANY
+      # supported target — the class that shipped when zig 0.13.0 (missing
+      # generic-freebsd/assert.h) broke x86_64-unknown-freebsd only at a
+      # consumer's release run. ring is intentionally unpinned: the smoke
+      # tracks the current ecosystem, and a new-ring breakage is exactly the
+      # signal this job exists to surface before a consumer hits it.
+      - name: Cross-build ring to every supported cross target
+        run: |
+          rustup target add \
+            x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+            x86_64-unknown-linux-musl x86_64-unknown-freebsd
+          cargo new "${RUNNER_TEMP}/zig-smoke" --bin
+          cd "${RUNNER_TEMP}/zig-smoke"
+          cargo add ring
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+                   x86_64-unknown-linux-musl x86_64-unknown-freebsd; do
+            echo "::group::cargo zigbuild --target $t"
+            cargo zigbuild --release --target "$t"
+            echo "::endgroup::"
+          done
