@@ -107,6 +107,22 @@ NPM_DEFAULT_VERSION="11.5.1"
 # drift). Override with NFPM_VERSION (also honoured by the macOS brew path).
 NFPM_DEFAULT_VERSION="2.46.3"
 
+# zig backs cargo-zigbuild cross-compilation (Linux-only in the harness's
+# dependency sets). The pin must ship libc headers for EVERY cross target the
+# harness supports: zig <= 0.13.0's bundled libc omitted
+# generic-freebsd/assert.h, which broke every C-crypto crate (ring,
+# aws-lc-sys) cross-built to x86_64-unknown-freebsd — a supported-target
+# failure no local check caught until a consumer's release run hit it. Keep
+# this at the current stable zig: cargo-zigbuild (installed unpinned = latest
+# from crates.io) tests current stable zig in its own CI, so the two move
+# together. Bumping across zig releases can raise the default glibc floor of
+# *-gnu cross builds (0.13 → 2.28; 0.15/0.16 → 2.31 for x86_64/aarch64) —
+# projects needing an older floor pin it per-target in anodizer config
+# (`<triple>.<glibc>`), not here. Override with ZIG_VERSION alone; no
+# companion sha var exists because the tarball URL AND sha256 are both read
+# from ziglang.org/download/index.json at install time.
+ZIG_DEFAULT_VERSION="0.16.0"
+
 DEPS=()
 
 # Deps whose Linux installer only `apt_queue`s a stock package (no inline
@@ -676,32 +692,31 @@ install_syft() {
 install_zig() {
     case "$RUNNER_OS" in
         Linux)
-            local version="${ZIG_VERSION:-0.13.0}"
+            local version="${ZIG_VERSION:-$ZIG_DEFAULT_VERSION}"
             local arch
             case "$RUNNER_ARCH" in
                 X64)   arch=x86_64 ;;
                 ARM64) arch=aarch64 ;;
                 *)     gha_fail "Unsupported Linux arch for zig: $RUNNER_ARCH" ;;
             esac
-            local tarball="zig-linux-${arch}-${version}.tar.xz"
-            local base="https://ziglang.org/download/${version}"
-            # ziglang.org does not publish per-tarball .sha256 sidecars;
-            # canonical shasums live in download/index.json.
-            fetch_retry anodizer::fetch "${base}/${tarball}" /tmp/zig.tar.xz
-            local expected
-            # NOT routed through anodizer::fetch/run_quiet: this curl's stdout is
-            # consumed by the `$(... | jq ...)` capture, which a file-writing
-            # fetch helper would swallow. Resilience comes from curl's own
-            # --retry/--retry-all-errors instead — curl retries internally and
-            # emits only the final successful body, so the jq pipe never sees a
-            # partial transfer (the fetch_retry loop can't wrap a pipe-into-
-            # capture without concatenating bytes across attempts).
-            expected=$(curl -sSfL --retry 3 --retry-all-errors --retry-delay 2 \
-                "https://ziglang.org/download/index.json" \
-                | jq -r --arg v "$version" --arg k "${arch}-linux" \
-                    '.[$v][$k].shasum // empty')
-            [ -n "$expected" ] \
-                || gha_fail "zig sha256 missing from index.json for ${version}/${arch}-linux"
+            # ziglang.org's tarball naming scheme is not stable across
+            # releases (`zig-linux-x86_64-0.13.0` flipped to
+            # `zig-x86_64-linux-0.14.1` and later), and no per-tarball
+            # .sha256 sidecars exist — download/index.json is the canonical
+            # version → per-target {tarball URL, shasum} map. Deriving BOTH
+            # from it keeps the installer naming-scheme-proof for any
+            # ZIG_VERSION and makes a bad pin fail loudly here instead of
+            # as a 404 mid-release.
+            fetch_retry anodizer::fetch \
+                "https://ziglang.org/download/index.json" /tmp/zig-index.json
+            local url expected
+            url=$(jq -r --arg v "$version" --arg k "${arch}-linux" \
+                '.[$v][$k].tarball // empty' /tmp/zig-index.json)
+            expected=$(jq -r --arg v "$version" --arg k "${arch}-linux" \
+                '.[$v][$k].shasum // empty' /tmp/zig-index.json)
+            { [ -n "$url" ] && [ -n "$expected" ]; } \
+                || gha_fail "zig ${version} has no ${arch}-linux entry in ziglang.org/download/index.json"
+            fetch_retry anodizer::fetch "$url" /tmp/zig.tar.xz
             anodizer::run_quiet bash -c "echo '${expected}  /tmp/zig.tar.xz' | sha256sum -c -"
             sudo mkdir -p /opt/zig
             sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1

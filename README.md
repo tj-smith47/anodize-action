@@ -126,7 +126,7 @@ Pass them via the job/step `env:` block.
 | `RPM_VERSION` | (unpinned) | Pins the rpm formula on macOS (brew). Linux installs via apt, unpinned. |
 | `COSIGN_VERSION` | `v2.4.1` | Direct-download version on Linux and Windows; pins brew on macOS. |
 | `SYFT_VERSION` | `v1.18.0` | Version passed to the syft install script on Linux; pins brew/choco on macOS/Windows. |
-| `ZIG_VERSION` | `0.13.0` | Direct-download version on Linux (SHA256-verified); pins brew/choco on macOS/Windows. |
+| `ZIG_VERSION` | `0.16.0` | Direct-download version on Linux (tarball URL + SHA256 both resolved from ziglang.org's `download/index.json`, so any published version works without a companion sha var); pins brew/choco on macOS/Windows (unset there = the package manager's latest). The default tracks current stable zig — older zigs (≤ 0.13.0) ship incomplete freebsd libc headers and break C-crypto crates (ring, aws-lc-sys) on `x86_64-unknown-freebsd`. |
 | `UPX_VERSION` | (unpinned) | Pins upx on macOS (brew) / Windows (choco). Linux installs via apt, unpinned. |
 | `NSIS_VERSION` | (unpinned) | Pins makensis on macOS (brew) / nsis on Windows (choco). Linux installs via apt, unpinned. |
 | `CREATE_DMG_VERSION` | (unpinned) | Pins create-dmg on macOS (brew). On Linux the dmg stage uses apt `genisoimage` (unpinned). |
