@@ -20,6 +20,14 @@
 # classifies them (exit code 2 / a stderr marker line) and the loop stops on
 # the first attempt rather than burning the budget on an identical failure.
 #
+# This wrapper's OWN exit code re-states that classification: 2 for a
+# deterministic failure, 1 for anything else. GitHub Actions only distinguishes
+# zero from nonzero, but the script is also a directly-callable entry point, and
+# an exit-code contract that stopped at the action boundary would leave a direct
+# caller with only a human-readable sentence to parse. The normalization is
+# deliberate: an anodizer old enough to exit 1 on a deterministic path is still
+# reported as 2 here, because the stderr marker classified it.
+#
 # Stdout (only) is teed to $ANODIZER_STDOUT_LOG so the outputs step can
 # parse `anodizer-output` markers without losing log visibility in the
 # GHA UI. Stderr flows to the CI log live on every attempt so transient and
@@ -219,7 +227,7 @@ main() {
         fi
         if is_deterministic_failure "$status"; then
             anodizer::err "anodizer failed with a deterministic error (exit ${status}); retrying cannot help — fix the reported config/usage error and re-run"
-            exit 1
+            exit "$anodizer_exit_deterministic"
         fi
         if [ $attempt -eq $max_retries ]; then
             if [ $max_retries -eq 1 ]; then

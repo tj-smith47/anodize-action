@@ -744,6 +744,21 @@ exit `1`). The step then reports:
 Unclassified failures (network, 5xx, rate limits) are untouched by this and
 still retry the full 3 attempts.
 
+The run step re-states that classification in its **own exit code**, so it holds
+for anything invoking `scripts/run/anodizer.sh` directly, not just for the
+action:
+
+| Outcome | Step exit code |
+|---|---|
+| success | `0` |
+| deterministic failure (anodizer exit `2` *or* the stderr marker) | `2` |
+| any other failure — retries exhausted, stateful single attempt | `1` |
+
+A marker-classified failure exits `2` even when anodizer itself exited `1`: the
+classification is what a caller acts on, not which of the two signals carried
+it. GitHub Actions only distinguishes zero from nonzero, so nothing about the
+workflow-level result changes.
+
 ## License
 
 MIT
