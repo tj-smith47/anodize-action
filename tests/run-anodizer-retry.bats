@@ -398,6 +398,136 @@ STUB
     [[ "$output" != *"stateful tag"* ]]
 }
 
+# A stub that fails the way anodizer's deterministic classifier does: an error
+# on stderr, a marker line only when asked for, and a caller-chosen exit code.
+# `$1` = exit code, `$2` = "marker" to emit the classification line. Each signal
+# is exercised alone so neither test can pass on the strength of the other.
+_write_classified_stub() {
+    local exit_code="$1" marker="${2:-}"
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+echo "anodizer-output version=9.9.9"
+echo "error: dist directory './dist' is not empty; use --clean to remove it first" >&2
+STUB
+    if [ "$marker" = "marker" ]; then
+        echo 'echo "anodizer-error-class: deterministic" >&2' >> "$STUB_BIN/anodizer"
+    fi
+    echo "exit $exit_code" >> "$STUB_BIN/anodizer"
+    chmod +x "$STUB_BIN/anodizer"
+}
+
+# Exit code 2 is anodizer's EXIT_DETERMINISTIC: the failure is argv/config
+# determined and will fail identically forever. A retryable mode must still
+# stop after ONE attempt.
+@test "exit code 2 fails fast after exactly one attempt" {
+    _write_classified_stub 2
+    export ANODIZER_ARGS="release --snapshot"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"deterministic error"* ]]
+    [[ "$output" == *"retrying cannot help"* ]]
+    [[ "$output" != *"attempt 1/3 failed"* ]]
+}
+
+# The stderr marker classifies on its own, covering an anodizer old enough to
+# still exit 1 on its deterministic paths.
+@test "stderr class marker fails fast even when the exit code is not 2" {
+    _write_classified_stub 1 marker
+    export ANODIZER_ARGS="release --snapshot"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"deterministic error"* ]]
+    [[ "$output" == *"retrying cannot help"* ]]
+    [[ "$output" != *"attempt 1/3 failed"* ]]
+}
+
+# The narrowness guard: an unclassified exit 1 is the transient case (network,
+# 5xx, rate limit) and must still burn the full retry budget.
+@test "unclassified exit 1 still retries the full count" {
+    _write_classified_stub 1
+    export ANODIZER_ARGS="release --snapshot"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "3" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+    [[ "$output" == *"failed after 3 attempts"* ]]
+    [[ "$output" != *"deterministic error"* ]]
+}
+
+# Status plumbing: `tee` exits 0 on every attempt, so a pipeline that reports
+# tee's status would see 0/1 and never classify. The wrapper must read
+# anodizer's own 2 — while the stdout tee keeps working and the stderr marker
+# channel stays out of the stdout marker log.
+@test "anodizer's exit 2 survives the tee pipeline and the marker never reaches the stdout log" {
+    _write_classified_stub 2 marker
+    export ANODIZER_ARGS="release --snapshot"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"exit 2"* ]]
+    # tee still populated the stdout marker log...
+    grep -qF "anodizer-output version=9.9.9" "$ANODIZER_STDOUT_LOG"
+    # ...and stderr never contaminated that stdout-only channel.
+    ! grep -qF "anodizer-error-class" "$ANODIZER_STDOUT_LOG"
+    # stderr still reached the log for a human to read.
+    [[ "$output" == *"is not empty"* ]]
+}
+
+# Classification is per-attempt: a transient attempt 1 must not mask a
+# deterministic attempt 2, and attempt 1's clean stderr must not be inherited.
+@test "a deterministic failure on attempt 2 stops the loop before attempt 3" {
+    cat > "$STUB_BIN/anodizer" <<STUB
+#!/usr/bin/env bash
+count_file="$WORKDIR/attempts"
+n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "\$count_file"
+if [ "\$n" -eq 1 ]; then
+    echo "error: 503 Service Unavailable" >&2
+    exit 1
+fi
+echo "error: unknown publisher 'nmp'" >&2
+echo "anodizer-error-class: deterministic" >&2
+exit 2
+STUB
+    chmod +x "$STUB_BIN/anodizer"
+    export ANODIZER_ARGS="release --snapshot"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "2" ]
+    [[ "$output" == *"attempt 1/3 failed"* ]]
+    [[ "$output" != *"attempt 2/3 failed"* ]]
+    [[ "$output" == *"deterministic error (exit 2)"* ]]
+}
+
+# A no-retry stateful mode already runs once; classification must still report
+# WHY, so the operator stops looking for a flake.
+@test "a deterministic failure in a no-retry stateful mode reports the classification" {
+    _write_classified_stub 2 marker
+    export ANODIZER_ARGS="release --publish-only"
+
+    run "$REPO_ROOT/scripts/run/anodizer.sh"
+
+    [ "$status" -eq 1 ]
+    [ "$(cat "$WORKDIR/attempts")" = "1" ]
+    [[ "$output" == *"deterministic error (exit 2)"* ]]
+    [[ "$output" != *"no retry for stateful modes"* ]]
+}
+
 # Misroute guard (B1): `continue` stage name in a snapshot release. The bare
 # ` continue ` token must not pull it into the publish/continue class; a
 # --snapshot release self-tags nothing and stays retryable (3 attempts).

@@ -727,6 +727,23 @@ Transient per-publisher failures are instead retried *inside* anodizer — the
 only layer that can retry a single publisher without re-running rollback — so
 the wrapper surfaces the real failure rather than masking it.
 
+### Deterministic failures stop on the first attempt
+
+Even in a retryable mode, a **deterministic** failure — an unknown flag, an
+unparseable `.anodizer.yaml`, a bad `--targets` value, the dist-not-empty guard
+— fails fast after one attempt instead of burning the retry budget on an
+identical error. anodizer classifies these itself and the step reads both
+signals: exit code `2`, and an `anodizer-error-class: deterministic` line on
+stderr (which also classifies an older anodizer whose deterministic paths still
+exit `1`). The step then reports:
+
+```text
+   ✗ anodizer failed with a deterministic error (exit 2); retrying cannot help — fix the reported config/usage error and re-run
+```
+
+Unclassified failures (network, 5xx, rate limits) are untouched by this and
+still retry the full 3 attempts.
+
 ## License
 
 MIT

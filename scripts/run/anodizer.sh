@@ -16,16 +16,34 @@
 # `anodizer release --rollback-only --from-run=<id>`, not a wrapper
 # retry.
 #
+# Deterministic failures are exempt too, by a different mechanism: anodizer
+# classifies them (exit code 2 / a stderr marker line) and the loop stops on
+# the first attempt rather than burning the budget on an identical failure.
+#
 # Stdout (only) is teed to $ANODIZER_STDOUT_LOG so the outputs step can
 # parse `anodizer-output` markers without losing log visibility in the
-# GHA UI. Stderr is NOT captured anywhere — it flows directly to the
-# CI log on every attempt so transient and final failures are both
-# debuggable in real time. The marker channel contract is stdout-only,
-# so mixing stderr into the captured file would let an error line that
-# resembles a marker contaminate the parsed output.
+# GHA UI. Stderr flows to the CI log live on every attempt so transient and
+# final failures are both debuggable in real time; it is additionally teed
+# into a private per-attempt file that only the deterministic classifier
+# reads. That file is deliberately NOT $ANODIZER_STDOUT_LOG: the
+# `anodizer-output` marker channel is stdout-only, so an error line that
+# resembles a marker must never reach the parsed output.
 set -euo pipefail
 source "${GITHUB_ACTION_PATH}/scripts/lib/gha.sh"
 source "${GITHUB_ACTION_PATH}/scripts/lib/config.sh"
+
+# anodizer's deterministic-error contract (crates/core/src/error_class.rs):
+# EXIT_DETERMINISTIC plus a CLASS_MARKER line on stderr. Either signal alone
+# is authoritative — the marker also classifies an anodizer old enough to
+# still exit 1 on its deterministic paths, and the exit code still classifies
+# a run whose stderr never made it back.
+anodizer_exit_deterministic=2
+anodizer_class_marker='anodizer-error-class: deterministic'
+
+# Per-attempt stderr capture, truncated at the start of every attempt so the
+# classifier can never inherit a previous attempt's marker.
+attempt_stderr="$(mktemp)"
+trap 'rm -f "$attempt_stderr"' EXIT
 
 # The configured output tree (default `dist`); custom `dist:` values must
 # steer the retry cleanup too, or a retry would wipe the wrong directory.
@@ -161,24 +179,47 @@ resolve_max_retries() {
     echo 3
 }
 
+# Returns anodizer's OWN exit status, not a tee's. `set -o pipefail` (the
+# repo-wide idiom; no script here reaches for PIPESTATUS) makes both the inner
+# and the outer pipeline report the failing member, and both tees are pipeline
+# members — so the shell has reaped and flushed them before the status is read.
+# A `2> >(tee …)` process substitution would stream the same bytes but race the
+# marker grep, since the shell does not wait for it.
 run_attempt() {
+    : > "$attempt_stderr"
+    # fd 3 carries stdout past the stderr tee; stderr then takes stdout's place
+    # in the inner pipeline, landing in the capture file and on the CI log.
     # shellcheck disable=SC2086
     # ANODIZER_ARGS is intentionally unquoted: users pass multiple flags
     # separated by whitespace via `inputs.args` and rely on word splitting
     # to forward them as distinct argv entries.
-    anodizer $ANODIZER_ARGS | tee -a "$ANODIZER_STDOUT_LOG"
+    { anodizer $ANODIZER_ARGS 2>&1 1>&3 3>&- | tee -a "$attempt_stderr" >&2; } 3>&1 \
+        | tee -a "$ANODIZER_STDOUT_LOG"
+}
+
+is_deterministic_failure() {
+    if [ "$1" -eq "$anodizer_exit_deterministic" ]; then
+        return 0
+    fi
+    grep -qF -- "$anodizer_class_marker" "$attempt_stderr"
 }
 
 main() {
     anodizer::verb Running "anodizer"
 
-    local max_retries attempt=1
+    local max_retries attempt=1 status
     max_retries=$(resolve_max_retries)
     : > "$ANODIZER_STDOUT_LOG"
 
     while [ $attempt -le $max_retries ]; do
-        if run_attempt; then
+        status=0
+        run_attempt || status=$?
+        if [ "$status" -eq 0 ]; then
             return 0
+        fi
+        if is_deterministic_failure "$status"; then
+            anodizer::err "anodizer failed with a deterministic error (exit ${status}); retrying cannot help — fix the reported config/usage error and re-run"
+            exit 1
         fi
         if [ $attempt -eq $max_retries ]; then
             if [ $max_retries -eq 1 ]; then
