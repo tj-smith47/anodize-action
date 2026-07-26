@@ -234,7 +234,7 @@ _run_install_cosign_macos() {
 
 # ── Test 1: verify-blob succeeds → exits 0 ──────────────────────────────
 
-@test "cosign: verify-blob success → install exits 0" {
+@test "cosign: verify-blob success -> install exits 0" {
     cat > "${FAKE_BIN}/cosign" <<'STUB'
 #!/usr/bin/env bash
 exit 0
@@ -255,7 +255,7 @@ STUB
 
 # ── Test 2: verify-blob fails → loud error + non-zero exit ──────────────
 
-@test "cosign: verify-blob failure → exits non-zero with error message" {
+@test "cosign: verify-blob failure -> exits non-zero with error message" {
     cat > "${FAKE_BIN}/cosign" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$*" == *"verify-blob"* ]]; then
@@ -278,7 +278,7 @@ STUB
 
 # ── Test 3: ANODIZER_ACTION_SKIP_COSIGN_VERIFY=1 → SHA-256-only, exits 0
 
-@test "cosign: SKIP_COSIGN_VERIFY=1 → warns + exits 0, verify-blob not called" {
+@test "cosign: SKIP_COSIGN_VERIFY=1 -> warns + exits 0, verify-blob not called" {
     verify_called_file="${_TEST_HOME}/verify_called"
     cat > "${FAKE_BIN}/cosign" <<STUB
 #!/usr/bin/env bash
@@ -428,7 +428,7 @@ STUB
 
 # ── Test 9: macOS SKIP_COSIGN_VERIFY=1 → SHA-256-only, verify-blob not run ──
 
-@test "cosign: macOS SKIP_COSIGN_VERIFY=1 → warns, verify-blob not called, no brew" {
+@test "cosign: macOS SKIP_COSIGN_VERIFY=1 -> warns, verify-blob not called, no brew" {
     verify_called_file="${_TEST_HOME}/verify_called"
     cat > "${FAKE_BIN}/cosign" <<STUB
 #!/usr/bin/env bash
@@ -450,7 +450,7 @@ STUB
 
 # ── Test 10: macOS unsupported arch fails loudly ────────────────────────────
 
-@test "cosign: macOS unsupported arch → loud fail, no download, no brew" {
+@test "cosign: macOS unsupported arch -> loud fail, no download, no brew" {
     cat > "${FAKE_BIN}/cosign" <<'STUB'
 #!/usr/bin/env bash
 exit 0

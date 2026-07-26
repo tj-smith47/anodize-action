@@ -41,7 +41,7 @@ _run_outputs() {
 }
 
 # Same, but on a minimal PATH that deliberately lacks jq (everything
-# else outputs.sh needs is symlinked in), capturing stdout so the
+# else outputs.sh needs is shimmed in), capturing stdout so the
 # ::warning:: annotation is assertable alongside GITHUB_OUTPUT.
 _run_outputs_without_jq() {
     local workdir="${_TEST_HOME}/repo"
@@ -53,7 +53,7 @@ _run_outputs_without_jq() {
     mkdir -p "$stub"
     local tool
     for tool in bash git grep sed tr head tail cat dirname cut; do
-        ln -s "$(command -v "$tool")" "$stub/$tool"
+        path_shim "$stub" "$tool"
     done
 
     : > "$log_file"
@@ -195,7 +195,7 @@ _field() { grep "^$1=" | tail -1 | cut -d= -f2-; }
     [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'false' ]
 }
 
-@test "irreversibly_published: tag filter — stale summary for another tag is ignored" {
+@test "irreversibly_published: tag filter -- stale summary for another tag is ignored" {
     # This run cut v2.0.0; the only burned summary on disk is the
     # previous version's. It must not block v2.0.0's recovery (same
     # .tag keying as anodizer's in-binary rollback guard).
@@ -205,7 +205,7 @@ _field() { grep "^$1=" | tail -1 | cut -d= -f2-; }
     [ "$(printf '%s' "$out" | _field irreversibly_published)" = 'false' ]
 }
 
-@test "irreversibly_published: tag filter — matching burned summary flips true" {
+@test "irreversibly_published: tag filter -- matching burned summary flips true" {
     _init_repo
     _write_summary "run-v1.0.0" '{"tag": "v1.0.0", "irreversibly_published": true, "results": []}'
     _write_summary "run-v2.0.0" '{"tag": "v2.0.0", "irreversibly_published": true, "results": []}'

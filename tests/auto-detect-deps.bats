@@ -23,11 +23,11 @@ setup() {
 
     CLEAN_BIN="${_TEST_HOME}/bin"
     mkdir -p "$CLEAN_BIN"
-    local c p
+    local c
     # sort + tail back the npm-floor version_ge comparison; every other name
     # here backs the script's other, non-floor resolution logic.
     for c in bash cat dirname env grep head jq mktemp rm sed sort tail tr; do
-        p="$(command -v "$c")" && ln -sf "$p" "${CLEAN_BIN}/${c}"
+        path_shim "$CLEAN_BIN" "$c"
     done
 
     FAKE_ARGS_LOG="${_TEST_HOME}/anodizer-args.log"

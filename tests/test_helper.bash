@@ -140,6 +140,97 @@ common_teardown() {
     return "$tripwire_rc"
 }
 
+path_shim() {
+    # Publish a tool into stub-PATH directory $1 under the name $2, as an
+    # executable shim that execs the real binary in place.  $3 is the real
+    # binary's path; it defaults to `command -v $2`, and the call is a no-op
+    # returning non-zero when the tool is absent from the caller's PATH.
+    #
+    # A symlink cannot be used here.  MSYS/Git-Bash has no POSIX symlinks by
+    # default, so `ln -s` silently COPIES the .exe; a copied MSYS binary then
+    # resolves msys-2.0.dll relative to its own image directory, which the stub
+    # dir does not contain.  Tests that additionally sanitize the environment
+    # (`env -i PATH=<stub dir>`) drop the one PATH entry that would have found
+    # the runtime, so every copied tool — `bash` included — dies with 127
+    # before the code under test ever runs.  Copying is also ruinously slow for
+    # a whole-directory curation: /usr/bin is hundreds of megabytes of real
+    # binaries, versus a few kilobytes of shims.  A shim keeps the real binary
+    # at its real location beside its runtime, on every platform, while the
+    # stub dir still contains nothing but the named tools.
+    local dir="$1" name="$2" real="${3:-}"
+    if [ -z "$real" ]; then
+        real="$(command -v "$name")" || return 1
+    fi
+    _write_shim "${dir}/${name}" "$real"
+    chmod +x "${dir}/${name}"
+}
+
+_write_shim() {
+    # Write (but do not chmod) a shim at $1 that execs $2. The interpreter is
+    # resolved once per bats process — a shim's #! must be an absolute path,
+    # since the whole point is to work where PATH cannot find bash.
+    printf '#!%s\nexec %q "$@"\n' "${_SHIM_BASH:=$(command -v bash)}" "$2" > "$1"
+}
+
+curated_bin() {
+    # Build a stub-PATH directory at $1 holding a shim for every tool in the
+    # standard bin dirs EXCEPT the space-separated names in $2, and echo the
+    # directory. Callers use it to prove a `command -v <tool>` fast path in the
+    # code under test is genuinely unsatisfiable, without starving that code of
+    # every other tool it legitimately needs. One bulk chmod rather than one
+    # per entry keeps the cost to a single fork over the whole directory.
+    local dir="$1" exclude=" ${2:-} "
+    mkdir -p "$dir"
+    local d f base
+    for d in /usr/bin /bin /usr/local/bin; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*; do
+            base="${f##*/}"
+            case "$exclude" in *" $base "*) continue ;; esac
+            [ -e "${dir}/${base}" ] && continue
+            _write_shim "${dir}/${base}" "$f"
+        done
+    done
+    chmod +x "$dir"/* 2> /dev/null || true
+    printf '%s' "$dir"
+}
+
+_exec_bit_representable() {
+    # Git-Bash mounts NTFS `noacl`, where chmod cannot set the POSIX x bit at
+    # all: Cygwin instead INFERS executability from file content (a `#!` line
+    # or an `MZ` header).  A stub payload of arbitrary bytes therefore stays
+    # mode 644 no matter what the code under test chmods.
+    local probe="${_TEST_HOME}/.exec-bit-probe"
+    printf 'probe' > "$probe"
+    chmod +x "$probe"
+    [ -x "$probe" ]
+}
+
+assert_installed_executable() {
+    # Assert an installer placed $1 and marked it executable.  The x bit is
+    # only checked where the filesystem can represent it (see
+    # _exec_bit_representable); asserting it elsewhere would fail for a reason
+    # that has nothing to do with the installer.  Forcing it to hold by giving
+    # the stub payload `#!`/`MZ` content would be worse: the assertion would
+    # then pass whether or not the installer ever chmodded anything.
+    local path="$1"
+    if [ ! -f "$path" ]; then
+        printf 'expected installed file: %s\n' "$path" >&2
+        return 1
+    fi
+    if _exec_bit_representable && [ ! -x "$path" ]; then
+        printf 'installed but not executable: %s\n' "$path" >&2
+        return 1
+    fi
+}
+
+require_tool() {
+    # Skip the current test when host tool $1 is missing.  $2 says what the
+    # test needs it for, so the skip line names the gap instead of leaving a
+    # reader to discover an absent test.
+    command -v "$1" > /dev/null 2>&1 || skip "host has no ${1}: ${2}"
+}
+
 # Default setup/teardown — bats files that don't define their own pick these up.
 setup() {
     common_setup

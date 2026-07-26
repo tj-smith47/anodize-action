@@ -157,7 +157,7 @@ teardown() {
 # Mutual-exclusion tests
 # ---------------------------------------------------------------------------
 
-@test "version + from-branch → validation body exits non-zero" {
+@test "version + from-branch -> validation body exits non-zero" {
     FROM_BRANCH="my-feature" FROM_SOURCE="" FROM_ARTIFACT="" VERSION="v1.2.3" \
         run _run_validation
     [ "$status" -ne 0 ]
@@ -165,7 +165,7 @@ teardown() {
     [[ "$output" == *"version"* ]]
 }
 
-@test "from-source + from-branch → validation body exits non-zero" {
+@test "from-source + from-branch -> validation body exits non-zero" {
     FROM_BRANCH="my-feature" FROM_SOURCE="true" FROM_ARTIFACT="" VERSION="" \
         run _run_validation
     [ "$status" -ne 0 ]
@@ -173,7 +173,7 @@ teardown() {
     [[ "$output" == *"from-source"* ]]
 }
 
-@test "from-artifact + from-branch → validation body exits non-zero" {
+@test "from-artifact + from-branch -> validation body exits non-zero" {
     FROM_BRANCH="my-feature" FROM_SOURCE="" FROM_ARTIFACT="anodizer-linux" VERSION="" \
         run _run_validation
     [ "$status" -ne 0 ]
@@ -181,13 +181,13 @@ teardown() {
     [[ "$output" == *"from-artifact"* ]]
 }
 
-@test "only from-branch set → validation body exits 0" {
+@test "only from-branch set -> validation body exits 0" {
     FROM_BRANCH="my-feature" FROM_SOURCE="" FROM_ARTIFACT="" VERSION="" \
         run _run_validation
     [ "$status" -eq 0 ]
 }
 
-@test "only version set → validation body exits 0" {
+@test "only version set -> validation body exits 0" {
     FROM_BRANCH="" FROM_SOURCE="" FROM_ARTIFACT="" VERSION="v1.2.3" \
         run _run_validation
     [ "$status" -eq 0 ]

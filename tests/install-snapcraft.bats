@@ -32,9 +32,12 @@ setup() {
     CONTROLLED_PATH="${FAKE_BIN}:/usr/bin:/bin"
 
     # Real interpreter, reachable from the controlled PATH regardless of
-    # where the host installs it.
-    REAL_PYTHON="$(command -v python3)"
-    ln -s "$REAL_PYTHON" "${FAKE_BIN}/python3"
+    # where the host installs it. Absent on hosts that ship python under
+    # another name (Windows names it `python`); the tests that actually drive
+    # the interpreter guard themselves with _require_python3, so setup stays
+    # usable for the arms that never reach it.
+    REAL_PYTHON="$(command -v python3 || true)"
+    [ -n "$REAL_PYTHON" ] && path_shim "$FAKE_BIN" python3 "$REAL_PYTHON"
 
     GITHUB_PATH_FILE="${_TEST_HOME}/github_path"
     : > "$GITHUB_PATH_FILE"
@@ -108,9 +111,16 @@ teardown() {
     common_teardown
 }
 
+# The pip/pipx fallback arms shell out to the interpreter the installer itself
+# spawns, so they need a real `python3` on the host.
+_require_python3() {
+    require_tool python3 "the snapcraft pip fallback runs its constraints generator under it"
+}
+
 # The constraints generator needs stdlib tomllib; hosts on python < 3.11
 # cannot exercise the pip-fallback paths.
 _require_tomllib() {
+    _require_python3
     "$REAL_PYTHON" -c 'import tomllib' 2>/dev/null \
         || skip "host python3 lacks tomllib (< 3.11)"
 }
@@ -289,6 +299,9 @@ STUB
 # ── Test 8: uv.lock fetch failure → loud fail ───────────────────────────
 
 @test "snapcraft: uv.lock fetch failure fails loudly" {
+    # The interpreter gate precedes the fetch, so without python3 the run fails
+    # on that instead and never reaches the uv.lock message under test.
+    _require_python3
     cat > "${FAKE_BIN}/curl" <<'STUB'
 #!/usr/bin/env bash
 exit 22

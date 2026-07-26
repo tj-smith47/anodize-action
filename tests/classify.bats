@@ -52,7 +52,7 @@ _assert_output_kv() {
 
 # ── Default tuple → plain release download, no toolchain ───────────────────
 
-@test "classify: all-default inputs → release, no rust/cache/sccache" {
+@test "classify: all-default inputs -> release, no rust/cache/sccache" {
     _run_classify
     [ "$status" -eq 0 ]
     _assert_output_kv install_method release
@@ -68,7 +68,7 @@ _assert_output_kv() {
 # on a runner without Rust and failed. needs_cargo_cache / needs_sccache
 # already included FROM_SOURCE — needs_rust is now consistent with them.
 
-@test "classify: from-source alone → source AND needs_rust=true (toolchain provisioned)" {
+@test "classify: from-source alone -> source AND needs_rust=true (toolchain provisioned)" {
     _run_classify FROM_SOURCE="true"
     [ "$status" -eq 0 ]
     _assert_output_kv install_method source
@@ -79,7 +79,7 @@ _assert_output_kv() {
 
 # ── determinism (version unpinned) → source build, full toolchain ──────────
 
-@test "classify: determinism + unpinned version → source, full toolchain" {
+@test "classify: determinism + unpinned version -> source, full toolchain" {
     _run_classify DETERMINISM="true"
     [ "$status" -eq 0 ]
     _assert_output_kv install_method source
@@ -92,7 +92,7 @@ _assert_output_kv() {
 
 # ── determinism + a pinned (non-latest) version → release download ─────────
 
-@test "classify: determinism + pinned version → release (downloads the pinned tag)" {
+@test "classify: determinism + pinned version -> release (downloads the pinned tag)" {
     _run_classify DETERMINISM="true" VERSION="v1.2.3"
     [ "$status" -eq 0 ]
     _assert_output_kv install_method release
@@ -103,7 +103,7 @@ _assert_output_kv() {
 
 # ── from-branch → branch build, needs_rust + caches ────────────────────────
 
-@test "classify: from-branch → branch AND needs_rust=true" {
+@test "classify: from-branch -> branch AND needs_rust=true" {
     _run_classify FROM_BRANCH="main"
     [ "$status" -eq 0 ]
     _assert_output_kv install_method branch
@@ -116,7 +116,7 @@ _assert_output_kv() {
 
 # ── install-rust input alone forces the toolchain without a source build ───
 
-@test "classify: install-rust input → needs_rust=true while install_method stays release" {
+@test "classify: install-rust input -> needs_rust=true while install_method stays release" {
     _run_classify INSTALL_RUST="true"
     [ "$status" -eq 0 ]
     _assert_output_kv install_method release
@@ -138,7 +138,7 @@ _assert_output_kv() {
 
 # ── run_anodizer gating: args present, not install-only, not determinism ───
 
-@test "classify: args + not install-only + not determinism → run_anodizer=true" {
+@test "classify: args + not install-only + not determinism -> run_anodizer=true" {
     _run_classify ARGS="release --clean"
     [ "$status" -eq 0 ]
     _assert_output_kv run_anodizer true

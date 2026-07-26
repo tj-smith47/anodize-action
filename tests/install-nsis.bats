@@ -101,22 +101,11 @@ _run_install_nsis() {
     grep -qxF "${_TEST_HOME}/nsis-root" "$GITHUB_PATH"
 }
 
-# A curated bin dir that symlinks every standard tool EXCEPT makensis, so a
+# A curated bin dir that shims every standard tool EXCEPT makensis, so a
 # real host `makensis` (this build box has one in /usr/bin) cannot leak into the
 # `command -v makensis` fast path and mask the where.exe / glob branches.
 _curated_bin_without_makensis() {
-    local dir="${_TEST_HOME}/curated-bin"
-    mkdir -p "$dir"
-    local d f base
-    for d in /usr/bin /bin /usr/local/bin; do
-        [ -d "$d" ] || continue
-        for f in "$d"/*; do
-            base="$(basename "$f")"
-            case "$base" in makensis|makensis.exe) continue ;; esac
-            [ -e "${dir}/${base}" ] || ln -s "$f" "${dir}/${base}" 2>/dev/null || true
-        done
-    done
-    printf '%s' "$dir"
+    curated_bin "${_TEST_HOME}/curated-bin" "makensis makensis.exe"
 }
 
 # ── Test 3: where.exe returning empty must NOT poison PATH with "." ───────

@@ -142,7 +142,7 @@ _run_install_nfpm() {
     # No apt repo / apt-get is involved (the whole point of the change).
     [[ "$output" != *"apt-get"* ]]
     # The binary landed and its dir was added to PATH.
-    [ -x "${RUNNER_TEMP}/nfpm/nfpm" ]
+    assert_installed_executable "${RUNNER_TEMP}/nfpm/nfpm"
     grep -q "${RUNNER_TEMP}/nfpm" "$GITHUB_PATH"
     [[ "$output" == *"nfpm 2.46.3"* ]]
 }

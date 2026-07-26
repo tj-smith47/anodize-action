@@ -69,7 +69,7 @@ teardown() {
     common_teardown
 }
 
-@test "override passthrough — explicit CSV wins regardless of RUNNER_OS" {
+@test "override passthrough -- explicit CSV wins regardless of RUNNER_OS" {
     RUNNER_OS=Linux OVERRIDE='custom-triple-1,custom-triple-2' \
         ANODIZE_BIN=fake-anodizer \
         run "$SCRIPT"
@@ -79,7 +79,7 @@ teardown() {
     grep -qx 'csv=custom-triple-1,custom-triple-2' "$GITHUB_OUTPUT"
 }
 
-@test "no GITHUB_OUTPUT — CSV falls back to stdout for non-GHA callers" {
+@test "no GITHUB_OUTPUT -- CSV falls back to stdout for non-GHA callers" {
     unset GITHUB_OUTPUT
     RUNNER_OS=Linux OVERRIDE='only-stdout-1,only-stdout-2' \
         ANODIZE_BIN=fake-anodizer \
@@ -88,31 +88,31 @@ teardown() {
     [[ "$output" == *"only-stdout-1,only-stdout-2"* ]]
 }
 
-@test "RUNNER_OS=Linux → joins ubuntu-latest entries" {
+@test "RUNNER_OS=Linux -> joins ubuntu-latest entries" {
     RUNNER_OS=Linux ANODIZE_BIN=fake-anodizer run "$SCRIPT"
     [ "$status" -eq 0 ]
     grep -qx 'csv=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu' "$GITHUB_OUTPUT"
 }
 
-@test "RUNNER_OS=macOS → joins macos-latest (darwin) entries" {
+@test "RUNNER_OS=macOS -> joins macos-latest (darwin) entries" {
     RUNNER_OS=macOS ANODIZE_BIN=fake-anodizer run "$SCRIPT"
     [ "$status" -eq 0 ]
     grep -qx 'csv=x86_64-apple-darwin,aarch64-apple-darwin' "$GITHUB_OUTPUT"
 }
 
-@test "RUNNER_OS=Windows → joins windows-latest entries" {
+@test "RUNNER_OS=Windows -> joins windows-latest entries" {
     RUNNER_OS=Windows ANODIZE_BIN=fake-anodizer run "$SCRIPT"
     [ "$status" -eq 0 ]
     grep -qx 'csv=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc' "$GITHUB_OUTPUT"
 }
 
-@test "no matching entries → exit 1 with explanatory error" {
+@test "no matching entries -> exit 1 with explanatory error" {
     RUNNER_OS=Linux ANODIZE_BIN=fake-anodizer-empty run "$SCRIPT"
     [ "$status" -ne 0 ]
     [[ "$output" == *"No targets match RUNNER_OS=Linux"* ]]
 }
 
-@test "unsupported RUNNER_OS → exit 1 before invoking anodizer" {
+@test "unsupported RUNNER_OS -> exit 1 before invoking anodizer" {
     RUNNER_OS=FreeBSD ANODIZE_BIN=fake-anodizer run "$SCRIPT"
     [ "$status" -ne 0 ]
     [[ "$output" == *"Unsupported RUNNER_OS for determinism: FreeBSD"* ]]

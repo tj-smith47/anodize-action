@@ -152,7 +152,7 @@ _run_install_rcodesign_no_cargo() {
 @test "rcodesign: default version installs on Linux x86_64" {
     _run_install_rcodesign RUNNER_OS="Linux" RUNNER_ARCH="X64"
     [ "$status" -eq 0 ]
-    [ -x "${RUNNER_TEMP}/rcodesign/rcodesign" ]
+    assert_installed_executable "${RUNNER_TEMP}/rcodesign/rcodesign"
     grep -q "${RUNNER_TEMP}/rcodesign" "$GITHUB_PATH"
 }
 
@@ -161,7 +161,7 @@ _run_install_rcodesign_no_cargo() {
 @test "rcodesign: default version installs on macOS arm64" {
     _run_install_rcodesign RUNNER_OS="macOS" RUNNER_ARCH="ARM64"
     [ "$status" -eq 0 ]
-    [ -x "${RUNNER_TEMP}/rcodesign/rcodesign" ]
+    assert_installed_executable "${RUNNER_TEMP}/rcodesign/rcodesign"
 }
 
 # ── Test 3: version override missing its sha → loud failure ────────────────

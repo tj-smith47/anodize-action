@@ -96,8 +96,8 @@ _run_install_linuxdeploy() {
     _run_install_linuxdeploy RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
     # Both binaries landed on PATH under one install dir.
-    [ -x "${RUNNER_TEMP}/linuxdeploy/linuxdeploy" ]
-    [ -x "${RUNNER_TEMP}/linuxdeploy/linuxdeploy-plugin-appimage" ]
+    assert_installed_executable "${RUNNER_TEMP}/linuxdeploy/linuxdeploy"
+    assert_installed_executable "${RUNNER_TEMP}/linuxdeploy/linuxdeploy-plugin-appimage"
     # Install dir was added to PATH.
     grep -q "${RUNNER_TEMP}/linuxdeploy" "$GITHUB_PATH"
     # FUSE-less escape hatch exported for the later `anodizer release` step.

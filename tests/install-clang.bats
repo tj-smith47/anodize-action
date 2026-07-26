@@ -65,23 +65,12 @@ teardown() {
     common_teardown
 }
 
-# A curated bin dir that symlinks every standard tool EXCEPT clang-cl/where.exe,
+# A curated bin dir that shims every standard tool EXCEPT clang-cl/where.exe,
 # so a real host clang-cl (unlikely, but mirrors install-nsis.bats's makensis
 # curation) can't leak into the `command -v clang-cl` fast path and mask the
 # known-dir / choco-fallback branches.
 _curated_bin_without_clang_cl() {
-    local dir="${_TEST_HOME}/curated-bin"
-    mkdir -p "$dir"
-    local d f base
-    for d in /usr/bin /bin /usr/local/bin; do
-        [ -d "$d" ] || continue
-        for f in "$d"/*; do
-            base="$(basename "$f")"
-            case "$base" in clang-cl|clang-cl.exe|where.exe) continue ;; esac
-            [ -e "${dir}/${base}" ] || ln -s "$f" "${dir}/${base}" 2>/dev/null || true
-        done
-    done
-    printf '%s' "$dir"
+    curated_bin "${_TEST_HOME}/curated-bin" "clang-cl clang-cl.exe where.exe"
 }
 
 _run_install_clang_cl() {

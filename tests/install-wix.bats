@@ -172,6 +172,8 @@ _run_install_wix3() {
 # `where.exe candle` lookup. When that ALSO finds nothing, `dirname ""` would
 # yield "." — adding cwd to GITHUB_PATH instead of the WiX bin dir. The fix
 # leaves $bindir empty so the glob fallback runs (or a warning is emitted).
+# WIX_GLOB_ROOT_PREFIX points the glob at an empty sandbox so the roots miss on
+# a host that really does have a WiX toolset installed.
 _run_install_wix3_no_candle() {
     # A fake `where.exe` that finds nothing (real where.exe exits 1, not 0),
     # and NO `candle` anywhere on PATH — the post-choco-install state the bug
@@ -180,11 +182,14 @@ _run_install_wix3_no_candle() {
     mkdir -p "$empty_where_dir"
     printf '#!/usr/bin/env bash\nexit 1\n' > "${empty_where_dir}/where.exe"
     chmod +x "${empty_where_dir}/where.exe"
+    local curated
+    curated="$(_curated_bin_without_candle)"
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
         GITHUB_PATH="${GITHUB_PATH}" \
         NO_COLOR=1 \
-        PATH="${empty_where_dir}:${FAKE_BIN}:/usr/bin:/bin" \
+        WIX_GLOB_ROOT_PREFIX="${_TEST_HOME}/empty-roots" \
+        PATH="${empty_where_dir}:${FAKE_BIN}:${curated}" \
         "$@" \
         bash -c "
             source '${REPO_ROOT}/scripts/install/deps.sh'
@@ -204,22 +209,11 @@ _run_install_wix3_no_candle() {
     [[ "$output" == *"candle/light bin dir not found"* ]]
 }
 
-# A curated bin dir that symlinks every standard tool EXCEPT candle, so a real
+# A curated bin dir that shims every standard tool EXCEPT candle, so a real
 # host `candle` cannot leak into the `command -v candle` fast path and mask the
 # where.exe / glob branches (mirrors install-nsis.bats's makensis curation).
 _curated_bin_without_candle() {
-    local dir="${_TEST_HOME}/curated-bin"
-    mkdir -p "$dir"
-    local d f base
-    for d in /usr/bin /bin /usr/local/bin; do
-        [ -d "$d" ] || continue
-        for f in "$d"/*; do
-            base="$(basename "$f")"
-            case "$base" in candle|candle.exe) continue ;; esac
-            [ -e "${dir}/${base}" ] || ln -s "$f" "${dir}/${base}" 2>/dev/null || true
-        done
-    done
-    printf '%s' "$dir"
+    curated_bin "${_TEST_HOME}/curated-bin" "candle candle.exe"
 }
 
 # ── Test: glob fallback resolves the WiX v3 toolset bin dir ───────────────
@@ -259,7 +253,7 @@ _curated_bin_without_candle() {
     grep -qxF "${wix_bin}" "$GITHUB_PATH"
 }
 
-@test "wix3: Linux queues wixl (msitools) — same as the v4 arm" {
+@test "wix3: Linux queues wixl (msitools) -- same as the v4 arm" {
     # The per-package ✓ on flush is a verbose-only line; run under verbose so it
     # surfaces for the assertion.
     _run_install_wix3 RUNNER_OS="Linux" ANODIZER_VERBOSE=1

@@ -10,7 +10,12 @@
 
 load test_helper
 
-setup() { common_setup; }
+setup() {
+    common_setup
+    # The validator is a python3 + PyYAML program; without the interpreter it
+    # exits 127 and every assertion below would report the wrong failure.
+    require_tool python3 "action-manifest.sh is a python3 + PyYAML program"
+}
 teardown() { common_teardown; }
 
 VALIDATE="scripts/validate/action-manifest.sh"
