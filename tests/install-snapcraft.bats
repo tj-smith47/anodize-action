@@ -40,8 +40,14 @@ load test_helper
 # /usr/bin/pipx — the pip-fallback arm asserts pipx is ABSENT, and `command -v`
 # would find the host's — so a distro that packages pipx silently rewrites
 # which branch runs and fires a live `pipx install git+https://…`.
+#
+# snapcraft is excluded for the same reason, one step further along the script:
+# the post-install `snapcraft version` probe would resolve a host snapcraft on
+# an arm that never stubbed one, so the assertion would describe the host's
+# install rather than what the installer just did. Arms that need the probe to
+# answer put their own stub in FAKE_BIN, which precedes the curated dir.
 _controlled_path() {
-    printf '%s:%s' "$FAKE_BIN" "$(curated_bin "pipx ${1:-}")"
+    printf '%s:%s' "$FAKE_BIN" "$(curated_bin "pipx snapcraft ${1:-}")"
 }
 
 setup() {
