@@ -15,12 +15,15 @@ tasks:
       # Fail if any chatty subprocess is invoked bare — regression guard for the
       # `info: component rust-std is up to date`-class leak.
       - bash scripts/validate/output-discipline.sh scripts
-      - bats tests/
+      # Not bare `bats`: a skip exits 0, so a test that stops running reads
+      # green. bats-suite.sh gates on the TAP summary (0 failures, 0 skips,
+      # planned == reported) exactly as the CI legs do.
+      - bash scripts/validate/bats-suite.sh tests
 
   test:
     desc: Run the bats test suite
     cmds:
-      - bats tests/
+      - bash scripts/validate/bats-suite.sh tests
 
   commit:
     desc: "Lint, then commit. Usage: task commit -- -m 'message'"

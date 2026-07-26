@@ -1,2 +1,4 @@
 .claude/
 CLAUDE.local.md
+# The Test workflow clones the pinned bats-core here and puts it on PATH.
+.bats-core/

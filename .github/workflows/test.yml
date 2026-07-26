@@ -65,24 +65,58 @@ jobs:
         run: bash scripts/validate/action-manifest.sh action.yml
 
   bats:
-    name: bats
-    runs-on: ubuntu-latest
+    name: bats (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Windows and Linux fail for different reasons; surfacing only the first
+      # would hide the other for a whole round trip.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        # Git-Bash on the Windows leg — the suite is bash, and MSYS is the
+        # environment every Windows consumer of this action's scripts runs in.
+        shell: bash
+    env:
+      # Every capability the suite needs is provisioned below on BOTH legs, so
+      # any skip is a test that stopped running, not a host gap. bats-suite.sh
+      # fails when the real count moves off this in either direction.
+      ANODIZER_EXPECTED_SKIPS: '0'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # action-manifest.sh is a python3 + PyYAML program, and the snapcraft
+      # pip-fallback arms drive an interpreter. Windows CPython ships no
+      # python3.exe; tests/test_helper.bash publishes `python` under that name,
+      # so pinning one interpreter here is enough for both legs.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: |
+          python -m pip install --disable-pip-version-check pyyaml
+          # Assert from bash, not just from the setup action: if the
+          # interpreter is unreachable here the suite degrades to 13 skips,
+          # and the skip budget would report the symptom rather than this
+          # cause. tomllib (3.11+) is what the snapcraft constraints
+          # generator needs.
+          python -c 'import yaml, tomllib'
+
       # The tests/*.bats suite exercises the real install/run/validate scripts
       # in isolated throwaway dirs; it had no CI job, so regressions in the
       # scripts shipped uncaught. Pin bats-core by tag so the runner matches
-      # local dev.
-      - name: Install bats
+      # local dev. The clone is put on PATH in-place rather than installed to a
+      # prefix: install.sh needs sudo, which Git-Bash has no equivalent for.
+      - name: Run bats suite
         run: |
           git clone --depth 1 --branch v1.11.1 \
-            https://github.com/bats-core/bats-core.git "${RUNNER_TEMP}/bats-core"
-          sudo "${RUNNER_TEMP}/bats-core/install.sh" /usr/local
-
-      - name: Run bats suite
-        run: bats tests/
+            https://github.com/bats-core/bats-core.git .bats-core
+          export PATH="${PWD}/.bats-core/bin:${PATH}"
+          bash scripts/validate/bats-suite.sh tests
 
   zig-cross-smoke:
     name: Zig cross-compile smoke

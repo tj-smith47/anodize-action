@@ -2,11 +2,20 @@
 # install-snapcraft.bats — unit tests for the snapcraft installer in
 # scripts/install/deps.sh.
 #
-# Stubs snap, sudo, curl, pipx, and (where needed) python3 so no network,
-# snapd, or root is needed. The host machine may carry real snap/snapcraft/
-# pipx binaries, so every test runs with a CONTROLLED PATH (fake-bin +
-# /usr/bin:/bin only) instead of inheriting the developer's full PATH —
-# /snap/bin and linuxbrew must never leak into an assertion.
+# Stubs snap, sudo, curl, apt-get, unsquashfs, pipx, and the `python3 -m pip`
+# entry point so no network, snapd, or root is needed. The host machine may
+# carry real snap/snapcraft/pipx binaries, so every test runs with a CONTROLLED
+# PATH (fake-bin + a curated copy of the standard bin dirs) instead of
+# inheriting the developer's full PATH — /snap/bin and linuxbrew must never
+# leak into an assertion.
+#
+# NO TEST HERE MAY REACH THE NETWORK. The installer's fallback ends in
+# `pipx install git+https://github.com/canonical/snapcraft@<tag>` or the
+# equivalent `python3 -m pip install`; running either for real clones the
+# upstream repo and builds native wheels (pygit2), which took minutes and made
+# the arm hostage to GitHub serving a git+https clone. Both entry points are
+# stubbed in setup so the assertions read the ARGV the installer produced —
+# that argv is what the tests are about, not that pip really ran.
 #
 # Covers eleven behaviours:
 #
@@ -24,20 +33,54 @@
 
 load test_helper
 
+# PATH for a test arm: the fake-bin stubs first, then a curated copy of the
+# standard bin dirs in which $1 (space-separated names) is unresolvable.
+#
+# pipx is excluded on every arm. A fake-bin entry cannot mask a real
+# /usr/bin/pipx — the pip-fallback arm asserts pipx is ABSENT, and `command -v`
+# would find the host's — so a distro that packages pipx silently rewrites
+# which branch runs and fires a live `pipx install git+https://…`.
+_controlled_path() {
+    printf '%s:%s' "$FAKE_BIN" "$(curated_bin "pipx ${1:-}")"
+}
+
 setup() {
     common_setup
 
     FAKE_BIN="${_TEST_HOME}/fake-bin"
     mkdir -p "$FAKE_BIN"
-    CONTROLLED_PATH="${FAKE_BIN}:/usr/bin:/bin"
+    CONTROLLED_PATH="$(_controlled_path)"
 
-    # Real interpreter, reachable from the controlled PATH regardless of
-    # where the host installs it. Absent on hosts that ship python under
-    # another name (Windows names it `python`); the tests that actually drive
-    # the interpreter guard themselves with _require_python3, so setup stays
-    # usable for the arms that never reach it.
-    REAL_PYTHON="$(command -v python3 || true)"
-    [ -n "$REAL_PYTHON" ] && path_shim "$FAKE_BIN" python3 "$REAL_PYTHON"
+    # Real interpreter, reachable from the controlled PATH regardless of where
+    # the host installs it or what it is called (Windows names it `python`).
+    # Still absent on a host with no Python at all; the tests that actually
+    # drive the interpreter guard themselves with _require_python3, so setup
+    # stays usable for the arms that never reach it.
+    REAL_PYTHON="$(resolve_python3 || true)"
+
+    # Dispatching python3: intercept `-m pip` into a log and hand everything
+    # else (the constraints generator, the sysconfig probe) to the real
+    # interpreter. An `install` also materialises the console script both
+    # install paths land in ~/.local/bin, so the installer's post-install
+    # `snapcraft version` probe has something to run.
+    PIP_LOG="${_TEST_HOME}/pip.log"
+    : > "$PIP_LOG"
+    if [ -n "$REAL_PYTHON" ]; then
+        cat > "${FAKE_BIN}/python3" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "-m" ] && [ "\$2" = "pip" ]; then
+    echo "\$@" >> "${PIP_LOG}"
+    if [ "\$3" = "install" ]; then
+        mkdir -p "\$HOME/.local/bin"
+        printf '#!/usr/bin/env bash\nexit 0\n' > "\$HOME/.local/bin/snapcraft"
+        chmod +x "\$HOME/.local/bin/snapcraft"
+    fi
+    exit 0
+fi
+exec "${REAL_PYTHON}" "\$@"
+STUB
+        chmod +x "${FAKE_BIN}/python3"
+    fi
 
     GITHUB_PATH_FILE="${_TEST_HOME}/github_path"
     : > "$GITHUB_PATH_FILE"
@@ -105,6 +148,13 @@ STUB
     #    the real package manager is never reached either way ─────────────
     printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/apt-get"
     chmod +x "${FAKE_BIN}/apt-get"
+
+    # ── Stub: unsquashfs — squashfs-tools exists only on Linux, so the arms
+    #    that expect the probe to SUCCEED would fail on a macOS or Git-Bash
+    #    host for a reason unrelated to the installer. The arms that need it
+    #    absent override _squashfs_tools_available directly ────────────────
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${FAKE_BIN}/unsquashfs"
+    chmod +x "${FAKE_BIN}/unsquashfs"
 }
 
 teardown() {
@@ -112,9 +162,12 @@ teardown() {
 }
 
 # The pip/pipx fallback arms shell out to the interpreter the installer itself
-# spawns, so they need a real `python3` on the host.
+# spawns, so they need a real one on the host. setup already resolved it under
+# either spelling and published it into fake-bin as `python3` — the name the
+# installer uses — so an empty REAL_PYTHON means the host has neither.
 _require_python3() {
-    require_tool python3 "the snapcraft pip fallback runs its constraints generator under it"
+    [ -n "$REAL_PYTHON" ] \
+        || skip "host has no python3 or python: the snapcraft pip fallback runs its constraints generator under it"
 }
 
 # The constraints generator needs stdlib tomllib; hosts on python < 3.11
@@ -231,27 +284,11 @@ STUB
 
 @test "snapcraft: no snapd and no pipx installs via pip --user" {
     _require_tomllib
-    PIP_LOG="${_TEST_HOME}/pip.log"
-    # Dispatching python3 stub: intercept `-m pip`, pass everything else
-    # (constraints generator, sysconfig probe) to the real interpreter.
-    rm "${FAKE_BIN}/python3"
-    cat > "${FAKE_BIN}/python3" <<STUB
-#!/usr/bin/env bash
-if [ "\$1" = "-m" ] && [ "\$2" = "pip" ]; then
-    echo "\$@" >> "${PIP_LOG}"
-    if [ "\$3" = "install" ]; then
-        mkdir -p "\$HOME/.local/bin"
-        printf '#!/usr/bin/env bash\nexit 0\n' > "\$HOME/.local/bin/snapcraft"
-        chmod +x "\$HOME/.local/bin/snapcraft"
-    fi
-    exit 0
-fi
-exec "${REAL_PYTHON}" "\$@"
-STUB
-    chmod +x "${FAKE_BIN}/python3"
-
+    # No pipx stub: the curated PATH makes pipx unresolvable, so the installer
+    # takes the pip arm. The python3 stub from setup records its argv.
     _run_install_snapcraft RUNNER_OS="Linux"
     [ "$status" -eq 0 ]
+    grep -q -- '^-m pip install ' "$PIP_LOG"
     grep -q -- '--constraint .*/snapcraft-pip/constraints.txt' "$PIP_LOG"
     grep -q -- '--user' "$PIP_LOG"
     grep -q 'git+https://github.com/canonical/snapcraft@' "$PIP_LOG"
@@ -308,9 +345,31 @@ exit 22
 STUB
     chmod +x "${FAKE_BIN}/curl"
 
-    _run_install_snapcraft RUNNER_OS="Linux"
+    # This is the only arm that drives fetch_retry's whole ladder. Overriding
+    # sleep keeps every attempt and the backoff messages while dropping the
+    # 2s + 4s of real waiting the ladder would otherwise add to the suite.
+    run env \
+        GITHUB_ACTION_PATH="${REPO_ROOT}" \
+        NO_COLOR=1 \
+        RUNNER_OS="Linux" \
+        RUNNER_ARCH="X64" \
+        RUNNER_TEMP="${RUNNER_TEMP_DIR}" \
+        GITHUB_PATH="${GITHUB_PATH_FILE}" \
+        SUDO_LOG="${SUDO_LOG}" \
+        ANODIZER_VERBOSE=1 \
+        PATH="${CONTROLLED_PATH}" \
+        bash -c "
+            source '${REPO_ROOT}/scripts/install/deps.sh'
+            brew_install() { :; }
+            skip_unsupported_os() { :; }
+            sleep() { :; }
+            install_snapcraft
+        "
     [ "$status" -ne 0 ]
     [[ "$output" == *"uv.lock"* ]]
+    # Every retry in the ladder ran before the loud failure.
+    [[ "$output" == *"retry 1/2"* ]]
+    [[ "$output" == *"retry 2/2"* ]]
 }
 
 # ── Test 9: unsquashfs missing + apt-get available → squashfs-tools queued ──
@@ -366,15 +425,14 @@ STUB
 # ── Test 10: unsquashfs missing + no apt-get → loud fail naming squashfs-tools
 
 @test "snapcraft: missing unsquashfs and no apt-get fails with squashfs-tools message" {
-    _require_tomllib
-    # Remove apt-get stub so command -v apt-get fails.
+    # Fails before the constraints generator, so an interpreter is enough.
+    _require_python3
+    # Dropping the fake-bin stub is not enough: the curated PATH still carries
+    # a shim for a real /usr/bin/apt-get, and on an apt host the installer then
+    # took the apt branch, ran the pip fallback for real against the network,
+    # and passed on the verbose apt line instead of the message under test.
     rm -f "${FAKE_BIN}/apt-get"
 
-    # The "installing squashfs-tools … via apt for the pip fallback" detail is a
-    # verbose-only line; run under verbose so the squashfs-tools string surfaces.
-    # (When command -v apt-get genuinely misses, the gha_fail message names
-    # squashfs-tools unconditionally; under verbose the apt-batch detail also
-    # carries it — either path satisfies the assertion.)
     run env \
         GITHUB_ACTION_PATH="${REPO_ROOT}" \
         NO_COLOR=1 \
@@ -384,8 +442,7 @@ STUB
         GITHUB_PATH="${GITHUB_PATH_FILE}" \
         FIXTURE_LOCK="${FIXTURE_LOCK}" \
         SUDO_LOG="${SUDO_LOG}" \
-        PATH="${CONTROLLED_PATH}" \
-        ANODIZER_VERBOSE=1 \
+        PATH="$(_controlled_path apt-get)" \
         bash -c "
             source '${REPO_ROOT}/scripts/install/deps.sh'
             brew_install() { :; }
@@ -395,6 +452,10 @@ STUB
         "
     [ "$status" -ne 0 ]
     [[ "$output" == *"squashfs-tools"* ]]
+    [[ "$output" == *"no apt-get"* ]]
+    # Neither the apt batch nor the install itself may have been reached.
+    [ ! -s "$SUDO_LOG" ]
+    ! grep -q -- '-m pip install ' "$PIP_LOG"
 }
 
 # ── Test 11: post-install assert fires independently of apt_needs path ───────

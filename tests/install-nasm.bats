@@ -67,7 +67,7 @@ teardown() {
 # curation) can't leak into the `command -v nasm` fast path and mask the
 # known-dir / choco-fallback branches.
 _curated_bin_without_nasm() {
-    curated_bin "${_TEST_HOME}/curated-bin" "nasm nasm.exe where.exe"
+    curated_bin "nasm nasm.exe where.exe"
 }
 
 _run_install_nasm() {

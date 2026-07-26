@@ -105,7 +105,7 @@ _run_install_nsis() {
 # real host `makensis` (this build box has one in /usr/bin) cannot leak into the
 # `command -v makensis` fast path and mask the where.exe / glob branches.
 _curated_bin_without_makensis() {
-    curated_bin "${_TEST_HOME}/curated-bin" "makensis makensis.exe"
+    curated_bin "makensis makensis.exe"
 }
 
 # ── Test 3: where.exe returning empty must NOT poison PATH with "." ───────

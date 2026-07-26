@@ -70,7 +70,7 @@ teardown() {
 # curation) can't leak into the `command -v clang-cl` fast path and mask the
 # known-dir / choco-fallback branches.
 _curated_bin_without_clang_cl() {
-    curated_bin "${_TEST_HOME}/curated-bin" "clang-cl clang-cl.exe where.exe"
+    curated_bin "clang-cl clang-cl.exe where.exe"
 }
 
 _run_install_clang_cl() {

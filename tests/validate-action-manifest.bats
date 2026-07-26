@@ -14,7 +14,12 @@ setup() {
     common_setup
     # The validator is a python3 + PyYAML program; without the interpreter it
     # exits 127 and every assertion below would report the wrong failure.
-    require_tool python3 "action-manifest.sh is a python3 + PyYAML program"
+    # Windows CPython ships no python3.exe, so publish whatever interpreter the
+    # host has under that name rather than dropping the file to skips there.
+    provide_python3 "${_TEST_HOME}/py-bin" \
+        || skip "host has no python3 or python: action-manifest.sh is a python3 + PyYAML program"
+    python3 -c 'import yaml' 2> /dev/null \
+        || skip "host python3 lacks PyYAML: action-manifest.sh parses action.yml with it"
 }
 teardown() { common_teardown; }
 

@@ -213,7 +213,7 @@ _run_install_wix3_no_candle() {
 # host `candle` cannot leak into the `command -v candle` fast path and mask the
 # where.exe / glob branches (mirrors install-nsis.bats's makensis curation).
 _curated_bin_without_candle() {
-    curated_bin "${_TEST_HOME}/curated-bin" "candle candle.exe"
+    curated_bin "candle candle.exe"
 }
 
 # ── Test: glob fallback resolves the WiX v3 toolset bin dir ───────────────

@@ -173,16 +173,33 @@ _write_shim() {
 }
 
 curated_bin() {
-    # Build a stub-PATH directory at $1 holding a shim for every tool in the
-    # standard bin dirs EXCEPT the space-separated names in $2, and echo the
-    # directory. Callers use it to prove a `command -v <tool>` fast path in the
-    # code under test is genuinely unsatisfiable, without starving that code of
-    # every other tool it legitimately needs. One bulk chmod rather than one
-    # per entry keeps the cost to a single fork over the whole directory.
-    local dir="$1" exclude=" ${2:-} "
+    # Build a stub-PATH directory holding a shim for every tool in the standard
+    # bin dirs EXCEPT the space-separated names in $1, and echo the directory.
+    # Callers use it to prove a `command -v <tool>` fast path in the code under
+    # test is genuinely unsatisfiable, without starving that code of every
+    # other tool it legitimately needs. One bulk chmod rather than one per
+    # entry keeps the cost to a single fork over the whole directory.
+    #
+    # The result is cached per bats file, keyed by the exclusion set. Building
+    # it walks a few thousand entries, and bats runs every command in the test
+    # body under a DEBUG trap — which turned a 0.1s loop into 4s and made this
+    # helper the single largest cost in the suite. The directory holds nothing
+    # but shims and no test writes into it, so one build per exclusion set is
+    # indistinguishable from one per test.
+    local exclude=" ${1:-} "
+    local key="${1:-none}"
+    local dir="${BATS_FILE_TMPDIR:-$_TEST_HOME}/curated-bin-${key//[^a-zA-Z0-9]/-}"
+    if [ -d "$dir" ]; then
+        printf '%s' "$dir"
+        return 0
+    fi
     mkdir -p "$dir"
     local d f base
-    for d in /usr/bin /bin /usr/local/bin; do
+    # /mingw64/bin is where Git-Bash keeps git, curl, gpg and the rest of the
+    # MSYS toolchain — omitting it curated away the very tools the code under
+    # test probes for, and the arms that need them died on a `requires git on
+    # PATH` guard instead of running.
+    for d in /usr/bin /bin /usr/local/bin /mingw64/bin; do
         [ -d "$d" ] || continue
         for f in "$d"/*; do
             base="${f##*/}"
@@ -224,11 +241,27 @@ assert_installed_executable() {
     fi
 }
 
-require_tool() {
-    # Skip the current test when host tool $1 is missing.  $2 says what the
-    # test needs it for, so the skip line names the gap instead of leaving a
-    # reader to discover an absent test.
-    command -v "$1" > /dev/null 2>&1 || skip "host has no ${1}: ${2}"
+resolve_python3() {
+    # Echo the path of a Python 3 interpreter under either spelling, or return
+    # non-zero when the host has none.  Windows CPython ships no `python3.exe`
+    # — only `python` — so probing the POSIX name alone reports "no
+    # interpreter" on a host that has one, and every test guarded on it drops
+    # out as a skip.  Code under test still spells it `python3`; callers
+    # publish the resolved binary under that name with `path_shim`.
+    command -v python3 2> /dev/null || command -v python 2> /dev/null
+}
+
+provide_python3() {
+    # Publish a host Python 3 interpreter into stub-PATH directory $1 under the
+    # POSIX name `python3` and prepend that directory to PATH, so a script that
+    # invokes `python3` runs unmodified on a host that only has `python`.
+    # Returns non-zero (publishing nothing) when no interpreter resolves.
+    local dir="$1" real
+    real="$(resolve_python3)" || return 1
+    mkdir -p "$dir"
+    path_shim "$dir" python3 "$real"
+    PATH="${dir}:${PATH}"
+    export PATH
 }
 
 # Default setup/teardown — bats files that don't define their own pick these up.
