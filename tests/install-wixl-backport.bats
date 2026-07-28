@@ -62,14 +62,34 @@ exit 0
 STUB
     chmod +x "${FAKE_BIN}/apt-get"
 
-    # dpkg: --compare-versions must be real (the floor check depends on it);
-    # --print-architecture is driven per-test.
+    # dpkg is self-contained rather than delegating to a real one: the Windows
+    # leg of this suite has no dpkg at all, and the skip budget is 0, so these
+    # tests have to run identically on both legs. `ge` over dotted numerics is
+    # the only comparison the floor check performs.
     cat > "${FAKE_BIN}/dpkg" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-    --print-architecture) echo "${FAKE_DPKG_ARCH:-amd64}" ;;
-    --compare-versions) exec /usr/bin/dpkg "$@" ;;
-    *) exec /usr/bin/dpkg "$@" ;;
+    --print-architecture)
+        echo "${FAKE_DPKG_ARCH:-amd64}"
+        ;;
+    --compare-versions)
+        v1="$2"; op="$3"; v2="$4"
+        case "$op" in
+            ge)
+                [ "$v1" = "$v2" ] && exit 0
+                [ "$(printf '%s\n%s\n' "$v1" "$v2" | sort -V | head -n1)" = "$v2" ] && exit 0
+                exit 1
+                ;;
+            *)
+                echo "dpkg stub: unsupported comparison '${op}'" >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    *)
+        echo "dpkg stub: unsupported invocation '$*'" >&2
+        exit 2
+        ;;
 esac
 STUB
     chmod +x "${FAKE_BIN}/dpkg"
@@ -110,7 +130,9 @@ _run_backport() {
     # The suite is indexed on its own, not via a full apt-get update.
     [[ "$output" == *"sources.list.d/wixl-backport.list"* ]]
     [ -f "$SOURCE_LIST" ]
-    grep -q 'resolute universe' "$SOURCE_LIST"
+    # main AND universe: wixl/wixl-data are universe but libxml2-16 is main, and
+    # indexing only one leaves the dep unresolvable.
+    grep -q 'resolute main universe' "$SOURCE_LIST"
 }
 
 # ── Test 2: a new-enough wixl is left completely alone ────────────────────

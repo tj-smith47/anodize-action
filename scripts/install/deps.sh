@@ -1214,7 +1214,10 @@ wixl_backport_if_too_old() {
     local apt_etc="${WIXL_APT_ROOT_PREFIX:-}/etc/apt"
     anodizer::run_quiet sudo mkdir -p "${apt_etc}/sources.list.d" "${apt_etc}/preferences.d" \
         || gha_fail "wixl backport: could not create ${apt_etc}"
-    printf 'deb [arch=%s] %s %s universe\n' "$arch" "$host" "$WIXL_BACKPORT_SUITE" \
+    # Both components are required: wixl and wixl-data are universe, but
+    # libxml2-16 is main — indexing only universe leaves the dep unresolvable
+    # and apt refuses the whole transaction.
+    printf 'deb [arch=%s] %s %s main universe\n' "$arch" "$host" "$WIXL_BACKPORT_SUITE" \
         | anodizer::run_quiet sudo tee "${apt_etc}/sources.list.d/wixl-backport.list" \
         || gha_fail "wixl backport: could not write the ${WIXL_BACKPORT_SUITE} apt source"
     # Priority 1 keeps every other package in the suite installable-but-never-
