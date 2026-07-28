@@ -1160,6 +1160,87 @@ install_rcodesign() {
     esac
 }
 
+# msitools taught wixl the WiX `<Environment>` element in 0.105; before that its
+# parser has no such node type and aborts the whole build with
+# `wix.vala: unhandled child Component node Environment` on any .wxs that puts
+# the install dir on PATH — the shape every CLI installer needs. Ubuntu 24.04
+# (the current `ubuntu-latest`) ships 0.103, so the msis stage cannot build there
+# at all. Nor is a prebuilt 0.106 .deb installable on 24.04 directly: it links
+# libxml2-16, whose soname 24.04 does not carry. 26.04 LTS supplies all three
+# missing pieces, and its libxml2-16 needs only libc6/zlib1g that 24.04 already
+# exceeds, so overlay exactly those and pin the rest of that suite away.
+WIXL_MIN_VERSION="0.105"
+WIXL_BACKPORT_SUITE="resolute"
+
+# Reads the numeric version out of `wixl --version` (which prints a bare
+# `0.106`), empty when wixl is absent or unparseable. `|| true` keeps this
+# set -e-safe: a wixl that is on PATH but exits non-zero (a half-installed or
+# ABI-broken package) would otherwise abort the whole dep install through
+# pipefail, with no diagnostic naming wixl.
+_wixl_version() {
+    command -v wixl > /dev/null 2>&1 || return 0
+    local raw
+    raw="$(wixl --version 2> /dev/null || true)"
+    printf '%s' "$raw" | head -n1 | tr -cd '0-9.'
+}
+
+# Runs after apt_flush, so it sees the version the distro actually installed.
+# A runner whose own wixl already carries `<Environment>` is left untouched,
+# which retires this overlay by itself once `ubuntu-latest` moves past 24.04.
+wixl_backport_if_too_old() {
+    [ "$RUNNER_OS" = "Linux" ] || return 0
+    command -v apt-get > /dev/null 2>&1 || return 0
+
+    local have
+    have="$(_wixl_version)"
+    [ -n "$have" ] || return 0
+    if dpkg --compare-versions "$have" ge "$WIXL_MIN_VERSION"; then
+        anodizer::vok "wixl ${have} supports <Environment>"
+        return 0
+    fi
+
+    anodizer::vstep "wixl ${have} predates <Environment> support; overlaying ${WIXL_BACKPORT_SUITE}"
+    local arch host
+    arch="$(dpkg --print-architecture)"
+    case "$arch" in
+        # Only amd64/i386 live on archive.ubuntu.com; every other port is
+        # published under ports.ubuntu.com.
+        amd64 | i386) host="http://archive.ubuntu.com/ubuntu" ;;
+        *) host="http://ports.ubuntu.com/ubuntu-ports" ;;
+    esac
+    # WIXL_APT_ROOT_PREFIX rebases both config writes under a sandbox so the
+    # tests can assert on them without touching the host's /etc (same knob shape
+    # as WIX_GLOB_ROOT_PREFIX); empty in production.
+    local apt_etc="${WIXL_APT_ROOT_PREFIX:-}/etc/apt"
+    anodizer::run_quiet sudo mkdir -p "${apt_etc}/sources.list.d" "${apt_etc}/preferences.d" \
+        || gha_fail "wixl backport: could not create ${apt_etc}"
+    printf 'deb [arch=%s] %s %s universe\n' "$arch" "$host" "$WIXL_BACKPORT_SUITE" \
+        | anodizer::run_quiet sudo tee "${apt_etc}/sources.list.d/wixl-backport.list" \
+        || gha_fail "wixl backport: could not write the ${WIXL_BACKPORT_SUITE} apt source"
+    # Priority 1 keeps every other package in the suite installable-but-never-
+    # preferred, so adding this source cannot silently upgrade anything else.
+    printf 'Package: *\nPin: release n=%s\nPin-Priority: 1\n\nPackage: wixl wixl-data libxml2-16\nPin: release n=%s\nPin-Priority: 990\n' \
+        "$WIXL_BACKPORT_SUITE" "$WIXL_BACKPORT_SUITE" \
+        | anodizer::run_quiet sudo tee "${apt_etc}/preferences.d/wixl-backport" \
+        || gha_fail "wixl backport: could not write the ${WIXL_BACKPORT_SUITE} apt pin"
+
+    # Index ONLY the new list: a full `apt-get update` re-fetches every suite the
+    # image configures, which costs far more than the one package being fixed.
+    DEBIAN_FRONTEND=noninteractive anodizer::run_quiet sudo apt-get update -q \
+        -o Dir::Etc::sourcelist="sources.list.d/wixl-backport.list" \
+        -o Dir::Etc::sourceparts="-" \
+        -o APT::Get::List-Cleanup="0" \
+        || gha_fail "wixl backport: apt-get update failed for ${WIXL_BACKPORT_SUITE}"
+    DEBIAN_FRONTEND=noninteractive \
+        anodizer::run_quiet sudo apt-get install -yq wixl wixl-data < /dev/null \
+        || gha_fail "wixl backport: installing wixl from ${WIXL_BACKPORT_SUITE} failed"
+
+    have="$(_wixl_version)"
+    dpkg --compare-versions "${have:-0}" ge "$WIXL_MIN_VERSION" \
+        || gha_fail "wixl backport: wixl is still ${have:-absent} after installing from ${WIXL_BACKPORT_SUITE}; the msis stage would fail on <Environment>"
+    anodizer::vok "wixl ${have} installed from ${WIXL_BACKPORT_SUITE}"
+}
+
 # WiX drives anodizer's `msis:` stage (crates/stage-msi — v4 `wix build`). The
 # v4 CLI is the `wix` dotnet global tool, installed via the dotnet SDK that is
 # preinstalled on the GitHub windows runner images. dotnet global tools land in
@@ -1510,6 +1591,11 @@ main() {
     anodizer::verb Installing "${#DEPS[@]} ${noun}"
     dispatch_install
     apt_flush
+    # Only the two WiX deps put wixl on PATH; anything else on the box keeping an
+    # old wixl around is not this run's problem to upgrade.
+    case " ${DEPS[*]} " in
+        *" wix "* | *" wix3 "*) wixl_backport_if_too_old ;;
+    esac
     # Default-visible one-line summary of what landed (the per-tool progress is
     # verbose-only ::v* now), mirroring the detect phase's `detected` row. A
     # green run shows the header + this line; --debug expands the play-by-play.
