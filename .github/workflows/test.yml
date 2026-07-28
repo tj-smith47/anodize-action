@@ -158,3 +158,71 @@ jobs:
             cargo zigbuild --release --target "$t"
             echo "::endgroup::"
           done
+
+  wixl-environment-smoke:
+    name: wixl <Environment> smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Provision wixl through the action's own install path, exactly as a
+      # consumer's msis stage does.
+      - name: Install wix via the action
+        uses: ./
+        with:
+          install-only: 'true'
+          install: wix
+
+      # The bats suite stubs apt, so it can only prove which packages the
+      # installer DECIDES to fetch — not that the resulting wixl can parse the
+      # element. Ubuntu 24.04's stock wixl (0.103) aborts here with "unhandled
+      # child Component node Environment", which is what took every MSI build on
+      # ubuntu-latest down; only a real apt transaction on the real image proves
+      # the overlay landed a parser that handles it. The .wxs mirrors the shape
+      # anodizer's own template emits: a Component whose File is followed by an
+      # <Environment> appending the install dir to the machine PATH.
+      - name: Build an MSI whose Component sets PATH via <Environment>
+        run: |
+          set -euo pipefail
+          wixl --version
+          work="${RUNNER_TEMP}/wixl-smoke"
+          mkdir -p "$work"
+          printf 'payload\n' > "${work}/payload.exe"
+          cat > "${work}/smoke.wxs" <<'WXS'
+          <?xml version="1.0" encoding="utf-8"?>
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product Id="1d2e3f40-5a6b-7c8d-9e0f-1a2b3c4d5e6f"
+                     Name="wixl-smoke"
+                     Language="1033"
+                     Version="1.0.0.0"
+                     Manufacturer="anodizer"
+                     UpgradeCode="2e3f4051-6b7c-8d9e-0f1a-2b3c4d5e6f70">
+              <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+                       Manufacturer="anodizer" Description="wixl Environment smoke" />
+              <MediaTemplate EmbedCab="yes" />
+              <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="ProgramFiles64Folder">
+                  <Directory Id="INSTALLFOLDER" Name="wixl-smoke">
+                    <Component Id="MainExecutable" Guid="*">
+                      <File Id="payloadExe" Name="wixl-smoke.exe" Source="payload.exe" KeyPath="yes" />
+                      <Environment Id="UpdatePath" Name="PATH" Value="[INSTALLFOLDER]"
+                                   Permanent="no" Part="last" Action="set" System="yes" />
+                    </Component>
+                  </Directory>
+                </Directory>
+              </Directory>
+              <Feature Id="MainFeature" Title="wixl-smoke" Level="1">
+                <ComponentRef Id="MainExecutable" />
+              </Feature>
+            </Product>
+          </Wix>
+          WXS
+          # The heredoc above is indented to match the YAML block; strip that
+          # leading run so wixl receives a well-formed XML declaration on line 1.
+          sed -i 's/^          //' "${work}/smoke.wxs"
+          cd "$work"
+          wixl -v smoke.wxs -o smoke.msi
+          test -s smoke.msi
+          echo "built $(stat -c%s smoke.msi) byte MSI with an <Environment> component"
