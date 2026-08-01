@@ -51,42 +51,36 @@ anodizer_class_marker='anodizer-error-class: deterministic'
 # Per-attempt stderr capture, truncated at the start of every attempt so the
 # classifier can never inherit a previous attempt's marker.
 attempt_stderr="$(mktemp)"
-trap 'rm -f "$attempt_stderr"' EXIT
+# Retry-cleanup reference point: its mtime marks "before anodizer ran". Every
+# dist entry already present when this script starts (preserved-dist context
+# manifests, downloaded shard binaries, staged signing keys — all written by
+# EARLIER action steps) predates it; only anodizer's generated output is newer.
+# Created here at script start so the marker is fixed before the first attempt.
+dist_input_marker="$(mktemp)"
+trap 'rm -f "$attempt_stderr" "$dist_input_marker"' EXIT
 
 # The configured output tree (default `dist`); custom `dist:` values must
 # steer the retry cleanup too, or a retry would wipe the wrong directory.
 dist_dir=$(resolve_dist_dir)
 
-# Predicate: is the dist tree holding context manifests we must preserve
-# across a retry? `context.json` (or `context-<shard>.json`) at root or in
-# any first-level subdir signals a split-build input / per-crate
-# preserved-dist tree consumed by `release --merge` /
-# `release --publish-only`; wiping it would turn a transient failure into
-# an unrecoverable one.
-has_preserved_context() {
-    [ -d "$dist_dir" ] || return 1
-    [ -f "${dist_dir}/context.json" ] && return 0
-    ls "${dist_dir}"/context-*.json >/dev/null 2>&1 && return 0
-    local d
-    for d in "${dist_dir}"/*/; do
-        [ -d "$d" ] || continue
-        ls "${d}context"*.json >/dev/null 2>&1 && return 0
-    done
-    return 1
-}
-
-# Wipe generated artifacts between retries, leaving the dist tree GENUINELY
-# empty: anodizer's dist-not-empty guard counts ANY directory entry, so a
-# leftover empty `run-<id>/` subdir (or an undeleted symlink) makes every
-# retry die with "dist directory is not empty" instead of rebuilding.
-# Files and symlinks are removed at every depth, then empty dirs are pruned
-# depth-first. `find` does not follow symlinks (no -L): a symlink is deleted
-# as a link, never descended into — deletion cannot escape the tree. The
-# whole function is skipped when preserved-dist manifests are present (see
-# caller), so --publish-only inputs are never touched.
+# Remove anodizer's generated output between retries while preserving every
+# already-staged dist INPUT. A `release --merge` retry must clear the archives /
+# checksums / signatures the failed attempt already wrote (else the next
+# attempt's archive stage aborts with "archive ... already exists"), yet keep
+# the preserved-dist tree it consumes — context manifests AND the downloaded
+# shard binaries. Skipping cleanup wholesale (the old preserved-context guard)
+# left the stale archives; wiping cleanup wholesale destroyed the merge inputs.
+# `-newer "$dist_input_marker"` splits the two by mtime: inputs were staged by
+# earlier action steps before the marker; anodizer's output is written after
+# it. A build with no preserved dist (empty tree at marker time) still cleans
+# to GENUINELY empty — anodizer's dist-not-empty guard counts ANY entry, so a
+# leftover empty `run-<id>/` subdir or an undeleted symlink would fail the
+# retry. Files and symlinks are removed at every depth (`find` without -L
+# deletes a symlink as a link, never descending — deletion cannot escape the
+# tree), then empty dirs are pruned depth-first.
 cleanup_dist() {
     [ -d "$dist_dir" ] || return 0
-    find "$dist_dir" -mindepth 1 \( -type f -o -type l \) -delete 2>/dev/null || true
+    find "$dist_dir" -mindepth 1 \( -type f -o -type l \) -newer "$dist_input_marker" -delete 2>/dev/null || true
     find "$dist_dir" -mindepth 1 -depth -type d -empty -delete 2>/dev/null || true
 }
 
@@ -239,11 +233,10 @@ main() {
         fi
         anodizer::warn "attempt ${attempt}/${max_retries} failed; retrying in 10s..."
 
-        if has_preserved_context; then
-            anodizer::warn "preserved-dist context manifests present (root or per-crate subdir); skipping ALL retry cleanup to keep --publish-only inputs intact"
-        else
-            cleanup_dist
-        fi
+        # Clear only what this attempt generated; preserved-dist inputs
+        # (context manifests + shard binaries a --merge consumes) predate the
+        # marker and survive.
+        cleanup_dist
         # Overridable so the bats suite can exercise the retry loop without
         # real 10s waits.
         sleep "${ANODIZER_RETRY_DELAY:-10}"

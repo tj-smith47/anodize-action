@@ -84,26 +84,43 @@ STUB
     [[ "$output" != *"is not empty"* ]]
 }
 
-@test "preserved-dist context manifest skips cleanup entirely" {
+# A --merge retry must clear the archive a failed attempt already wrote (else
+# the next attempt's archive stage aborts "already exists") WHILE preserving the
+# preserved-dist inputs it consumes (context manifest + shard binary). The inputs
+# are aged so they unambiguously predate the script's input marker.
+@test "merge retry clears generated archives but preserves preserved-dist inputs" {
+    mkdir -p ./dist/linux/x86_64-unknown-linux-gnu
+    echo '{"shard":"x"}' > ./dist/context.json
+    echo bin > ./dist/linux/x86_64-unknown-linux-gnu/app
+    touch -t 200001010000 ./dist/context.json ./dist/linux/x86_64-unknown-linux-gnu/app
+
     cat > "$STUB_BIN/anodizer" <<STUB
 #!/usr/bin/env bash
+set -u
 count_file="$WORKDIR/attempts"
 n=\$(( \$(cat "\$count_file" 2>/dev/null || echo 0) + 1 ))
 echo "\$n" > "\$count_file"
-mkdir -p ./dist
-echo '{"shard":"x"}' > ./dist/context.json
-exit 1
+# A leftover archive from a prior attempt aborts the stage — the exact
+# "already exists" cascade the retry cleanup must prevent.
+if [ -e ./dist/app-linux.tar.gz ]; then
+    echo "Error: archive named 'app-linux.tar.gz' already exists. Check your archive name template."
+    exit 1
+fi
+echo archived > ./dist/app-linux.tar.gz
+[ "\$n" -eq 1 ] && exit 1
+exit 0
 STUB
     chmod +x "$STUB_BIN/anodizer"
     export ANODIZER_ARGS="release --merge"
 
     run "$REPO_ROOT/scripts/run/anodizer.sh"
 
-    [ "$status" -eq 1 ]
-    [ "$(cat "$WORKDIR/attempts")" = "3" ]
-    # The manifest survives every retry.
+    [ "$status" -eq 0 ]
+    [ "$(cat "$WORKDIR/attempts")" = "2" ]
+    # Inputs survive; the stale archive never triggers a collision on retry.
     [ -f "$WORKDIR/dist/context.json" ]
-    [[ "$output" == *"skipping ALL retry cleanup"* ]]
+    [ -f "$WORKDIR/dist/linux/x86_64-unknown-linux-gnu/app" ]
+    [[ "$output" != *"already exists"* ]]
 }
 
 @test "stateful --publish-only runs exactly once" {
